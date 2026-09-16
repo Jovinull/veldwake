@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is merged. M3B — Streaming Runtime (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime`, validated by headless gates and a driven Windows/D3D12 smoke, and submitted for review.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
+**M3B — Streaming Runtime is complete and merged. M3C — Initial LOD + Streaming Debug Visualization is planned on `feat/m3c-lod-debug` and not implemented.** M3B merged through [PR #5](https://github.com/Jovinull/veldwake/pull/5) at merge commit `b5473dbb7836b65e6c6c5662a8abf6f02b6e8043`, and the Claude Code entry point through [PR #4](https://github.com/Jovinull/veldwake/pull/4) at `994e9863936441606d9bd675e1ea62bc74300bf9`; M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -76,4 +76,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3B — Streaming Runtime:** M3B1 and M3B2 are implemented on the feature branch; all gates and the driven Windows/D3D12 smoke passed; the pull request to `main` is open for review. Do not begin any M3C scope (LOD, cache/persistence experiment, debug visualization, more workers) before acceptance. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.
+**M3C — Initial LOD + Streaming Debug Visualization:** planned, not implemented. Implementation starts with M3C0 (edge-generic dense grid and mesher with the 32-edge topology locked), then the `Lod1` ring with the coarse-occupancy seam rule, level-aware stamps, baseline-versus-LOD measurement, and keyboard-toggled debug views. See the M3C section of [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves/cache, ECS, gameplay, physics, networking, multiple workers, origin rebasing, render graph, generalized batching, and biomes remain excluded.

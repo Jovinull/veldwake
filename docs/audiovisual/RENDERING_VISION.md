@@ -9,7 +9,7 @@ The renderer should present stylized high-quality voxel fantasy while remaining 
 1. Window/device/surface/frame/input/camera and adapter diagnostics. **Complete in M1** with a disposable code-generated cube and no game-content claim.
 2. One chunk and an explicit meshing baseline. **Complete and merged in M2:** dependency-free exposed-face CPU mesh, one-time immutable `u32` GPU upload, depth/back-face culling, and diagnostic ID colors.
 3. Multi-chunk correctness. **Complete and merged in M3A:** neighbor-aware local meshes and a static signed-coordinate fixture rendered with one presentation translation per chunk. This is not streaming or final batching.
-4. Streaming, prioritized async generation/meshing, residency, and initial LOD. **Streaming, async meshing, and bounded residency are implemented in M3B** (feature branch, awaiting review): camera-driven demand, one worker, stamp-validated results, per-frame draw-set reconciliation, and upload/release budgets. LOD is not started.
+4. Streaming, prioritized async generation/meshing, residency, and initial LOD. **Streaming, async meshing, and bounded residency are complete and merged in M3B:** camera-driven demand, one worker, stamp-validated results, per-frame draw-set reconciliation, and upload/release budgets. **Initial LOD and debug visualization are planned as M3C** (one coarse 2× level with a coarse-occupancy seam rule, measured against a no-LOD baseline) and not implemented.
 5. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.
 6. Later evidence-driven culling/batching/GPU-driven techniques.
 
