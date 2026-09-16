@@ -115,8 +115,9 @@ impl Error for RendererInitError {}
 #[derive(Debug, Eq, PartialEq)]
 pub enum RenderOutcome {
     Rendered,
-    Skipped,
+    Retry,
     Reconfigured,
+    Suspended,
     Fatal,
 }
 
@@ -336,7 +337,7 @@ impl Renderer {
             return RenderOutcome::Fatal;
         }
         if !self.configured {
-            return RenderOutcome::Skipped;
+            return RenderOutcome::Suspended;
         }
 
         let surface_texture = match self.surface.get_current_texture() {
@@ -348,9 +349,9 @@ impl Renderer {
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 warn!("surface acquisition timed out; frame skipped");
-                return RenderOutcome::Skipped;
+                return RenderOutcome::Retry;
             }
-            wgpu::CurrentSurfaceTexture::Occluded => return RenderOutcome::Skipped,
+            wgpu::CurrentSurfaceTexture::Occluded => return RenderOutcome::Suspended,
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.reconfigure();
                 return RenderOutcome::Reconfigured;

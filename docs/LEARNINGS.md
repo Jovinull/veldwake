@@ -11,3 +11,4 @@ Last updated: 2026-09-16
 - A window-owned `Arc<Window>` permits a sound `'static` surface lifetime without transmute or other lifetime hacks. Window creation still belongs in `ApplicationHandler::resumed` through the active event loop.
 - On the audited host, the intentionally D3D12-only M1 build selected Intel Iris Xe, `Bgra8UnormSrgb`, `Fifo`, and `Opaque`. These are observed capabilities, not portable requirements; deterministic selection helpers retain fallbacks.
 - Zero-sized windows must suspend surface configuration/rendering, and focus loss must clear input state. Both are explicit lifecycle behavior rather than exceptional failures.
+- `ControlFlow::Wait` alone does not prevent idle work when `RedrawRequested` unconditionally queues another redraw. The render result must distinguish retry from suspension, stop the redraw chain for zero-size/occluded surfaces, and explicitly request redraw on restoration.

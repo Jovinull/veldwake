@@ -1,6 +1,6 @@
 # M1 — Rendering Foundation
 
-Status: **Complete locally**
+Status: **Implementation complete on `feat/m1-rendering-foundation`; pending remote PR validation and merge**
 Started: 2026-09-16
 
 ## Scope
@@ -50,9 +50,11 @@ On the audited Windows desktop: launch with `RUST_LOG=info`, confirm adapter/bac
 
 The workspace now has one `veldwake-client` executable with internal application, diagnostics, input, camera, and renderer modules. The unchanged `veldwake-foundation` crate remains dependency-free. No new ADR was required because this physical shape implements ADR-0001/0002 rather than changing their durable decisions.
 
-The renderer creates a hidden window during `resumed`, initializes the compatible adapter/device/surface, configures only nonzero sizes, then displays the window. It renders a 24-vertex/36-index colored diagnostic cube from Rust constants through an embedded WGSL shader and `Depth32Float` depth target. Surface format/present/alpha choices prefer sRGB/FIFO/Opaque with deterministic capability fallbacks. Lost/outdated/suboptimal surfaces are reconfigured, timeout is logged, and out-of-memory, internal, validation, or device-loss errors cause an observable fatal exit.
+The renderer creates a hidden window during `resumed`, initializes the compatible adapter/device/surface, configures only nonzero sizes, then displays the window. It renders a 24-vertex/36-index colored diagnostic cube from Rust constants through an embedded WGSL shader and `Depth32Float` depth target. Selection policy prefers an sRGB format, `Fifo` presentation, and `CompositeAlphaMode::Auto`; each uses the first advertised capability as fallback. The audited host's observed alpha result was `Opaque`, which is runtime evidence rather than the selection preference. Lost/outdated/suboptimal surfaces are reconfigured, timeout is logged, and out-of-memory, internal, validation, or device-loss errors cause an observable fatal exit.
 
 The pure camera/input boundary supplies normalized six-axis movement, right-mouse yaw/pitch, pitch limits, finite perspective projection, aspect guards, focus reset, and a 100 ms presentation-delta clamp. Twelve headless tests cover this behavior plus key and surface-option translation. The plain nextest gate replaced the temporary M0 empty-suite exception everywhere current.
+
+The final lifecycle hardening uses `ControlFlow::Wait` and chained `request_redraw()` only while rendering can make progress. A zero-sized or GPU-reported occluded surface returns a suspended outcome and stops the redraw chain; timeout remains a retry. Nonzero resize and de-occlusion explicitly request redraw, so restoration wakes the waiting loop without sleeps, timers, or helper threads. This is platform lifecycle behavior rather than artificial pure logic, so the existing 12 meaningful tests were preserved and host smoke testing supplies the relevant evidence.
 
 ### Windows host smoke test
 
@@ -65,6 +67,8 @@ On the audited Windows desktop, the client selected:
 - initial physical surface size: 1600 × 900 on the observed run.
 
 The code-generated cube was visually inspected with distinct front/top faces and correct perspective/depth. WASD movement and right-mouse look changed the view. The window was repeatedly resized (900 × 650, 1400 × 820, and 1000 × 700), minimized, and restored without a crash or validation error. During a held-key focus transition, the debug log recorded input reset; two subsequent controlled captures were byte-identical, confirming movement was not stuck. Escape requested a clean shutdown. Presentation telemetry near the display refresh rate was observed for this trivial scene but is not a benchmark or a 60 FPS claim.
+
+After the lifecycle hardening, the same Windows host was exercised again with continuous camera movement, repeated resize, held-key focus loss, six seconds minimized, restore, resumed rendering, and Escape shutdown. While minimized, frame telemetry stopped and a lightweight process observation showed no continuing busy activity; after restoration, surface reconfiguration and continuous redraw resumed. This is qualitative lifecycle evidence, not a CPU benchmark.
 
 ### Dependency policy
 

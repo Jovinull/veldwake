@@ -4,11 +4,11 @@ Last updated: 2026-09-16
 
 ## Current position
 
-M1 is complete locally on `feat/m1-rendering-foundation`. The workspace contains the unchanged dependency-free `foundation` crate and one Windows-first presentation client. The client renders a diagnostic cube through `wgpu`/D3D12, supports a pure camera/input model, handles window/surface lifecycle, and reports adapter/frame diagnostics. It contains no authoritative game state.
+M1 implementation is complete on `feat/m1-rendering-foundation`, pending remote PR validation and merge into `main`. The workspace contains the unchanged dependency-free `foundation` crate and one Windows-first presentation client. The client renders a diagnostic cube through `wgpu`/D3D12, supports a pure camera/input model, handles window/surface lifecycle, and reports adapter/frame diagnostics. It contains no authoritative game state.
 
 ## Continue here
 
-**M2 — Voxel Prototype** is next. Begin by reading the M1 verification record in [`planning/M1_RENDERING_FOUNDATION.md`](../planning/M1_RENDERING_FOUNDATION.md), then specify a minimal deterministic voxel/chunk fixture and CPU-side correctness contract before adding a mesher. Preserve the tested rule that world/voxel data does not require a GPU and that the renderer only consumes presentation data.
+Finish remote review and merge of M1 before beginning M2. The implementation and verification record belongs in [`planning/M1_RENDERING_FOUNDATION.md`](../planning/M1_RENDERING_FOUNDATION.md). After merge, M2 should begin by specifying a minimal deterministic voxel/chunk fixture and CPU-side correctness contract before adding a mesher; preserve the tested rule that world/voxel data does not require a GPU and that the renderer only consumes presentation data.
 
 ## Read before continuing
 

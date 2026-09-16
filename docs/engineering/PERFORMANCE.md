@@ -25,4 +25,4 @@ The 1080p/60 target from concept work remains Proposed until a target hardware t
 
 ## Current instrumentation
 
-M1 records wall-clock presentation delta, clamps camera movement after stalls, and emits a five-second aggregate of observed frame interval/FPS through `tracing`. This is diagnostic telemetry for a trivial cube under a polling event loop, not a performance benchmark or evidence for the proposed target. The frame callback performs no disk/network I/O and allocates no unbounded per-frame work.
+M1 records wall-clock presentation delta, clamps camera movement after stalls, and emits a five-second aggregate of observed frame interval/FPS through `tracing`. This is diagnostic telemetry for a trivial cube, not a performance benchmark or evidence for the proposed target. The event loop uses `ControlFlow::Wait`: visible rendering continues by chaining `request_redraw()`, while occlusion stops that chain until restoration explicitly requests another redraw. The frame callback performs no disk/network I/O and allocates no unbounded per-frame work.

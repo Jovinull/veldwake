@@ -25,7 +25,7 @@ const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run() -> Result<(), AppRunError> {
     let event_loop = EventLoop::new().map_err(|error| AppRunError(error.to_string()))?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::default();
     event_loop
@@ -146,17 +146,24 @@ impl App {
             return;
         };
         renderer.update_camera(&self.camera);
-        match renderer.render() {
-            RenderOutcome::Rendered => self.frame_stats.record(now, elapsed),
-            RenderOutcome::Skipped => {}
-            RenderOutcome::Reconfigured => debug!("frame skipped after surface reconfiguration"),
+        let request_next_redraw = match renderer.render() {
+            RenderOutcome::Rendered => {
+                self.frame_stats.record(now, elapsed);
+                true
+            }
+            RenderOutcome::Retry => true,
+            RenderOutcome::Reconfigured => {
+                debug!("frame skipped after surface reconfiguration");
+                true
+            }
+            RenderOutcome::Suspended => false,
             RenderOutcome::Fatal => {
                 self.fail_and_exit(event_loop, "fatal GPU or surface error");
                 return;
             }
-        }
+        };
 
-        if let Some(renderer) = self.renderer.as_ref() {
+        if request_next_redraw && let Some(renderer) = self.renderer.as_ref() {
             renderer.window().request_redraw();
         }
     }
@@ -212,6 +219,9 @@ impl ApplicationHandler for App {
                 self.camera.set_aspect_from_size(size.width, size.height);
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
+                    if size.width > 0 && size.height > 0 {
+                        renderer.window().request_redraw();
+                    }
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -219,6 +229,9 @@ impl ApplicationHandler for App {
                     let size = renderer.window().inner_size();
                     self.camera.set_aspect_from_size(size.width, size.height);
                     renderer.resize(size);
+                    if size.width > 0 && size.height > 0 {
+                        renderer.window().request_redraw();
+                    }
                 }
             }
             WindowEvent::Occluded(occluded) => {

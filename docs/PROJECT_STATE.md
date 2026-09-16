@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M1 — Rendering Foundation is complete locally** on `feat/m1-rendering-foundation`. The repository now has a small, observable Windows/D3D12 diagnostic renderer; it remains a non-playable engineering proof.
+**M1 — Rendering Foundation implementation is complete** on `feat/m1-rendering-foundation`, pending remote PR validation and merge into `main`. The repository now has a small, observable Windows/D3D12 diagnostic renderer; it remains a non-playable engineering proof.
 
 ## What works
 
