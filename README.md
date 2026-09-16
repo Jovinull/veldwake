@@ -34,7 +34,7 @@ Diagnostic controls: WASD moves, Space/Control move vertically, hold the right m
 
 ## Start here
 
-- [Repository rules](AGENTS.md)
+- [Repository rules](AGENTS.md) (Claude Code entry point: [CLAUDE.md](CLAUDE.md))
 - [Documentation index](docs/INDEX.md)
 - [Current project state](docs/PROJECT_STATE.md)
 - [Game vision](docs/vision/GAME_VISION.md)

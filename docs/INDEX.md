@@ -11,6 +11,8 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 5. Relevant [`ADRs`](adr/README.md)
 6. [`agents/HANDOFF.md`](agents/HANDOFF.md)
 
+`AGENTS.md` is the constitution for every agent runtime. [`/CLAUDE.md`](../CLAUDE.md) exists only because Claude Code discovers that filename; it routes to `AGENTS.md` and records runtime-specific notes. See [`agents/SKILLS.md`](agents/SKILLS.md).
+
 ## Current state and memory
 
 - [`PROJECT_STATE.md`](PROJECT_STATE.md): fast operational truth
