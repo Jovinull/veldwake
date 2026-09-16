@@ -6,6 +6,10 @@ use std::{
 };
 
 use tracing::{debug, info};
+use veldwake_voxel::{
+    BoundaryPolicy, Chunk, ChunkCoord, ChunkNeighborhood, Face, Mesh,
+    mesh_exposed_faces_with_neighbors,
+};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -18,7 +22,7 @@ use winit::{
 use crate::{
     camera::{Camera, CameraController},
     input::{CameraAction, InputState},
-    renderer::{RenderOutcome, Renderer},
+    renderer::{DiagnosticChunkMesh, RenderOutcome, Renderer},
 };
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
@@ -79,7 +83,7 @@ impl Default for App {
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), AppRunError> {
         let attributes = Window::default_attributes()
-            .with_title("Veldwake — M2 Voxel Prototype")
+            .with_title("Veldwake - M3A Multi-chunk Correctness")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_visible(false);
         let window = Arc::new(
@@ -91,20 +95,28 @@ impl App {
         self.camera
             .set_aspect_from_size(initial_size.width, initial_size.height);
 
-        let chunk = veldwake_voxel::diagnostic_fixture();
+        let chunks = veldwake_voxel::multichunk_diagnostic_fixture();
         let mesh_started = Instant::now();
-        let mesh = veldwake_voxel::mesh_exposed_faces(&chunk);
+        let meshes = mesh_fixture_chunks(&chunks)?;
         let mesh_cpu_time = mesh_started.elapsed();
         let mesh_diagnostics = crate::renderer::VoxelMeshDiagnostics {
-            solid_count: chunk.solid_count(),
-            fingerprint: veldwake_voxel::fingerprint(&chunk),
+            chunk_count: chunks.len(),
+            solid_count: chunks.iter().map(|(_, chunk)| chunk.solid_count()).sum(),
+            fingerprint: veldwake_voxel::multichunk_fingerprint(&chunks),
             mesh_cpu_time,
         };
+        let diagnostic_meshes = meshes
+            .iter()
+            .map(|(coord, mesh)| DiagnosticChunkMesh {
+                coord: *coord,
+                mesh,
+            })
+            .collect::<Vec<_>>();
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),
             &self.camera,
-            &mesh,
+            &diagnostic_meshes,
             mesh_diagnostics,
         ))
         .map_err(|error| AppRunError(error.to_string()))?;
@@ -114,7 +126,7 @@ impl App {
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M2 diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
+            "M3A diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
         );
         Ok(())
     }
@@ -179,6 +191,42 @@ impl App {
             renderer.window().request_redraw();
         }
     }
+}
+
+fn mesh_fixture_chunks(
+    chunks: &[(ChunkCoord, Chunk)],
+) -> Result<Vec<(ChunkCoord, Mesh)>, AppRunError> {
+    chunks
+        .iter()
+        .map(|(coord, chunk)| {
+            mesh_exposed_faces_with_neighbors(
+                neighborhood_for(*coord, chunk, chunks),
+                BoundaryPolicy::Expose,
+            )
+            .map(|mesh| (*coord, mesh))
+            .map_err(|error| AppRunError(format!("failed to mesh M3A fixture: {error}")))
+        })
+        .collect()
+}
+
+fn neighborhood_for<'a>(
+    coord: ChunkCoord,
+    center: &'a Chunk,
+    chunks: &'a [(ChunkCoord, Chunk)],
+) -> ChunkNeighborhood<'a> {
+    let mut neighborhood = ChunkNeighborhood::new(center);
+    for face in Face::ALL {
+        let Some(neighbor_coord) = coord.neighbor(face) else {
+            continue;
+        };
+        if let Some((_, neighbor)) = chunks
+            .iter()
+            .find(|(candidate, _)| *candidate == neighbor_coord)
+        {
+            neighborhood = neighborhood.with_neighbor(face, neighbor);
+        }
+    }
+    neighborhood
 }
 
 impl ApplicationHandler for App {

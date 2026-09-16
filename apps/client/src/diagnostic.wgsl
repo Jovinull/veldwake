@@ -5,6 +5,13 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+struct ModelUniform {
+    translation: vec4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> model: ModelUniform;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
@@ -18,7 +25,8 @@ struct VertexOutput {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.clip_position = camera.view_projection * vec4<f32>(input.position, 1.0);
+    let world_position = input.position + model.translation.xyz;
+    output.clip_position = camera.view_projection * vec4<f32>(world_position, 1.0);
     output.color = input.color;
     return output;
 }

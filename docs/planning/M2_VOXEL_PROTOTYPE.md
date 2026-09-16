@@ -1,7 +1,7 @@
 # M2 — Voxel Prototype
 
-Status: **Implementation and local validation complete; pending PR validation and merge**
-Branch: `feat/m2-voxel-prototype`
+Status: **Complete; merged through PR #2 at `b7f7461911e2f5c832dd9dae475ebb375dda870e`**
+Historical implementation branch: `feat/m2-voxel-prototype`
 
 ## Purpose
 
@@ -91,7 +91,7 @@ On 2026-09-16 the client selected Intel Iris Xe through D3D12 (`Bgra8UnormSrgb`,
 2. **Complete:** headless tests for indexing, bounds, mutation, fixture determinism, six directions, winding, and exact topology.
 3. **Complete:** release probe for named fixtures; its timing remains diagnostic only.
 4. **Complete:** immutable client-owned upload adapter and Windows/D3D12 fixture/lifecycle inspection.
-5. **Complete locally:** dependency direction, allocations, error handling, documentation, and scope reviewed; remote PR validation and merge remain.
+5. **Complete:** dependency direction, allocations, error handling, documentation, scope, external review, and remote CI validated before merge.
 
 ## M2 boundary carried forward
 

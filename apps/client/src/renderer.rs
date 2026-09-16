@@ -10,7 +10,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
-use veldwake_voxel::{CHUNK_EDGE, Mesh, VoxelId};
+use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
@@ -44,6 +44,32 @@ struct CameraUniform {
     view_projection: [[f32; 4]; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct ModelUniform {
+    translation: [f32; 4],
+}
+
+impl ModelUniform {
+    fn from_chunk_coord(coord: ChunkCoord) -> Self {
+        let edge = CHUNK_EDGE as f32;
+        Self {
+            translation: [
+                coord.x as f32 * edge,
+                coord.y as f32 * edge,
+                coord.z as f32 * edge,
+                0.0,
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DiagnosticChunkMesh<'a> {
+    pub coord: ChunkCoord,
+    pub mesh: &'a Mesh,
+}
+
 impl CameraUniform {
     fn from_camera(camera: &Camera) -> Self {
         Self {
@@ -54,9 +80,18 @@ impl CameraUniform {
 
 #[derive(Clone, Copy, Debug)]
 pub struct VoxelMeshDiagnostics {
+    pub chunk_count: usize,
     pub solid_count: usize,
     pub fingerprint: u64,
     pub mesh_cpu_time: std::time::Duration,
+}
+
+struct GpuChunkMesh {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    model_bind_group: wgpu::BindGroup,
+    _model_buffer: wgpu::Buffer,
 }
 
 #[derive(Debug)]
@@ -111,9 +146,7 @@ pub struct Renderer {
     size: PhysicalSize<u32>,
     configured: bool,
     pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
+    chunk_meshes: Vec<GpuChunkMesh>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
@@ -125,7 +158,7 @@ impl Renderer {
         display: OwnedDisplayHandle,
         window: Arc<Window>,
         camera: &Camera,
-        voxel_mesh: &Mesh,
+        voxel_meshes: &[DiagnosticChunkMesh<'_>],
         mesh_diagnostics: VoxelMeshDiagnostics,
     ) -> Result<Self, RendererInitError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
@@ -145,7 +178,7 @@ impl Renderer {
             .map_err(RendererInitError::Adapter)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Veldwake M2 device"),
+                label: Some("Veldwake M3A device"),
                 required_features: wgpu::Features::empty(),
                 ..Default::default()
             })
@@ -203,14 +236,27 @@ impl Renderer {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
+        let model_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("diagnostic chunk model bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(size_of::<ModelUniform>() as u64),
+                },
+                count: None,
+            }],
+        });
         let shader = device.create_shader_module(wgpu::include_wgsl!("diagnostic.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("M2 diagnostic pipeline layout"),
-            bind_group_layouts: &[Some(&camera_layout)],
+            label: Some("M3A diagnostic pipeline layout"),
+            bind_group_layouts: &[Some(&camera_layout), Some(&model_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("M2 diagnostic voxel pipeline"),
+            label: Some("M3A diagnostic voxel pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -244,40 +290,81 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let vertices = voxel_mesh
-            .vertices()
-            .iter()
-            .map(|vertex| Vertex {
-                position: vertex.position,
-                color: diagnostic_color(vertex.voxel),
-            })
-            .collect::<Vec<_>>();
-        let index_count = u32::try_from(voxel_mesh.indices().len())
-            .map_err(|_| RendererInitError::MeshTooLarge(voxel_mesh.indices().len()))?;
-        let vertex_buffer_bytes = size_of_val(vertices.as_slice());
-        let index_buffer_bytes = size_of_val(voxel_mesh.indices());
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("M2 diagnostic voxel vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("M2 diagnostic voxel indices"),
-            contents: bytemuck::cast_slice(voxel_mesh.indices()),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let mut chunk_meshes = Vec::with_capacity(voxel_meshes.len());
+        let mut total_quads = 0;
+        let mut total_vertices = 0;
+        let mut total_indices = 0;
+        let mut vertex_buffer_bytes = 0;
+        let mut index_buffer_bytes = 0;
+        let mut model_buffer_bytes = 0;
+        for diagnostic_mesh in voxel_meshes {
+            let vertices = diagnostic_mesh
+                .mesh
+                .vertices()
+                .iter()
+                .map(|vertex| Vertex {
+                    position: vertex.position,
+                    color: diagnostic_color(vertex.voxel),
+                })
+                .collect::<Vec<_>>();
+            let index_count =
+                u32::try_from(diagnostic_mesh.mesh.indices().len()).map_err(|_| {
+                    RendererInitError::MeshTooLarge(diagnostic_mesh.mesh.indices().len())
+                })?;
+            total_quads += diagnostic_mesh.mesh.quad_count();
+            total_vertices += vertices.len();
+            total_indices += diagnostic_mesh.mesh.indices().len();
+            vertex_buffer_bytes += size_of_val(vertices.as_slice());
+            index_buffer_bytes += size_of_val(diagnostic_mesh.mesh.indices());
+            model_buffer_bytes += size_of::<ModelUniform>();
+
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3A diagnostic chunk vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3A diagnostic chunk indices"),
+                contents: bytemuck::cast_slice(diagnostic_mesh.mesh.indices()),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3A diagnostic chunk model uniform"),
+                contents: bytemuck::bytes_of(&ModelUniform::from_chunk_coord(
+                    diagnostic_mesh.coord,
+                )),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("M3A diagnostic chunk model bind group"),
+                layout: &model_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: model_buffer.as_entire_binding(),
+                }],
+            });
+            chunk_meshes.push(GpuChunkMesh {
+                vertex_buffer,
+                index_buffer,
+                index_count,
+                model_bind_group,
+                _model_buffer: model_buffer,
+            });
+        }
         info!(
             chunk_edge = CHUNK_EDGE,
+            chunks = mesh_diagnostics.chunk_count,
             solids = mesh_diagnostics.solid_count,
             fingerprint = %format_args!("{:#018x}", mesh_diagnostics.fingerprint),
-            quads = voxel_mesh.quad_count(),
-            vertices = vertices.len(),
-            indices = voxel_mesh.indices().len(),
+            quads = total_quads,
+            vertices = total_vertices,
+            indices = total_indices,
             mesh_cpu_time_us = mesh_diagnostics.mesh_cpu_time.as_micros(),
             vertex_buffer_bytes,
             index_buffer_bytes,
-            total_upload_bytes = vertex_buffer_bytes + index_buffer_bytes,
-            "M2 diagnostic voxel mesh uploaded once"
+            model_buffer_bytes,
+            total_upload_bytes = vertex_buffer_bytes + index_buffer_bytes + model_buffer_bytes,
+            "M3A diagnostic chunk meshes uploaded once"
         );
         let depth_view = create_depth_view(&device, config.width, config.height);
 
@@ -292,9 +379,7 @@ impl Renderer {
             size,
             configured: false,
             pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count,
+            chunk_meshes,
             camera_buffer,
             camera_bind_group,
             depth_view,
@@ -382,11 +467,11 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("M2 diagnostic frame encoder"),
+                label: Some("M3A diagnostic frame encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("M2 diagnostic voxel pass"),
+                label: Some("M3A diagnostic voxel pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -415,9 +500,12 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
+            for chunk in &self.chunk_meshes {
+                pass.set_bind_group(1, &chunk.model_bind_group, &[]);
+                pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
         }
         self.queue.submit([encoder.finish()]);
         self.window.pre_present_notify();
@@ -579,8 +667,19 @@ fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::Composi
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnostic_color, select_alpha_mode, select_present_mode, select_surface_format};
-    use veldwake_voxel::VoxelId;
+    use super::{
+        ModelUniform, diagnostic_color, select_alpha_mode, select_present_mode,
+        select_surface_format,
+    };
+    use veldwake_voxel::{ChunkCoord, VoxelId};
+
+    #[test]
+    fn chunk_model_translation_preserves_signed_chunk_offsets() {
+        assert_eq!(
+            ModelUniform::from_chunk_coord(ChunkCoord::new(-1, 2, 3)).translation,
+            [-32.0, 64.0, 96.0, 0.0]
+        );
+    }
 
     #[test]
     fn diagnostic_voxel_colors_are_stable_and_distinct() {
