@@ -43,6 +43,8 @@ Integrated shared memory and thermally constrained mobile CPU/GPU behavior make 
 | rustfmt | 1.9.0-stable |
 | Clippy | 0.1.98 |
 | cargo-nextest | 0.9.144, installed with `cargo install --locked`; installer emitted warnings for two yanked transitive lockfile packages—see note below |
+| cargo-deny | 0.20.2, installed with `cargo install --locked` for M1 dependency license/source/advisory/duplicate checks |
+| cargo-audit | 0.22.2, installed with `cargo install --locked` for an independent RustSec audit |
 | Visual Studio Build Tools | 2022 17.14.39; complete/launchable; VC x86/x64 component present |
 | MSVC toolset | 14.44.35207; `link.exe` present |
 | Windows SDK | 10.0.26100.0 |
@@ -61,7 +63,6 @@ The locked `cargo-nextest 0.9.144` installation warned that its upstream lockfil
 
 - Vulkan SDK: no current need; Vulkan runtime already comes from the driver.
 - CMake: no current dependency requires it.
-- `cargo-deny` / `cargo-audit`: configure when the game workspace has third-party dependencies so policies produce meaningful results.
 - `cargo-llvm-cov` / `llvm-tools-preview`: configure when behavior tests can yield meaningful coverage.
 - `cargo-bloat`, `sccache`, Tracy: defer until binary size/build latency/profiling justify them.
 - `cargo-fuzz`: Windows/native workflow limitations and absence of parsers make it premature; reassess with a supported target/CI strategy.

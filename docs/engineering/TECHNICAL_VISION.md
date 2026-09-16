@@ -6,7 +6,7 @@ Status: **Mixed**; labels below distinguish accepted choices from candidates.
 
 - Rust 2024 on an exact pinned stable toolchain; nightly only for a specific documented tool.
 - Custom engine architecture, not a ready-made game engine.
-- `wgpu` + WGSL, `winit`, and `glam` for the initial renderer/platform milestone.
+- `wgpu 30.0.1` + WGSL, `winit 0.30.13`, and `glam 0.33.7` for the initial renderer/platform milestone. M1 compiles only the native D3D12 backend and keeps default backend features disabled.
 - Strong separation of authoritative simulation from presentation.
 - Structured logging with `tracing` when runtime work begins.
 - Versioned persisted formats and seed/version-aware generation.
@@ -31,4 +31,4 @@ The historical concept proposes 1080p/60 FPS on “mid-range” hardware without
 
 ## Platform intent
 
-Windows/D3D12 is the initial audited path. `wgpu` keeps Vulkan and Metal paths possible, but first prototypes need not support every backend or platform. A Vulkan SDK is not required merely to use `wgpu` on Windows.
+Windows/D3D12 is the initial validated path. The M1 client deliberately compiles only D3D12; architectural boundaries keep later Vulkan/Metal support possible without treating unbuilt backends as supported. A Vulkan SDK is not required merely to use `wgpu` on Windows.

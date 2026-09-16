@@ -1,0 +1,19 @@
+[package]
+name = "veldwake-client"
+version = "0.0.0"
+description = "Veldwake presentation client and M1 diagnostic renderer"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytemuck = { version = "=1.25.2", default-features = false, features = ["derive"] }
+glam = { version = "=0.33.7", default-features = false, features = ["std"] }
+pollster = { version = "=1.0.1", default-features = false }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["dx12", "std", "wgsl"] }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+
+[lints]
+workspace = true

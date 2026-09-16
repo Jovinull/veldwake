@@ -50,6 +50,9 @@ client ----------------------> commands/intents to authority
 - Global simulation is aggregate and low frequency; local simulation materializes detail.
 - Headless server and generation tests operate without GPU/window/audio devices.
 
-## Initial physical structure
+## Current physical structure
 
-M0 contains one dependency-free `foundation` crate to validate Rust policy. M1 should introduce only the minimum application/platform/render boundaries needed for a window and frame loop. The large conceptual crate tree in the historical transcript is direction, not a scaffold instruction.
+- `crates/foundation`: dependency-free policy anchor; still intentionally small.
+- `apps/client`: the M1 presentation executable. Internal `app`, `renderer`, `camera`, `input`, and `diagnostics` modules keep platform translation and GPU work away from pure camera/input behavior.
+
+The M1 renderer owns only disposable GPU/window state and the diagnostic cube. It does not own world, voxel, simulation, or gameplay authority. A future domain crate is justified only when M2 establishes a real GPU-independent data boundary; the large conceptual tree remains direction, not a scaffold instruction.

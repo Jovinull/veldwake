@@ -6,7 +6,7 @@ The renderer should present stylized high-quality voxel fantasy while remaining 
 
 ## Capability progression
 
-1. Window/device/surface/frame/input/camera and adapter diagnostics.
+1. Window/device/surface/frame/input/camera and adapter diagnostics. **Complete in M1** with a disposable code-generated cube and no game-content claim.
 2. One chunk and an explicit meshing baseline.
 3. Streaming, prioritized async generation/meshing, residency, and initial LOD.
 4. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.

@@ -1,6 +1,6 @@
 # M1 — Rendering Foundation
 
-Status: **In progress**  
+Status: **Complete locally**
 Started: 2026-09-16
 
 ## Scope
@@ -32,7 +32,7 @@ Verified against crates.io/Cargo metadata on 2026-09-16:
 | `winit` | 0.30.13 | `rwh_06`; defaults off | Stable current application/window lifecycle; avoids Unix defaults in Windows-first M1. |
 | `glam` | 0.33.7 | `std`; defaults off | GPU-independent vectors/matrices and camera math. |
 | `tracing` | 0.1.44 | `std`; defaults off | Structured diagnostics without unused attribute macros. |
-| `tracing-subscriber` | 0.3.23 | `fmt`, `env-filter`, `ansi`; defaults off | Concise output and `RUST_LOG` filtering. |
+| `tracing-subscriber` | 0.3.23 | `fmt`, `env-filter`; defaults off | Concise output and `RUST_LOG` filtering without an unnecessary ANSI dependency. |
 | `pollster` | 1.0.1 | none; defaults off | Blocks only during one-time GPU initialization without an async runtime. |
 | `bytemuck` | 1.25.2 | `derive`; defaults off | Safe POD encoding for immutable vertices and camera uniforms under the no-unsafe policy. |
 
@@ -48,4 +48,40 @@ On the audited Windows desktop: launch with `RUST_LOG=info`, confirm adapter/bac
 
 ## Actual results
 
-Pending implementation and validation.
+The workspace now has one `veldwake-client` executable with internal application, diagnostics, input, camera, and renderer modules. The unchanged `veldwake-foundation` crate remains dependency-free. No new ADR was required because this physical shape implements ADR-0001/0002 rather than changing their durable decisions.
+
+The renderer creates a hidden window during `resumed`, initializes the compatible adapter/device/surface, configures only nonzero sizes, then displays the window. It renders a 24-vertex/36-index colored diagnostic cube from Rust constants through an embedded WGSL shader and `Depth32Float` depth target. Surface format/present/alpha choices prefer sRGB/FIFO/Opaque with deterministic capability fallbacks. Lost/outdated/suboptimal surfaces are reconfigured, timeout is logged, and out-of-memory, internal, validation, or device-loss errors cause an observable fatal exit.
+
+The pure camera/input boundary supplies normalized six-axis movement, right-mouse yaw/pitch, pitch limits, finite perspective projection, aspect guards, focus reset, and a 100 ms presentation-delta clamp. Twelve headless tests cover this behavior plus key and surface-option translation. The plain nextest gate replaced the temporary M0 empty-suite exception everywhere current.
+
+### Windows host smoke test
+
+On the audited Windows desktop, the client selected:
+
+- adapter: `Intel(R) Iris(R) Xe Graphics` (integrated);
+- backend: `Dx12`;
+- driver: `32.0.101.7088`;
+- surface: `Bgra8UnormSrgb`, `Fifo`, `Opaque`;
+- initial physical surface size: 1600 × 900 on the observed run.
+
+The code-generated cube was visually inspected with distinct front/top faces and correct perspective/depth. WASD movement and right-mouse look changed the view. The window was repeatedly resized (900 × 650, 1400 × 820, and 1000 × 700), minimized, and restored without a crash or validation error. During a held-key focus transition, the debug log recorded input reset; two subsequent controlled captures were byte-identical, confirming movement was not stuck. Escape requested a clean shutdown. Presentation telemetry near the display refresh rate was observed for this trivial scene but is not a benchmark or a 60 FPS claim.
+
+### Dependency policy
+
+`cargo-deny 0.20.2` checks the actual Windows dependency graph for RustSec advisories, an explicit encountered-license allowlist, denied wildcards/unknown sources, and duplicate visibility. It passes with warnings for two upstream duplicate pairs: `hashbrown` and `syn`. `cargo-audit 0.22.2` independently scans `Cargo.lock` and reports no known vulnerabilities. Workspace crates remain unpublished and are ignored by the dependency-license gate; this does not select a project license.
+
+The selected feature tree contains `wgpu` `dx12`/`std`/`wgsl` and `winit` `rwh_06`; it does not enable Vulkan, Metal, GLES, or WebGPU backends.
+
+### Final validation
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo build --workspace --all-features` | PASS |
+| `cargo nextest run --workspace` | PASS — 12/12 |
+| `cargo test --workspace --doc` | PASS |
+| `cargo metadata --format-version 1 --no-deps` | PASS |
+| `cargo deny check` | PASS with the documented duplicate warnings |
+| `cargo audit` | PASS — no known vulnerabilities in 204 locked dependencies |
+| Windows graphical smoke test | PASS — visual/lifecycle/input checks above; Escape exit code 0 |
