@@ -1,6 +1,6 @@
 # M1 — Rendering Foundation
 
-Status: **Implementation complete on `feat/m1-rendering-foundation`; pending remote PR validation and merge**
+Status: **Complete; merged into `main` through [PR #1](https://github.com/Jovinull/veldwake/pull/1) at `ef653238be903daa6a1cbf74a9e31e3465cf8b57`**
 Started: 2026-09-16
 
 ## Scope

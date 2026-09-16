@@ -66,6 +66,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`agents/SKILLS.md`](agents/SKILLS.md)
 - [`planning/ROADMAP.md`](planning/ROADMAP.md)
 - [`planning/M1_RENDERING_FOUNDATION.md`](planning/M1_RENDERING_FOUNDATION.md)
+- [`planning/M2_VOXEL_PROTOTYPE.md`](planning/M2_VOXEL_PROTOTYPE.md)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)
