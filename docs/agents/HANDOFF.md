@@ -38,6 +38,7 @@ Continue M3C from its section in [`planning/M3_STREAMING_WORLD.md`](../planning/
 - Keep every new mesher or slab path generic over `EDGE`; the 32-edge fingerprints and topology tests are the tripwire for accidental edge-specific code.
 - `Lod1` meshes are in 16-cell units; uploading them unscaled would draw a quarter-size chunk. Do not enable `Banded` in the client before the renderer applies the level scale.
 - The seam rule's orientation convention is `from_neighbor`'s: `face` is the direction from the center, and slab constructors pick the neighbor's touching layers themselves. The first seam oracle got this backwards; the tests now encode the convention.
+- Retries are for the host linker lock only (`LNK1104`, KI-008). A failing assertion, panic, test, Clippy, or build error is evidence and is never re-run until it passes.
 - The no-LOD wider-radius baseline is part of M3C's evidence, not an afterthought; LOD stays enabled only if the recorded decision rule passes on the audited host.
 - Treat integrated Intel Iris Xe as one conservative host, not the target matrix.
 - Do not change repository visibility, replace/configure remotes, publish releases, choose a license, or present the working title as cleared without owner authorization.
