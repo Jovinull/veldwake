@@ -1,6 +1,6 @@
 use std::{fmt, mem::size_of_val};
 
-use crate::{CHUNK_EDGE, COARSE_EDGE, Chunk, DenseGrid, GridCoord, VoxelId};
+use crate::{CHUNK_EDGE, COARSE_EDGE, Chunk, CoarseTally, DenseGrid, GridCoord, VoxelId};
 
 /// The six outward faces in right-handed, Y-up local chunk space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +206,38 @@ impl FaceSlab<COARSE_EDGE> {
             cells: Some(cells.into_boxed_slice()),
         }
     }
+
+    /// Coverage mask a coarse center sees across a seam to a neighbor
+    /// presented at fine resolution. A coarse cell is marked covered (solid,
+    /// carrying the majority material) only when all four fine cells of the
+    /// neighbor's touching layer are solid; then the coarse seam face is
+    /// suppressed because the fine geometry closes it completely. Partial
+    /// coverage leaves the cell AIR so the whole coarse quad stays, behind the
+    /// fine solids where they exist; the quad is never subdivided.
+    #[must_use]
+    pub fn fine_coverage_of(face: Face, neighbor: &Chunk) -> Self {
+        let mut cells = Vec::with_capacity(COARSE_EDGE * COARSE_EDGE);
+        for secondary in 0..COARSE_EDGE {
+            for primary in 0..COARSE_EDGE {
+                let mut tally = CoarseTally::new();
+                for ds in 0..2 {
+                    for dp in 0..2 {
+                        let (x, y, z) =
+                            fine_layer_coord(face, 0, 2 * primary + dp, 2 * secondary + ds);
+                        tally.add(neighbor.read_local(local_coord_from_meshing(x, y, z)));
+                    }
+                }
+                cells.push(if tally.solid_count() == 4 {
+                    tally.material()
+                } else {
+                    VoxelId::AIR
+                });
+            }
+        }
+        Self {
+            cells: Some(cells.into_boxed_slice()),
+        }
+    }
 }
 
 impl FaceSlab<CHUNK_EDGE> {
@@ -232,42 +264,32 @@ impl FaceSlab<CHUNK_EDGE> {
     }
 }
 
+/// Fine coordinate in a neighbor's layer `depth` (0 touches the center) for
+/// the seam in `face`, matching `from_neighbor`'s orientation convention.
+fn fine_layer_coord(face: Face, depth: usize, p: usize, sec: usize) -> (usize, usize, usize) {
+    match face {
+        Face::NegativeX => (CHUNK_EDGE - 1 - depth, p, sec),
+        Face::PositiveX => (depth, p, sec),
+        Face::NegativeY => (p, CHUNK_EDGE - 1 - depth, sec),
+        Face::PositiveY => (p, depth, sec),
+        Face::NegativeZ => (p, sec, CHUNK_EDGE - 1 - depth),
+        Face::PositiveZ => (p, sec, depth),
+    }
+}
+
 /// Material of the coarse cell `(primary, secondary)` on `face` of `neighbor`,
-/// computed from its 2×2×2 fine block with the `downsample_2x` rules.
+/// computed from its 2×2×2 fine block with the shared [`CoarseTally`] rule.
 fn coarse_face_material(face: Face, neighbor: &Chunk, primary: usize, secondary: usize) -> VoxelId {
-    let mut solids: [(VoxelId, u8); 8] = [(VoxelId::AIR, 0); 8];
-    let mut distinct = 0;
+    let mut tally = CoarseTally::new();
     for depth in 0..2 {
         for ds in 0..2 {
             for dp in 0..2 {
-                let (p, sec) = (2 * primary + dp, 2 * secondary + ds);
-                let (x, y, z) = match face {
-                    Face::NegativeX => (CHUNK_EDGE - 1 - depth, p, sec),
-                    Face::PositiveX => (depth, p, sec),
-                    Face::NegativeY => (p, CHUNK_EDGE - 1 - depth, sec),
-                    Face::PositiveY => (p, depth, sec),
-                    Face::NegativeZ => (p, sec, CHUNK_EDGE - 1 - depth),
-                    Face::PositiveZ => (p, sec, depth),
-                };
-                let fine = neighbor.read_local(local_coord_from_meshing(x, y, z));
-                if fine.is_air() {
-                    continue;
-                }
-                match solids[..distinct].iter_mut().find(|(id, _)| *id == fine) {
-                    Some((_, count)) => *count += 1,
-                    None => {
-                        solids[distinct] = (fine, 1);
-                        distinct += 1;
-                    }
-                }
+                let (x, y, z) = fine_layer_coord(face, depth, 2 * primary + dp, 2 * secondary + ds);
+                tally.add(neighbor.read_local(local_coord_from_meshing(x, y, z)));
             }
         }
     }
-    solids[..distinct]
-        .iter()
-        .copied()
-        .min_by_key(|&(id, count)| (std::cmp::Reverse(count), id.0))
-        .map_or(VoxelId::AIR, |(id, _)| id)
+    tally.material()
 }
 
 /// Self-contained input for detached exposed-face meshing.
@@ -842,7 +864,19 @@ mod tests {
                     fine_faces += 1;
                 }
                 if block_solid && primary % 2 == 0 && secondary % 2 == 0 {
-                    coarse_faces += 1;
+                    // Suppressed only when the fine seam layer fully covers it.
+                    let covered = (0..4).all(|bit| {
+                        let (x, y, z) = fine_layer_coord(
+                            face.opposite(),
+                            0,
+                            primary + (bit & 1),
+                            secondary + (bit >> 1),
+                        );
+                        fine.read(x, y, z).is_ok_and(|voxel| !voxel.is_air())
+                    });
+                    if !covered {
+                        coarse_faces += 1;
+                    }
                 }
             }
         }
@@ -861,9 +895,14 @@ mod tests {
         });
         let fine_mesh =
             mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(fine.clone(), fine_faces));
-        // Coarse side: toward a fine neighbor the seam is always emitted.
-        let coarse_faces: [FaceSlab<COARSE_EDGE>; 6] =
-            std::array::from_fn(|_| FaceSlab::known_air());
+        // Coarse side: toward the fine neighbor the seam uses the coverage mask.
+        let coarse_faces: [FaceSlab<COARSE_EDGE>; 6] = std::array::from_fn(|index| {
+            if Face::ALL[index] == face.opposite() {
+                FaceSlab::fine_coverage_of(face.opposite(), fine)
+            } else {
+                FaceSlab::known_air()
+            }
+        });
         let coarse_mesh = mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(
             coarse_source.downsample_2x(),
             coarse_faces,
@@ -973,6 +1012,73 @@ mod tests {
                     (false, false) => (0, 0),
                 };
                 assert_eq!((fine_count, coarse_count), expected_pair, "{face:?}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coarse_seam_is_suppressed_only_under_full_fine_coverage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for face in Face::ALL {
+            // The coarse source is solid throughout its touching block so the
+            // coarse face candidate exists; the fine side covers 0..=4 cells.
+            let touching = boundary_coord(face.opposite())?;
+            let (tx, ty, tz) = (touching.x(), touching.y(), touching.z());
+            let mut coarse_source = Chunk::empty();
+            assert_eq!(
+                coarse_source.write_local(touching, VoxelId(7)),
+                VoxelId::AIR
+            );
+            let fine_base = boundary_coord(face)?;
+            let (fx, fy, fz) = (fine_base.x(), fine_base.y(), fine_base.z());
+            // Fine cells covering coarse block (tx/2, ty/2, tz/2) on the seam layer.
+            let cells: Vec<LocalCoord> = (0..4)
+                .map(|bit| {
+                    let (a, b) = (bit & 1, bit >> 1);
+                    match face {
+                        Face::NegativeX | Face::PositiveX => {
+                            LocalCoord::new(fx, (fy / 2) * 2 + a, (fz / 2) * 2 + b)
+                        }
+                        Face::NegativeY | Face::PositiveY => {
+                            LocalCoord::new((fx / 2) * 2 + a, fy, (fz / 2) * 2 + b)
+                        }
+                        Face::NegativeZ | Face::PositiveZ => {
+                            LocalCoord::new((fx / 2) * 2 + a, (fy / 2) * 2 + b, fz)
+                        }
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            // Only the two seam-tangential axes must address the same block; the
+            // normal axis differs by construction (touching layer vs seam layer).
+            let tangential = |x: usize, y: usize, z: usize| match face {
+                Face::NegativeX | Face::PositiveX => (y / 2, z / 2),
+                Face::NegativeY | Face::PositiveY => (x / 2, z / 2),
+                Face::NegativeZ | Face::PositiveZ => (x / 2, y / 2),
+            };
+            assert_eq!(tangential(tx, ty, tz), tangential(fx, fy, fz), "same block");
+            for covered in 0..=4 {
+                let mut fine = Chunk::empty();
+                for cell in &cells[..covered] {
+                    assert_eq!(fine.write_local(*cell, VoxelId(2)), VoxelId::AIR);
+                }
+                let (expect_fine, expect_coarse) =
+                    mixed_seam_expectation(face, &fine, &coarse_source);
+                let (fine_mesh, coarse_mesh) = mixed_seam_meshes(face, &fine, &coarse_source);
+                let (axis, fine_plane, coarse_plane) = seam_axis_and_planes(face);
+                let fine_count = seam_face_count(&fine_mesh, face, fine_plane, axis);
+                let coarse_count =
+                    seam_face_count(&coarse_mesh, face.opposite(), coarse_plane, axis);
+                assert_eq!(fine_count, expect_fine, "{face:?} coverage {covered}/4");
+                assert_eq!(coarse_count, expect_coarse, "{face:?} coverage {covered}/4");
+                // Fine cells never emit toward a solid block; the coarse quad is
+                // whole while coverage is partial and gone only at 4/4.
+                assert_eq!(fine_count, 0, "{face:?} coverage {covered}/4");
+                assert_eq!(
+                    coarse_count,
+                    usize::from(covered < 4),
+                    "{face:?} coverage {covered}/4"
+                );
             }
         }
         Ok(())

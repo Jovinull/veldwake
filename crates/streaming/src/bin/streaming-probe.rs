@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use veldwake_streaming::{StreamingConfig, StreamingRuntime};
+use veldwake_streaming::{StreamingConfig, StreamingRuntime, TimingStat};
 use veldwake_voxel::ChunkCoord;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,4 +85,21 @@ fn report(profile: &str, phase: &str, runtime: &StreamingRuntime, started: Insta
         metrics.snapshot_bytes_dispatched,
         started.elapsed().as_micros()
     );
+    println!(
+        "profile={profile} phase={phase} snapshot_build={} lod1_derivation={} worker_mesh_lod0={} worker_mesh_lod1={}",
+        timing(&metrics.snapshot_build),
+        timing(&metrics.lod1_derivation),
+        timing(&metrics.worker_mesh_lod0),
+        timing(&metrics.worker_mesh_lod1)
+    );
+}
+
+fn timing(stat: &TimingStat) -> String {
+    format!(
+        "count:{}/total_us:{}/mean_us:{}/max_us:{}",
+        stat.count,
+        stat.total_us,
+        stat.mean_us(),
+        stat.max_us
+    )
 }

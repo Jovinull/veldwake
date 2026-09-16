@@ -164,47 +164,96 @@ impl<const EDGE: usize> DenseGrid<EDGE> {
     }
 }
 
+/// The single coarsening rule shared by `Chunk::downsample_2x` and the seam
+/// slab derivations: occupancy is conservative (any solid voxel makes the
+/// coarse cell solid) and the material is the most frequent solid `VoxelId`,
+/// ties resolved by the lowest ID.
+#[derive(Clone, Copy, Debug)]
+pub struct CoarseTally {
+    solids: [(VoxelId, u8); 8],
+    distinct: usize,
+    seen: u8,
+}
+
+impl CoarseTally {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            solids: [(VoxelId::AIR, 0); 8],
+            distinct: 0,
+            seen: 0,
+        }
+    }
+
+    /// Adds one fine voxel; at most eight per tally.
+    pub fn add(&mut self, fine: VoxelId) {
+        debug_assert!(self.seen < 8, "a coarse tally covers at most 2×2×2 voxels");
+        self.seen += 1;
+        if fine.is_air() {
+            return;
+        }
+        match self.solids[..self.distinct]
+            .iter_mut()
+            .find(|(id, _)| *id == fine)
+        {
+            Some((_, count)) => *count += 1,
+            None => {
+                self.solids[self.distinct] = (fine, 1);
+                self.distinct += 1;
+            }
+        }
+    }
+
+    /// Number of solid voxels added so far.
+    #[must_use]
+    pub fn solid_count(&self) -> u8 {
+        self.solids[..self.distinct]
+            .iter()
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// The coarse material: AIR when no solid was added.
+    #[must_use]
+    pub fn material(&self) -> VoxelId {
+        self.solids[..self.distinct]
+            .iter()
+            .copied()
+            .min_by_key(|&(id, count)| (std::cmp::Reverse(count), id.0))
+            .map_or(VoxelId::AIR, |(id, _)| id)
+    }
+}
+
+impl Default for CoarseTally {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chunk {
-    /// Derives the coarse grid: each coarse cell covers `2×2×2` chunk voxels.
-    ///
-    /// Occupancy is conservative (solid if any covered voxel is solid) so
-    /// one-voxel features survive; the material is the most frequent solid ID
-    /// among the covered voxels, ties resolved by the lowest ID. The result
-    /// depends only on local content, never on the chunk's world coordinate.
+    /// Derives the coarse grid: each coarse cell covers `2×2×2` chunk voxels
+    /// under the [`CoarseTally`] rule. The result depends only on local
+    /// content, never on the chunk's world coordinate.
     #[must_use]
     pub fn downsample_2x(&self) -> CoarseGrid {
         let mut coarse = CoarseGrid::empty();
         for z in 0..COARSE_EDGE {
             for y in 0..COARSE_EDGE {
                 for x in 0..COARSE_EDGE {
-                    let mut solids: [(VoxelId, u8); 8] = [(VoxelId::AIR, 0); 8];
-                    let mut distinct = 0;
+                    let mut tally = CoarseTally::new();
                     for dz in 0..2 {
                         for dy in 0..2 {
                             for dx in 0..2 {
-                                let fine = self.read_local(local_coord_from_loop(
+                                tally.add(self.read_local(local_coord_from_loop(
                                     2 * x + dx,
                                     2 * y + dy,
                                     2 * z + dz,
-                                ));
-                                if fine.is_air() {
-                                    continue;
-                                }
-                                match solids[..distinct].iter_mut().find(|(id, _)| *id == fine) {
-                                    Some((_, count)) => *count += 1,
-                                    None => {
-                                        solids[distinct] = (fine, 1);
-                                        distinct += 1;
-                                    }
-                                }
+                                )));
                             }
                         }
                     }
-                    let winner = solids[..distinct]
-                        .iter()
-                        .copied()
-                        .min_by_key(|&(id, count)| (std::cmp::Reverse(count), id.0));
-                    if let Some((material, _)) = winner {
+                    let material = tally.material();
+                    if !material.is_air() {
                         let previous =
                             coarse.write_local(coarse_coord_from_loop(x, y, z), material);
                         debug_assert!(previous.is_air());
@@ -339,6 +388,21 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[test]
+    fn coarse_tally_counts_solids_and_picks_the_material() {
+        let mut tally = CoarseTally::new();
+        assert_eq!(tally.material(), VoxelId::AIR);
+        for id in [0, 4, 0, 9, 4, 0, 9, 1] {
+            tally.add(VoxelId(id));
+        }
+        assert_eq!(tally.solid_count(), 5);
+        assert_eq!(
+            tally.material(),
+            VoxelId(4),
+            "tie between 4 and 9 -> lowest"
+        );
     }
 
     #[test]

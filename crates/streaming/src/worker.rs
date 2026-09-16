@@ -1,6 +1,7 @@
 use std::{
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use veldwake_voxel::{
@@ -62,6 +63,8 @@ pub(crate) enum WorkerResult {
 pub(crate) struct MeshResult {
     pub(crate) stamp: MeshStamp,
     pub(crate) mesh: Mesh,
+    /// Wall time the worker spent inside the mesher for this job.
+    pub(crate) mesh_time: Duration,
 }
 
 pub(crate) struct Worker {
@@ -127,10 +130,15 @@ fn worker_loop(
                 token,
                 source: source.load(coord),
             },
-            WorkerJob::Mesh(job) => WorkerResult::Mesh(Box::new(MeshResult {
-                stamp: job.stamp,
-                mesh: job.snapshot.mesh(),
-            })),
+            WorkerJob::Mesh(job) => {
+                let started = Instant::now();
+                let mesh = job.snapshot.mesh();
+                WorkerResult::Mesh(Box::new(MeshResult {
+                    stamp: job.stamp,
+                    mesh,
+                    mesh_time: started.elapsed(),
+                }))
+            }
         };
         if results.send(result).is_err() {
             break;

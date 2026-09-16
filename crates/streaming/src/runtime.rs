@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
     fmt,
+    time::{Duration, Instant},
 };
 
 use veldwake_voxel::{
@@ -51,9 +52,42 @@ pub struct RuntimeMetrics {
     pub eviction_budget_hits: u64,
     /// Render-demand chunks whose desired level changed.
     pub lod_swaps: u64,
-    /// Stale mesh results whose level no longer matches the record; a subset
-    /// of `stale_mesh_results`, classified after the same validation.
+    /// Stale mesh results attributable to a level change of the center or of
+    /// a neighbor's presentation; a subset of `stale_mesh_results`, classified
+    /// after the same validation. A neighbor that is no longer resident cannot
+    /// be compared and is not counted.
     pub stale_lod_results: u64,
+    /// Orchestration time spent building owned mesh snapshots (any level).
+    pub snapshot_build: TimingStat,
+    /// Portion of snapshot building spent deriving `Lod1` data: the center
+    /// `downsample_2x` and the coarse/occupancy/coverage slabs.
+    pub lod1_derivation: TimingStat,
+    /// Worker time inside the mesher for `Lod0` jobs.
+    pub worker_mesh_lod0: TimingStat,
+    /// Worker time inside the mesher for `Lod1` jobs.
+    pub worker_mesh_lod1: TimingStat,
+}
+
+/// Count, total, and maximum of a measured duration, in microseconds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TimingStat {
+    pub count: u64,
+    pub total_us: u64,
+    pub max_us: u64,
+}
+
+impl TimingStat {
+    pub fn record(&mut self, elapsed: Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.count += 1;
+        self.total_us = self.total_us.saturating_add(micros);
+        self.max_us = self.max_us.max(micros);
+    }
+
+    #[must_use]
+    pub fn mean_us(&self) -> u64 {
+        self.total_us.checked_div(self.count).unwrap_or(0)
+    }
 }
 
 /// One aggregate observation of runtime state, cheap enough to sample per frame.
@@ -161,10 +195,32 @@ struct LoadQueueEntry {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct MeshQueueEntry {
-    priority: Reverse<(u128, ChunkCoord)>,
+    /// `Lod0` work sorts before `Lod1` work, then nearest first.
+    priority: Reverse<(u8, u128, ChunkCoord)>,
     coord: ChunkCoord,
     token: RequestToken,
     mesh_generation: u64,
+    lod: LodLevel,
+}
+
+/// What `dispatch_one` should do next. Pure so the contract is testable:
+/// a ready `Lod0` mesh first, then a ready load, then a ready `Lod1` mesh;
+/// after `MESH_BURST_BEFORE_LOAD` consecutive meshes a ready load goes first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Dispatch {
+    Mesh,
+    Load,
+    Idle,
+}
+
+const fn choose_dispatch(mesh: Option<LodLevel>, load_ready: bool, consecutive: u8) -> Dispatch {
+    match (mesh, load_ready) {
+        (Some(LodLevel::Lod0), true) if consecutive >= MESH_BURST_BEFORE_LOAD => Dispatch::Load,
+        (Some(LodLevel::Lod0), _) => Dispatch::Mesh,
+        (Some(LodLevel::Lod1), true) | (None, true) => Dispatch::Load,
+        (Some(LodLevel::Lod1), false) => Dispatch::Mesh,
+        (None, false) => Dispatch::Idle,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,10 +643,11 @@ impl StreamingRuntime {
             }
             if let MeshState::Dirty(stamp) = record.mesh {
                 self.mesh_queue.push(MeshQueueEntry {
-                    priority: self.priority(coord),
+                    priority: self.mesh_priority(coord, stamp.lod),
                     coord,
                     token: record.token,
                     mesh_generation: stamp.mesh_generation,
+                    lod: stamp.lod,
                 });
             }
         }
@@ -643,10 +700,11 @@ impl StreamingRuntime {
                 .ok_or(RuntimeError::WorkerDisconnected)?;
             record.mesh = MeshState::Dirty(stamp);
             self.mesh_queue.push(MeshQueueEntry {
-                priority: self.priority(coord),
+                priority: self.mesh_priority(coord, stamp.lod),
                 coord,
                 token: stamp.request_token,
                 mesh_generation: stamp.mesh_generation,
+                lod: stamp.lod,
             });
         }
         Ok(())
@@ -709,10 +767,18 @@ impl StreamingRuntime {
     /// neighbor, and a coarse center always emits its seam toward a
     /// `Lod0`-presented neighbor. Content-only neighbors supply voxels at the
     /// center's own resolution; unavailable neighbors still block.
-    fn snapshot(&self, stamp: MeshStamp) -> Option<MeshSnapshot> {
+    /// Returns the snapshot and the time spent deriving `Lod1` data inside it.
+    fn snapshot(&self, stamp: MeshStamp) -> Option<(MeshSnapshot, Duration)> {
         if self.current_mesh_stamp(stamp.coord)? != stamp {
             return None;
         }
+        let mut derivation = Duration::ZERO;
+        let mut derive = |work: &mut dyn FnMut() -> MeshSnapshotSlab| {
+            let started = Instant::now();
+            let slab = work();
+            derivation += started.elapsed();
+            slab
+        };
         let center_record = self.records.get(&stamp.coord)?;
         let ResidencyState::CpuResident { chunk: center, .. } = &center_record.residency else {
             return None;
@@ -733,45 +799,67 @@ impl StreamingRuntime {
         };
         match stamp.lod {
             LodLevel::Lod0 => {
-                let slab = |face: Face| -> Option<FaceSlab<CHUNK_EDGE>> {
+                let mut slab = |face: Face| -> Option<FaceSlab<CHUNK_EDGE>> {
                     Some(match neighbor_of(face)? {
                         None => FaceSlab::known_air(),
                         Some((chunk, Some(LodLevel::Lod1))) => {
-                            FaceSlab::coarse_occupancy_of(face, chunk)
+                            match derive(&mut || {
+                                MeshSnapshotSlab::Fine(FaceSlab::coarse_occupancy_of(face, chunk))
+                            }) {
+                                MeshSnapshotSlab::Fine(slab) => slab,
+                                MeshSnapshotSlab::Coarse(_) => unreachable!("fine derivation"),
+                            }
                         }
                         Some((chunk, _)) => FaceSlab::from_neighbor(face, chunk),
                     })
                 };
-                Some(MeshSnapshot::Fine(OwnedMeshingSnapshot::new(
-                    center.clone(),
-                    [
-                        slab(Face::NegativeX)?,
-                        slab(Face::PositiveX)?,
-                        slab(Face::NegativeY)?,
-                        slab(Face::PositiveY)?,
-                        slab(Face::NegativeZ)?,
-                        slab(Face::PositiveZ)?,
-                    ],
-                )))
+                let faces = [
+                    slab(Face::NegativeX)?,
+                    slab(Face::PositiveX)?,
+                    slab(Face::NegativeY)?,
+                    slab(Face::PositiveY)?,
+                    slab(Face::NegativeZ)?,
+                    slab(Face::PositiveZ)?,
+                ];
+                Some((
+                    MeshSnapshot::Fine(OwnedMeshingSnapshot::new(center.clone(), faces)),
+                    derivation,
+                ))
             }
             LodLevel::Lod1 => {
-                let slab = |face: Face| -> Option<FaceSlab<COARSE_EDGE>> {
-                    Some(match neighbor_of(face)? {
-                        None | Some((_, Some(LodLevel::Lod0))) => FaceSlab::known_air(),
-                        Some((chunk, _)) => FaceSlab::downsampled_from(face, chunk),
-                    })
+                let mut slab = |face: Face| -> Option<FaceSlab<COARSE_EDGE>> {
+                    let neighbor = neighbor_of(face)?;
+                    let slab = derive(&mut || {
+                        MeshSnapshotSlab::Coarse(match neighbor {
+                            None => FaceSlab::known_air(),
+                            // Toward a fine neighbor the coarse quad stays unless
+                            // the fine seam layer covers it completely.
+                            Some((chunk, Some(LodLevel::Lod0))) => {
+                                FaceSlab::fine_coverage_of(face, chunk)
+                            }
+                            Some((chunk, _)) => FaceSlab::downsampled_from(face, chunk),
+                        })
+                    });
+                    match slab {
+                        MeshSnapshotSlab::Coarse(slab) => Some(slab),
+                        MeshSnapshotSlab::Fine(_) => unreachable!("coarse derivation"),
+                    }
                 };
-                Some(MeshSnapshot::Coarse(OwnedMeshingSnapshot::new(
-                    center.downsample_2x(),
-                    [
-                        slab(Face::NegativeX)?,
-                        slab(Face::PositiveX)?,
-                        slab(Face::NegativeY)?,
-                        slab(Face::PositiveY)?,
-                        slab(Face::NegativeZ)?,
-                        slab(Face::PositiveZ)?,
-                    ],
-                )))
+                let faces = [
+                    slab(Face::NegativeX)?,
+                    slab(Face::PositiveX)?,
+                    slab(Face::NegativeY)?,
+                    slab(Face::PositiveY)?,
+                    slab(Face::NegativeZ)?,
+                    slab(Face::PositiveZ)?,
+                ];
+                let started = Instant::now();
+                let coarse_center = center.downsample_2x();
+                derivation += started.elapsed();
+                Some((
+                    MeshSnapshot::Coarse(OwnedMeshingSnapshot::new(coarse_center, faces)),
+                    derivation,
+                ))
             }
         }
     }
@@ -783,7 +871,13 @@ impl StreamingRuntime {
                 token,
                 source,
             } => self.integrate_load(coord, token, source),
-            WorkerResult::Mesh(result) => self.integrate_mesh(result.stamp, result.mesh),
+            WorkerResult::Mesh(result) => {
+                match result.stamp.lod {
+                    LodLevel::Lod0 => self.metrics.worker_mesh_lod0.record(result.mesh_time),
+                    LodLevel::Lod1 => self.metrics.worker_mesh_lod1.record(result.mesh_time),
+                }
+                self.integrate_mesh(result.stamp, result.mesh)
+            }
         }
     }
 
@@ -831,11 +925,7 @@ impl StreamingRuntime {
             );
         if !accepted {
             self.metrics.stale_mesh_results += 1;
-            if self
-                .records
-                .get(&stamp.coord)
-                .is_some_and(|record| record.lod != stamp.lod)
-            {
+            if self.is_lod_stale(stamp) {
                 self.metrics.stale_lod_results += 1;
             }
             return Ok(());
@@ -849,33 +939,68 @@ impl StreamingRuntime {
         Ok(())
     }
 
+    /// Level change of the center, or of a neighbor's presentation, explains
+    /// this stale result. Neighbors no longer resident cannot be compared.
+    fn is_lod_stale(&self, stamp: MeshStamp) -> bool {
+        let Some(record) = self.records.get(&stamp.coord) else {
+            return false;
+        };
+        if record.lod != stamp.lod {
+            return true;
+        }
+        Face::ALL.into_iter().any(|face| {
+            let (
+                Some(NeighborStamp::Resident {
+                    presentation: current,
+                    ..
+                }),
+                NeighborStamp::Resident {
+                    presentation: previous,
+                    ..
+                },
+            ) = (
+                self.neighbor_stamp(stamp.coord, face),
+                stamp.neighbors[face as usize],
+            )
+            else {
+                return false;
+            };
+            current != previous
+        })
+    }
+
     fn dispatch_one(&mut self) -> Result<(), RuntimeError> {
         let mesh = self.pop_valid_mesh();
         let load = self.pop_valid_load();
-        let force_load = mesh.is_some()
-            && load.is_some()
-            && self.consecutive_mesh_dispatches >= MESH_BURST_BEFORE_LOAD;
-
-        if force_load {
-            if let Some(mesh) = mesh {
-                self.mesh_queue.push(mesh);
+        let choice = choose_dispatch(
+            mesh.map(|entry| entry.lod),
+            load.is_some(),
+            self.consecutive_mesh_dispatches,
+        );
+        match choice {
+            Dispatch::Load => {
+                if let Some(mesh) = mesh {
+                    if mesh.lod == LodLevel::Lod0 {
+                        self.metrics.fairness_load_dispatches += 1;
+                    }
+                    self.mesh_queue.push(mesh);
+                }
+                match load {
+                    Some(load) => self.dispatch_load(load),
+                    None => Ok(()),
+                }
             }
-            self.metrics.fairness_load_dispatches += 1;
-            if let Some(load) = load {
-                return self.dispatch_load(load);
+            Dispatch::Mesh => {
+                if let Some(load) = load {
+                    self.load_queue.push(load);
+                }
+                match mesh {
+                    Some(mesh) => self.dispatch_mesh(mesh),
+                    None => Ok(()),
+                }
             }
+            Dispatch::Idle => Ok(()),
         }
-
-        if let Some(mesh) = mesh {
-            if let Some(load) = load {
-                self.load_queue.push(load);
-            }
-            return self.dispatch_mesh(mesh);
-        }
-        if let Some(load) = load {
-            return self.dispatch_load(load);
-        }
-        Ok(())
     }
 
     fn dispatch_load(&mut self, entry: LoadQueueEntry) -> Result<(), RuntimeError> {
@@ -913,9 +1038,14 @@ impl StreamingRuntime {
         let Some(stamp) = self.current_mesh_stamp(entry.coord) else {
             return Ok(());
         };
-        let Some(snapshot) = self.snapshot(stamp) else {
+        let build_started = Instant::now();
+        let Some((snapshot, derivation)) = self.snapshot(stamp) else {
             return Ok(());
         };
+        self.metrics.snapshot_build.record(build_started.elapsed());
+        if stamp.lod == LodLevel::Lod1 || derivation > Duration::ZERO {
+            self.metrics.lod1_derivation.record(derivation);
+        }
         let snapshot_bytes = snapshot.payload_bytes();
         let job = WorkerJob::Mesh(Box::new(MeshJob { stamp, snapshot }));
         if let Err(job) = self.worker.try_dispatch(job) {
@@ -967,12 +1097,27 @@ impl StreamingRuntime {
         None
     }
 
+    fn mesh_priority(&self, coord: ChunkCoord, lod: LodLevel) -> Reverse<(u8, u128, ChunkCoord)> {
+        let Reverse((squared, coord)) = self.priority(coord);
+        let rank = match lod {
+            LodLevel::Lod0 => 0,
+            LodLevel::Lod1 => 1,
+        };
+        Reverse((rank, squared, coord))
+    }
+
     fn priority(&self, coord: ChunkCoord) -> Reverse<(u128, ChunkCoord)> {
         let squared = axis_distance(coord.x, self.center.x)
             + axis_distance(coord.y, self.center.y)
             + axis_distance(coord.z, self.center.z);
         Reverse((squared, coord))
     }
+}
+
+/// Either slab type, so one timing closure can wrap both derivations.
+enum MeshSnapshotSlab {
+    Fine(FaceSlab<CHUNK_EDGE>),
+    Coarse(FaceSlab<COARSE_EDGE>),
 }
 
 fn chebyshev_distance(coord: ChunkCoord, center: ChunkCoord) -> u32 {
@@ -1287,10 +1432,11 @@ mod tests {
         runtime.load_queue.push(load);
         runtime.consecutive_mesh_dispatches = MESH_BURST_BEFORE_LOAD;
         runtime.mesh_queue.push(MeshQueueEntry {
-            priority: runtime.priority(load.coord),
+            priority: runtime.mesh_priority(load.coord, LodLevel::Lod0),
             coord: load.coord,
             token: load.token,
             mesh_generation: 0,
+            lod: LodLevel::Lod0,
         });
         // A synthetic valid Dirty state isolates the deterministic selector.
         let stamp = MeshStamp {
@@ -1669,6 +1815,145 @@ mod tests {
         Ok(())
     }
 
+    fn drain_one_result(runtime: &mut StreamingRuntime) -> Result<(), RuntimeError> {
+        for _ in 0..20_000 {
+            if runtime
+                .worker
+                .try_result()
+                .map_err(|()| RuntimeError::WorkerDisconnected)?
+                .is_some()
+            {
+                runtime.in_flight = None;
+                return Ok(());
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        Err(RuntimeError::WorkerDisconnected)
+    }
+
+    fn load_lod1_neighborhood(runtime: &mut StreamingRuntime) -> Result<ChunkCoord, RuntimeError> {
+        let coarse = ChunkCoord::new(3, 0, 0);
+        force_load(runtime, coarse, DiagnosticChunkSource.load(coarse))?;
+        for face in Face::ALL {
+            let coord = coarse
+                .neighbor(face)
+                .ok_or(RuntimeError::WorkerDisconnected)?;
+            if runtime.residency_status(coord) != Some(ResidencyStatus::CpuResident) {
+                force_load(runtime, coord, DiagnosticChunkSource.load(coord))?;
+            }
+        }
+        Ok(coarse)
+    }
+
+    #[test]
+    fn dispatch_choice_orders_lod0_then_load_then_lod1() {
+        assert_eq!(
+            choose_dispatch(Some(LodLevel::Lod0), true, 0),
+            Dispatch::Mesh
+        );
+        assert_eq!(
+            choose_dispatch(Some(LodLevel::Lod0), false, 9),
+            Dispatch::Mesh
+        );
+        assert_eq!(
+            choose_dispatch(Some(LodLevel::Lod0), true, MESH_BURST_BEFORE_LOAD),
+            Dispatch::Load,
+            "fairness after four consecutive meshes"
+        );
+        assert_eq!(
+            choose_dispatch(Some(LodLevel::Lod1), true, 0),
+            Dispatch::Load
+        );
+        assert_eq!(
+            choose_dispatch(Some(LodLevel::Lod1), false, 0),
+            Dispatch::Mesh
+        );
+        assert_eq!(choose_dispatch(None, true, 0), Dispatch::Load);
+        assert_eq!(choose_dispatch(None, false, 0), Dispatch::Idle);
+    }
+
+    #[test]
+    fn scheduler_dispatches_lod0_mesh_then_load_then_lod1_mesh() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        load_center_neighborhood(&mut runtime)?;
+        let coarse = load_lod1_neighborhood(&mut runtime)?;
+        let center = ChunkCoord::default();
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::Dirty));
+        assert_eq!(runtime.mesh_status(coarse), Some(MeshStatus::Dirty));
+        assert_eq!(runtime.desired_lod(coarse), Some(LodLevel::Lod1));
+        assert!(runtime.summary().load_queued > 0, "loads are ready too");
+        // The Lod1 entry is nearer in the heap only by level; distance alone
+        // would have picked it (0 vs 9) if the level rank were ignored.
+
+        runtime.dispatch_one()?;
+        assert!(matches!(runtime.in_flight, Some(InFlight::Mesh)));
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::Meshing));
+        assert_eq!(runtime.mesh_status(coarse), Some(MeshStatus::Dirty));
+        drain_one_result(&mut runtime)?;
+
+        let loads = runtime.metrics.load_jobs_dispatched;
+        runtime.dispatch_one()?;
+        assert!(matches!(runtime.in_flight, Some(InFlight::Load)));
+        assert_eq!(runtime.metrics.load_jobs_dispatched, loads + 1);
+        assert_eq!(
+            runtime.mesh_status(coarse),
+            Some(MeshStatus::Dirty),
+            "Lod1 waits"
+        );
+        drain_one_result(&mut runtime)?;
+
+        runtime.load_queue.clear();
+        runtime.dispatch_one()?;
+        assert!(matches!(runtime.in_flight, Some(InFlight::Mesh)));
+        assert_eq!(runtime.mesh_status(coarse), Some(MeshStatus::Meshing));
+        assert_eq!(runtime.metrics.lod1_derivation.count, 1);
+        assert_eq!(runtime.metrics.snapshot_build.count, 2);
+        drain_one_result(&mut runtime)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_beats_a_lod1_mesh_when_no_lod0_mesh_is_ready() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        let coarse = load_lod1_neighborhood(&mut runtime)?;
+        assert_eq!(runtime.mesh_status(coarse), Some(MeshStatus::Dirty));
+        assert_eq!(
+            runtime.mesh_status(ChunkCoord::default()),
+            Some(MeshStatus::WaitingForNeighbors)
+        );
+        runtime.dispatch_one()?;
+        assert!(matches!(runtime.in_flight, Some(InFlight::Load)));
+        assert_eq!(runtime.mesh_status(coarse), Some(MeshStatus::Dirty));
+        assert_eq!(
+            runtime.metrics.fairness_load_dispatches, 0,
+            "not a fairness event"
+        );
+        drain_one_result(&mut runtime)?;
+        Ok(())
+    }
+
+    #[test]
+    fn neighbor_presentation_change_counts_as_lod_stale() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        load_center_neighborhood(&mut runtime)?;
+        let center = ChunkCoord::default();
+        let stale = runtime
+            .current_mesh_stamp(center)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        runtime
+            .records
+            .get_mut(&center)
+            .ok_or(RuntimeError::WorkerDisconnected)?
+            .mesh = MeshState::Meshing(stale);
+        // Center stays Lod0 in the band; its +X neighbor becomes Lod1.
+        runtime.set_demand_center(ChunkCoord::new(-2, 0, 0))?;
+        assert_eq!(runtime.desired_lod(center), Some(LodLevel::Lod0));
+        runtime.integrate_mesh(stale, Mesh::default())?;
+        assert_eq!(runtime.metrics.stale_mesh_results, 1);
+        assert_eq!(runtime.metrics.stale_lod_results, 1);
+        Ok(())
+    }
+
     #[test]
     fn m3c_profile_reaches_idle_with_meshes_at_both_levels() -> Result<(), RuntimeError> {
         let mut runtime = m3c()?;
@@ -1687,6 +1972,13 @@ mod tests {
         assert_eq!(summary.lod0_ready + summary.lod1_ready, summary.mesh_ready);
         assert_eq!(runtime.metrics.stale_lod_results, 0);
         assert!(runtime.resident_payload_count() <= 810);
+        let metrics = runtime.metrics();
+        assert_eq!(metrics.snapshot_build.count, metrics.mesh_jobs_dispatched);
+        assert_eq!(
+            metrics.worker_mesh_lod0.count + metrics.worker_mesh_lod1.count,
+            metrics.accepted_mesh_results + metrics.stale_mesh_results
+        );
+        assert!(metrics.lod1_derivation.count >= u64::try_from(summary.lod1_ready).unwrap_or(0));
         Ok(())
     }
 
