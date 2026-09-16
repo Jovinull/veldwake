@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M0 — Repository & Engineering Foundation.** The concept transcript has been preserved and transformed into navigable product, engineering, quality, and planning documentation. A minimal Rust workspace exists only to validate the toolchain and gates.
+**M1 — Rendering Foundation is in progress** on `feat/m1-rendering-foundation`. M0 preserved the concept, established governance, and produced a minimal Rust workspace; no renderer exists at the start of M1.
 
 ## What works
 
@@ -53,7 +53,7 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 - The working title lacks formal trademark/domain/store clearance.
 - Target hardware tiers and memory/frame budgets are not yet approved.
 - Visual style bible and accessibility baseline remain to be authored during the relevant milestones.
-- A repository remote was deliberately not created.
+- The public repository is `https://github.com/Jovinull/veldwake`; changing visibility, remotes, releases, or other publication policy requires owner authorization.
 
 ## Next milestone
 

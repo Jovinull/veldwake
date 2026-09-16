@@ -9,7 +9,6 @@ Method: non-destructive PowerShell/CIM, registry, `dxdiag`, `vulkaninfo`, versio
 |---|---|
 | OS | Microsoft Windows 11 Home Single Language, 64-bit, version 10.0.26200, build 26200 |
 | Architecture | x86-64 |
-| Hostname | `JOVINULL` (recorded locally; no security-sensitive domain data observed) |
 | Shell | Windows PowerShell 5.1.26100.9444 |
 | CPU | Intel Core i5-1335U, 10 physical cores / 12 logical processors |
 | RAM | 16,384 MB installed; CIM reported 15.68 GiB physical |
@@ -36,7 +35,7 @@ Integrated shared memory and thermally constrained mobile CPU/GPU behavior make 
 |---|---|
 | Git | 2.55.0.windows.3 |
 | Git LFS | 3.7.1; present, not configured for this repository |
-| GitHub CLI | 2.96.0; authenticated to `github.com` as `Jovinull` over HTTPS; no remote created |
+| GitHub CLI | 2.96.0; at bootstrap audit time it was authenticated to `github.com` and no repository remote yet existed |
 | Codex CLI | 0.154.0 |
 | rustup | installed during bootstrap; stable x86_64-pc-windows-msvc default |
 | rustc | 1.98.1 (`48a229cea`, 2026-09-01), LLVM 22.1.8 |
@@ -72,4 +71,4 @@ The locked `cargo-nextest 0.9.144` installation warned that its upstream lockfil
 
 The `winget` Rustup package had no applicable installer and made no change. Rustup was then downloaded from `https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe` and installed non-interactively with profile `default`, stable MSVC host, and `--no-modify-path`. Downloaded installer SHA-256: `6F4BEF66261261FCB43131BE8720BAB817D403A09EDEC7455C371974B90BDB7E`.
 
-No administrator bypass, reboot, Vulkan SDK, remote repository, LFS tracking, or unrelated software was introduced.
+No administrator bypass, reboot, Vulkan SDK, LFS tracking, or unrelated software was introduced. At bootstrap audit time no repository remote existed; that is historical audit context, not the current repository state.

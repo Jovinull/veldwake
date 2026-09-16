@@ -24,10 +24,10 @@ rustup show
 Install nextest if missing:
 
 ```text
-cargo install --locked cargo-nextest
+cargo install --locked cargo-nextest --version 0.9.144
 ```
 
-Record the actual installed version and warnings when changing build tools.
+CI and local setup intentionally use `cargo-nextest 0.9.144`, the current stable crates.io release verified on 2026-09-16. Record the actual installed version and warnings when changing build tools; update CI and this command together.
 
 ## Validate
 

@@ -8,7 +8,7 @@ M0 bootstrap is complete: source preserved, documentation extracted, governance/
 
 ## Continue here
 
-The single recommended next milestone is **M1 — Rendering Foundation**. Before adding crates/dependencies, write a narrow M1 acceptance plan from [`planning/ROADMAP.md`](../planning/ROADMAP.md), confirm current `wgpu`/`winit`/`glam` versions and features from primary docs, then create only the boundaries required for window, adapter/device, frame loop, input, camera, shutdown, and diagnostic reporting.
+**M1 — Rendering Foundation** is active on `feat/m1-rendering-foundation`. Its bounded plan and verification record belong in [`planning/M1_RENDERING_FOUNDATION.md`](../planning/M1_RENDERING_FOUNDATION.md). Keep implementation limited to window, adapter/device/surface, frame loop, input, camera, diagnostic primitive, shutdown, and diagnostics.
 
 ## Read before M1
 
@@ -24,4 +24,4 @@ The single recommended next milestone is **M1 — Rendering Foundation**. Before
 - Do not turn the documented future crate map into empty crates.
 - Do not start voxel/worldgen inside M1.
 - Treat integrated Intel Iris Xe as one conservative host, not the target matrix.
-- Do not create a remote, choose a license, or present the working title as cleared.
+- Do not change repository visibility, replace/configure remotes, publish releases, choose a license, or present the working title as cleared without owner authorization.
