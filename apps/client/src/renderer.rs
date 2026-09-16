@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt::{self, Display, Formatter},
     mem::{size_of, size_of_val},
@@ -14,7 +15,10 @@ use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::camera::Camera;
+use crate::{
+    camera::Camera,
+    streaming::{ChunkPresentation, ChunkUploadError, GpuResidency},
+};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -64,12 +68,6 @@ impl ModelUniform {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct DiagnosticChunkMesh<'a> {
-    pub coord: ChunkCoord,
-    pub mesh: &'a Mesh,
-}
-
 impl CameraUniform {
     fn from_camera(camera: &Camera) -> Self {
         Self {
@@ -78,20 +76,23 @@ impl CameraUniform {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct VoxelMeshDiagnostics {
-    pub chunk_count: usize,
-    pub solid_count: usize,
-    pub fingerprint: u64,
-    pub mesh_cpu_time: std::time::Duration,
-}
-
+/// Disposable GPU state for one streamed chunk. Holds no streaming stamps.
 struct GpuChunkMesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     model_bind_group: wgpu::BindGroup,
     _model_buffer: wgpu::Buffer,
+    bytes: usize,
+    /// Drawable this frame. Cleared immediately when the bridge revokes it.
+    active: bool,
+}
+
+/// Exact GPU bytes a mesh occupies: converted vertices, `u32` indices, model uniform.
+fn gpu_payload_bytes(mesh: &Mesh) -> usize {
+    mesh.vertices().len() * size_of::<Vertex>()
+        + size_of_val(mesh.indices())
+        + size_of::<ModelUniform>()
 }
 
 #[derive(Debug)]
@@ -102,7 +103,6 @@ pub enum RendererInitError {
     MissingSurfaceFormat,
     MissingPresentMode,
     MissingAlphaMode,
-    MeshTooLarge(usize),
 }
 
 impl Display for RendererInitError {
@@ -114,12 +114,6 @@ impl Display for RendererInitError {
             Self::MissingSurfaceFormat => write!(formatter, "surface exposes no texture format"),
             Self::MissingPresentMode => write!(formatter, "surface exposes no present mode"),
             Self::MissingAlphaMode => write!(formatter, "surface exposes no alpha mode"),
-            Self::MeshTooLarge(index_count) => {
-                write!(
-                    formatter,
-                    "voxel mesh has {index_count} indices; exceeds u32 draw range"
-                )
-            }
         }
     }
 }
@@ -146,7 +140,8 @@ pub struct Renderer {
     size: PhysicalSize<u32>,
     configured: bool,
     pipeline: wgpu::RenderPipeline,
-    chunk_meshes: Vec<GpuChunkMesh>,
+    model_layout: wgpu::BindGroupLayout,
+    chunks: BTreeMap<ChunkCoord, GpuChunkMesh>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
@@ -158,8 +153,6 @@ impl Renderer {
         display: OwnedDisplayHandle,
         window: Arc<Window>,
         camera: &Camera,
-        voxel_meshes: &[DiagnosticChunkMesh<'_>],
-        mesh_diagnostics: VoxelMeshDiagnostics,
     ) -> Result<Self, RendererInitError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display),
@@ -178,7 +171,7 @@ impl Renderer {
             .map_err(RendererInitError::Adapter)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Veldwake M3A device"),
+                label: Some("Veldwake M3B device"),
                 required_features: wgpu::Features::empty(),
                 ..Default::default()
             })
@@ -251,12 +244,12 @@ impl Renderer {
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("diagnostic.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("M3A diagnostic pipeline layout"),
+            label: Some("M3B diagnostic pipeline layout"),
             bind_group_layouts: &[Some(&camera_layout), Some(&model_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("M3A diagnostic voxel pipeline"),
+            label: Some("M3B diagnostic voxel pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -290,82 +283,6 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let mut chunk_meshes = Vec::with_capacity(voxel_meshes.len());
-        let mut total_quads = 0;
-        let mut total_vertices = 0;
-        let mut total_indices = 0;
-        let mut vertex_buffer_bytes = 0;
-        let mut index_buffer_bytes = 0;
-        let mut model_buffer_bytes = 0;
-        for diagnostic_mesh in voxel_meshes {
-            let vertices = diagnostic_mesh
-                .mesh
-                .vertices()
-                .iter()
-                .map(|vertex| Vertex {
-                    position: vertex.position,
-                    color: diagnostic_color(vertex.voxel),
-                })
-                .collect::<Vec<_>>();
-            let index_count =
-                u32::try_from(diagnostic_mesh.mesh.indices().len()).map_err(|_| {
-                    RendererInitError::MeshTooLarge(diagnostic_mesh.mesh.indices().len())
-                })?;
-            total_quads += diagnostic_mesh.mesh.quad_count();
-            total_vertices += vertices.len();
-            total_indices += diagnostic_mesh.mesh.indices().len();
-            vertex_buffer_bytes += size_of_val(vertices.as_slice());
-            index_buffer_bytes += size_of_val(diagnostic_mesh.mesh.indices());
-            model_buffer_bytes += size_of::<ModelUniform>();
-
-            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("M3A diagnostic chunk vertices"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("M3A diagnostic chunk indices"),
-                contents: bytemuck::cast_slice(diagnostic_mesh.mesh.indices()),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-            let model_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("M3A diagnostic chunk model uniform"),
-                contents: bytemuck::bytes_of(&ModelUniform::from_chunk_coord(
-                    diagnostic_mesh.coord,
-                )),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("M3A diagnostic chunk model bind group"),
-                layout: &model_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: model_buffer.as_entire_binding(),
-                }],
-            });
-            chunk_meshes.push(GpuChunkMesh {
-                vertex_buffer,
-                index_buffer,
-                index_count,
-                model_bind_group,
-                _model_buffer: model_buffer,
-            });
-        }
-        info!(
-            chunk_edge = CHUNK_EDGE,
-            chunks = mesh_diagnostics.chunk_count,
-            solids = mesh_diagnostics.solid_count,
-            fingerprint = %format_args!("{:#018x}", mesh_diagnostics.fingerprint),
-            quads = total_quads,
-            vertices = total_vertices,
-            indices = total_indices,
-            mesh_cpu_time_us = mesh_diagnostics.mesh_cpu_time.as_micros(),
-            vertex_buffer_bytes,
-            index_buffer_bytes,
-            model_buffer_bytes,
-            total_upload_bytes = vertex_buffer_bytes + index_buffer_bytes + model_buffer_bytes,
-            "M3A diagnostic chunk meshes uploaded once"
-        );
         let depth_view = create_depth_view(&device, config.width, config.height);
 
         let mut renderer = Self {
@@ -379,7 +296,8 @@ impl Renderer {
             size,
             configured: false,
             pipeline,
-            chunk_meshes,
+            model_layout,
+            chunks: BTreeMap::new(),
             camera_buffer,
             camera_bind_group,
             depth_view,
@@ -467,11 +385,11 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("M3A diagnostic frame encoder"),
+                label: Some("M3B diagnostic frame encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("M3A diagnostic voxel pass"),
+                label: Some("M3B diagnostic voxel pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -500,7 +418,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for chunk in &self.chunk_meshes {
+            for chunk in self.chunks.values().filter(|chunk| chunk.active) {
                 pass.set_bind_group(1, &chunk.model_bind_group, &[]);
                 pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -571,6 +489,96 @@ impl Renderer {
             features = ?self.adapter.features(),
             "adapter and surface capabilities"
         );
+    }
+}
+
+impl ChunkPresentation for Renderer {
+    fn gpu_payload_bytes(&self, mesh: &Mesh) -> usize {
+        gpu_payload_bytes(mesh)
+    }
+
+    fn upsert_chunk(&mut self, coord: ChunkCoord, mesh: &Mesh) -> Result<usize, ChunkUploadError> {
+        if mesh.indices().is_empty() {
+            self.chunks.remove(&coord);
+            return Ok(0);
+        }
+        let index_count =
+            u32::try_from(mesh.indices().len()).map_err(|_| ChunkUploadError::TooManyIndices {
+                coord,
+                indices: mesh.indices().len(),
+            })?;
+        let vertices = mesh
+            .vertices()
+            .iter()
+            .map(|vertex| Vertex {
+                position: vertex.position,
+                color: diagnostic_color(vertex.voxel),
+            })
+            .collect::<Vec<_>>();
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3B streamed chunk vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3B streamed chunk indices"),
+                contents: bytemuck::cast_slice(mesh.indices()),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let model_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M3B streamed chunk model uniform"),
+                contents: bytemuck::bytes_of(&ModelUniform::from_chunk_coord(coord)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let model_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("M3B streamed chunk model bind group"),
+            layout: &self.model_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: model_buffer.as_entire_binding(),
+            }],
+        });
+        let bytes = gpu_payload_bytes(mesh);
+        // Replacing an entry drops the previous buffers; wgpu keeps them alive
+        // for any already-submitted work.
+        self.chunks.insert(
+            coord,
+            GpuChunkMesh {
+                vertex_buffer,
+                index_buffer,
+                index_count,
+                model_bind_group,
+                _model_buffer: model_buffer,
+                bytes,
+                active: true,
+            },
+        );
+        Ok(bytes)
+    }
+
+    fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
+        self.chunks
+            .get_mut(&coord)
+            .map(|chunk| chunk.active = false)
+            .is_some()
+    }
+
+    fn remove_chunk(&mut self, coord: ChunkCoord) -> bool {
+        self.chunks.remove(&coord).is_some()
+    }
+
+    fn residency(&self) -> GpuResidency {
+        GpuResidency {
+            resident: self.chunks.len(),
+            active: self.chunks.values().filter(|chunk| chunk.active).count(),
+            bytes: self.chunks.values().map(|chunk| chunk.bytes).sum(),
+        }
     }
 }
 
@@ -668,10 +676,20 @@ fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::Composi
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelUniform, diagnostic_color, select_alpha_mode, select_present_mode,
+        ModelUniform, diagnostic_color, gpu_payload_bytes, select_alpha_mode, select_present_mode,
         select_surface_format,
     };
-    use veldwake_voxel::{ChunkCoord, VoxelId};
+    use veldwake_voxel::{ChunkCoord, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
+
+    #[test]
+    fn gpu_payload_bytes_are_exact_for_the_uploaded_layout() {
+        assert_eq!(gpu_payload_bytes(&Mesh::default()), 16);
+        let mesh = mesh_exposed_faces(&diagnostic_fixture());
+        // 528 vertices of 24 bytes, 792 u32 indices, one 16-byte model uniform.
+        assert_eq!(mesh.vertices().len(), 528);
+        assert_eq!(mesh.indices().len(), 792);
+        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 16);
+    }
 
     #[test]
     fn chunk_model_translation_preserves_signed_chunk_offsets() {

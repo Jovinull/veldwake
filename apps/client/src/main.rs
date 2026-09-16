@@ -3,6 +3,7 @@ mod camera;
 mod diagnostics;
 mod input;
 mod renderer;
+mod streaming;
 
 use std::process::ExitCode;
 

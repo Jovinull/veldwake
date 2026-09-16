@@ -4,7 +4,7 @@
 
 Veldwake is a planned 3D voxel action RPG about exploration in a persistent, systemic procedural world. Geography, creatures, settlements, economies, and events can evolve, while player actions leave observable consequences. Its audiovisual identity is intended to be produced predominantly through code and constrained generators rather than a traditional manual asset pipeline.
 
-Current status: **M3A multi-chunk correctness is merged; M3B1 headless streaming runtime is implemented on its feature branch, without presentation integration**. The Windows-first diagnostic client still renders the deterministic static M3A fixture through `wgpu`/D3D12; M3B1 is a CPU-only engineering proof, not yet a playable or camera-driven streaming world.
+Current status: **M3A multi-chunk correctness is merged; M3B streaming runtime (headless residency plus camera-driven GPU integration) is implemented on its feature branch and awaiting review**. The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets. It is an engineering proof, not a playable world: there is no world generation, persistence, LOD, or gameplay.
 
 ## Principles
 
@@ -27,6 +27,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo nextest run --workspace
 cargo run -p veldwake-client
+cargo run --release -p veldwake-streaming --bin streaming-probe
 ```
 
 Diagnostic controls: WASD moves, Space/Control move vertically, hold the right mouse button to look, and Escape exits. Set `RUST_LOG` to change diagnostic filtering.

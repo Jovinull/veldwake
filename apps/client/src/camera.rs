@@ -34,6 +34,11 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// Finite world-unit position; one world unit is one voxel edge.
+    pub const fn position(&self) -> Vec3 {
+        self.position
+    }
+
     pub fn set_aspect_from_size(&mut self, width: u32, height: u32) -> bool {
         if width == 0 || height == 0 {
             return false;

@@ -44,6 +44,29 @@ pub struct RuntimeMetrics {
     pub fairness_load_dispatches: u64,
     pub hard_cap_blocks: u64,
     pub snapshot_bytes_dispatched: u64,
+    pub cpu_evictions_finalized: u64,
+    pub eviction_budget_hits: u64,
+}
+
+/// One aggregate observation of runtime state, cheap enough to sample per frame.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResidencySummary {
+    pub tracked: usize,
+    pub load_queued: usize,
+    pub loading: usize,
+    pub cpu_resident: usize,
+    pub known_absent: usize,
+    pub evict_pending: usize,
+    pub mesh_waiting: usize,
+    pub mesh_dirty: usize,
+    pub mesh_meshing: usize,
+    pub mesh_ready: usize,
+    pub queued_loads: usize,
+    pub queued_meshes: usize,
+    pub jobs_in_flight: usize,
+    pub reserved_load_slots: usize,
+    pub resident_payload_bytes: usize,
+    pub cpu_mesh_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -263,6 +286,11 @@ impl StreamingRuntime {
     }
 
     #[must_use]
+    pub const fn center(&self) -> ChunkCoord {
+        self.center
+    }
+
+    #[must_use]
     pub fn residency_status(&self, coord: ChunkCoord) -> Option<ResidencyStatus> {
         self.records
             .get(&coord)
@@ -293,6 +321,71 @@ impl StreamingRuntime {
             MeshState::CpuReady { stamp, mesh } => Some((stamp, mesh)),
             _ => None,
         }
+    }
+
+    /// Ready meshes that the render-demand set currently asks to display.
+    ///
+    /// Retention-only and dependency-halo chunks are excluded: being CPU
+    /// resident never by itself makes a chunk drawable.
+    pub fn render_ready_meshes(&self) -> impl Iterator<Item = (ChunkCoord, &MeshStamp, &Mesh)> {
+        self.records.iter().filter_map(|(coord, record)| {
+            if !self.demand.render.contains(coord) {
+                return None;
+            }
+            match &record.mesh {
+                MeshState::CpuReady { stamp, mesh } => Some((*coord, stamp, mesh)),
+                _ => None,
+            }
+        })
+    }
+
+    /// Retired records still waiting for their bounded release.
+    #[must_use]
+    pub fn eviction_backlog(&self) -> usize {
+        self.records
+            .values()
+            .filter(|record| matches!(record.residency, ResidencyState::EvictPending(_)))
+            .count()
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> ResidencySummary {
+        let mut summary = ResidencySummary {
+            tracked: self.records.len(),
+            queued_loads: self.load_queue.len(),
+            queued_meshes: self.mesh_queue.len(),
+            jobs_in_flight: usize::from(self.in_flight.is_some()),
+            reserved_load_slots: self.reserved_load_slots.len(),
+            ..ResidencySummary::default()
+        };
+        for record in self.records.values() {
+            match &record.residency {
+                ResidencyState::LoadQueued => summary.load_queued += 1,
+                ResidencyState::Loading => summary.loading += 1,
+                ResidencyState::CpuResident { .. } => {
+                    summary.cpu_resident += 1;
+                    summary.resident_payload_bytes += CHUNK_BYTES;
+                }
+                ResidencyState::KnownAbsent => summary.known_absent += 1,
+                ResidencyState::EvictPending(chunk) => {
+                    summary.evict_pending += 1;
+                    if chunk.is_some() {
+                        summary.resident_payload_bytes += CHUNK_BYTES;
+                    }
+                }
+            }
+            match &record.mesh {
+                MeshState::NotRequired => {}
+                MeshState::WaitingForNeighbors => summary.mesh_waiting += 1,
+                MeshState::Dirty(_) => summary.mesh_dirty += 1,
+                MeshState::Meshing(_) => summary.mesh_meshing += 1,
+                MeshState::CpuReady { mesh, .. } => {
+                    summary.mesh_ready += 1;
+                    summary.cpu_mesh_bytes += mesh.payload_bytes();
+                }
+            }
+        }
+        summary
     }
 
     #[must_use]
@@ -392,16 +485,26 @@ impl StreamingRuntime {
         Ok(())
     }
 
+    /// Releases at most `max_cpu_evictions_per_update` retired records.
+    ///
+    /// A retired record still owning a `Chunk` keeps consuming hard-cap budget,
+    /// so a large backlog throttles new loads instead of breaching the cap.
     fn finalize_evictions(&mut self) {
+        let budget = self.config.max_cpu_evictions_per_update;
         let evicted: Vec<_> = self
             .records
             .iter()
             .filter_map(|(coord, record)| {
                 matches!(record.residency, ResidencyState::EvictPending(_)).then_some(*coord)
             })
+            .take(budget)
             .collect();
-        for coord in evicted {
-            self.records.remove(&coord);
+        for coord in &evicted {
+            self.records.remove(coord);
+        }
+        self.metrics.cpu_evictions_finalized += evicted.len() as u64;
+        if evicted.len() == budget && self.eviction_backlog() > 0 {
+            self.metrics.eviction_budget_hits += 1;
         }
     }
 
@@ -462,7 +565,14 @@ impl StreamingRuntime {
         if !self.demand.render.contains(&coord)
             || !matches!(record.residency, ResidencyState::CpuResident { .. })
         {
-            record.mesh = if self.demand.render.contains(&coord) {
+            // A source-confirmed absence has nothing to mesh, ever; only data
+            // that is still arriving is genuinely waiting.
+            let waiting_for_data = self.demand.render.contains(&coord)
+                && matches!(
+                    record.residency,
+                    ResidencyState::LoadQueued | ResidencyState::Loading
+                );
+            record.mesh = if waiting_for_data {
                 MeshState::WaitingForNeighbors
             } else {
                 MeshState::NotRequired
@@ -932,6 +1042,24 @@ mod tests {
     }
 
     #[test]
+    fn known_absent_render_chunk_never_reports_a_pending_mesh() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig::default())?;
+        let center = ChunkCoord::default();
+        assert_eq!(
+            runtime.mesh_status(center),
+            Some(MeshStatus::WaitingForNeighbors),
+            "a render chunk still loading is waiting for data"
+        );
+        force_load(&mut runtime, center, SourceChunk::KnownAbsent)?;
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::NotRequired));
+        assert_eq!(runtime.summary().mesh_waiting, 26);
+        runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+        runtime.set_demand_center(center)?;
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::NotRequired));
+        Ok(())
+    }
+
+    #[test]
     fn neighbor_arrival_invalidates_current_mesh_immediately() -> Result<(), RuntimeError> {
         let mut runtime = runtime_with(StreamingConfig::default())?;
         load_center_neighborhood(&mut runtime)?;
@@ -1069,6 +1197,134 @@ mod tests {
     }
 
     #[test]
+    fn eviction_finalization_is_bounded_per_update() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig {
+            max_cpu_evictions_per_update: 2,
+            ..StreamingConfig::default()
+        })?;
+        load_center_neighborhood(&mut runtime)?;
+        runtime.set_demand_center(ChunkCoord::new(40, 0, 40))?;
+        let backlog = runtime.eviction_backlog();
+        assert!(backlog > 2, "teleport should retire more than one update");
+
+        runtime.finalize_evictions();
+        assert_eq!(runtime.eviction_backlog(), backlog - 2);
+        assert_eq!(runtime.metrics.cpu_evictions_finalized, 2);
+        assert_eq!(runtime.metrics.eviction_budget_hits, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_full_eviction_backlog_blocks_loads_until_it_is_released() -> Result<(), RuntimeError> {
+        let cap = 7;
+        let mut runtime = runtime_with(StreamingConfig {
+            render_radius: 0,
+            dependency_halo: 1,
+            retention_radius: 1,
+            hard_resident_cap: cap,
+            max_cpu_evictions_per_update: 1,
+        })?;
+        load_center_neighborhood(&mut runtime)?;
+        assert_eq!(runtime.resident_payload_count(), cap);
+
+        runtime.set_demand_center(ChunkCoord::new(-64, 0, 64))?;
+        assert_eq!(runtime.eviction_backlog(), cap);
+        assert_eq!(
+            runtime.resident_payload_count(),
+            cap,
+            "retired payloads must keep counting against the cap"
+        );
+
+        // Nothing has been released yet, so the very first load is refused.
+        runtime.dispatch_one()?;
+        assert_eq!(runtime.metrics.hard_cap_blocks, 1);
+        assert!(runtime.in_flight.is_none());
+        assert_eq!(runtime.reserved_load_count(), 0);
+
+        // One bounded release frees exactly one slot.
+        runtime.finalize_evictions();
+        assert_eq!(runtime.eviction_backlog(), cap - 1);
+        assert_eq!(runtime.metrics.cpu_evictions_finalized, 1);
+        assert_eq!(runtime.metrics.eviction_budget_hits, 1);
+        runtime.dispatch_one()?;
+        assert!(matches!(runtime.in_flight, Some(InFlight::Load)));
+        assert_eq!(
+            runtime.resident_payload_count() + runtime.reserved_load_count(),
+            cap
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn teleport_respects_the_hard_cap_while_an_eviction_backlog_drains() -> Result<(), RuntimeError>
+    {
+        let cap = 7;
+        let mut runtime = runtime_with(StreamingConfig {
+            render_radius: 0,
+            dependency_halo: 1,
+            retention_radius: 1,
+            hard_resident_cap: cap,
+            max_cpu_evictions_per_update: 1,
+        })?;
+        for _ in 0..10_000 {
+            runtime.poll()?;
+            if runtime.is_idle() {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert!(runtime.is_idle());
+        assert_eq!(runtime.resident_payload_count(), cap);
+
+        // Teleport into a different in-bounds area so replacement loads carry
+        // payloads and compete with the retiring ones for the same cap.
+        runtime.set_demand_center(ChunkCoord::new(3, 0, -3))?;
+        assert_eq!(
+            runtime.eviction_backlog(),
+            cap,
+            "teleport should retire every previous payload"
+        );
+        for _ in 0..10_000 {
+            runtime.poll()?;
+            assert!(
+                runtime.resident_payload_count() + runtime.reserved_load_count() <= cap,
+                "hard cap breached while draining backlog: resident={} reserved={} backlog={}",
+                runtime.resident_payload_count(),
+                runtime.reserved_load_count(),
+                runtime.eviction_backlog()
+            );
+            if runtime.is_idle() && runtime.eviction_backlog() == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert_eq!(runtime.eviction_backlog(), 0);
+        assert!(runtime.is_idle());
+        assert_eq!(runtime.metrics.cpu_evictions_finalized, cap as u64);
+        assert!(runtime.metrics.eviction_budget_hits > 0);
+        assert_eq!(runtime.resident_payload_count(), cap);
+        assert_eq!(runtime.tracked_count(), cap);
+        Ok(())
+    }
+
+    #[test]
+    fn retention_only_chunks_are_never_offered_for_rendering() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig::default())?;
+        load_center_neighborhood(&mut runtime)?;
+        for (coord, _, _) in runtime.render_ready_meshes() {
+            assert!(runtime.demand.render.contains(&coord));
+        }
+        let summary = runtime.summary();
+        assert_eq!(summary.tracked, runtime.records.len());
+        assert_eq!(summary.cpu_resident, runtime.resident_payload_count());
+        assert_eq!(
+            summary.resident_payload_bytes,
+            summary.cpu_resident * CHUNK_BYTES
+        );
+        Ok(())
+    }
+
+    #[test]
     fn request_token_overflow_is_fatal_and_never_wraps() -> Result<(), RuntimeError> {
         let mut runtime = runtime_with(StreamingConfig::default())?;
         runtime.next_token = u64::MAX;
@@ -1087,6 +1343,7 @@ mod tests {
             dependency_halo: 1,
             retention_radius: 1,
             hard_resident_cap: 16,
+            ..StreamingConfig::default()
         })?;
         for _ in 0..10_000 {
             runtime.poll()?;

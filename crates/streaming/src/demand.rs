@@ -2,13 +2,15 @@ use std::{collections::BTreeSet, fmt};
 
 use veldwake_voxel::{ChunkCoord, Face};
 
-/// Tunable limits for the M3B1 diagnostic runtime.
+/// Tunable limits for the M3B diagnostic runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamingConfig {
     pub render_radius: u32,
     pub dependency_halo: u32,
     pub retention_radius: u32,
     pub hard_resident_cap: usize,
+    /// CPU records whose eviction may be finalized in one update.
+    pub max_cpu_evictions_per_update: usize,
 }
 
 impl Default for StreamingConfig {
@@ -18,17 +20,38 @@ impl Default for StreamingConfig {
             dependency_halo: 1,
             retention_radius: 2,
             hard_resident_cap: 160,
+            max_cpu_evictions_per_update: 8,
         }
     }
 }
 
 impl StreamingConfig {
+    /// Rejects every configuration whose sets would contradict each other.
+    ///
+    /// Retention must cover the whole dependency set. The dependency set is the
+    /// render cube grown by `dependency_halo` along each axis, so its extent is
+    /// `render_radius + dependency_halo`. A smaller retention radius would mark
+    /// dependency coordinates for eviction in the same update that created them.
     pub fn validate(self) -> Result<Self, DemandError> {
-        if self.retention_radius < self.render_radius {
-            return Err(DemandError::RetentionSmallerThanRender);
+        let required_retention = self.render_radius.checked_add(self.dependency_halo).ok_or(
+            DemandError::RadiusOverflow {
+                render_radius: self.render_radius,
+                dependency_halo: self.dependency_halo,
+            },
+        )?;
+        if self.retention_radius < required_retention {
+            return Err(DemandError::RetentionTooSmall {
+                render_radius: self.render_radius,
+                dependency_halo: self.dependency_halo,
+                retention_radius: self.retention_radius,
+                required_retention,
+            });
         }
         if self.hard_resident_cap == 0 {
             return Err(DemandError::ZeroResidentCap);
+        }
+        if self.max_cpu_evictions_per_update == 0 {
+            return Err(DemandError::ZeroEvictionBudget);
         }
         Ok(self)
     }
@@ -69,19 +92,49 @@ impl DemandSets {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemandError {
-    RetentionSmallerThanRender,
+    RetentionTooSmall {
+        render_radius: u32,
+        dependency_halo: u32,
+        retention_radius: u32,
+        required_retention: u32,
+    },
+    RadiusOverflow {
+        render_radius: u32,
+        dependency_halo: u32,
+    },
     ZeroResidentCap,
+    ZeroEvictionBudget,
     RadiusTooLarge,
-    CoordinateOverflow { center: ChunkCoord },
+    CoordinateOverflow {
+        center: ChunkCoord,
+    },
 }
 
 impl fmt::Display for DemandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RetentionSmallerThanRender => {
-                write!(formatter, "retention radius is smaller than render radius")
-            }
+            Self::RetentionTooSmall {
+                render_radius,
+                dependency_halo,
+                retention_radius,
+                required_retention,
+            } => write!(
+                formatter,
+                "retention radius {retention_radius} does not cover the dependency set; \
+                 render radius {render_radius} plus halo {dependency_halo} requires at least \
+                 {required_retention}"
+            ),
+            Self::RadiusOverflow {
+                render_radius,
+                dependency_halo,
+            } => write!(
+                formatter,
+                "render radius {render_radius} plus dependency halo {dependency_halo} overflows u32"
+            ),
             Self::ZeroResidentCap => write!(formatter, "hard resident cap must be non-zero"),
+            Self::ZeroEvictionBudget => {
+                write!(formatter, "CPU eviction budget per update must be non-zero")
+            }
             Self::RadiusTooLarge => {
                 write!(formatter, "demand radius does not fit signed iteration")
             }
@@ -154,6 +207,119 @@ mod tests {
         let right = DemandSets::around(ChunkCoord::new(0, 0, 0), config)?;
         assert_eq!(left.retention.intersection(&right.retention).count(), 100);
         assert_eq!(left.dependency.intersection(&right.dependency).count(), 60);
+        Ok(())
+    }
+
+    #[test]
+    fn valid_configurations_are_accepted() -> Result<(), DemandError> {
+        StreamingConfig::default().validate()?;
+        StreamingConfig {
+            render_radius: 0,
+            dependency_halo: 1,
+            retention_radius: 1,
+            hard_resident_cap: 16,
+            max_cpu_evictions_per_update: 1,
+        }
+        .validate()?;
+        StreamingConfig {
+            render_radius: 2,
+            dependency_halo: 3,
+            retention_radius: 9,
+            hard_resident_cap: 1,
+            max_cpu_evictions_per_update: 64,
+        }
+        .validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn retention_must_cover_the_dependency_halo() {
+        let config = StreamingConfig {
+            render_radius: 2,
+            dependency_halo: 1,
+            retention_radius: 2,
+            ..StreamingConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(DemandError::RetentionTooSmall {
+                render_radius: 2,
+                dependency_halo: 1,
+                retention_radius: 2,
+                required_retention: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn radius_sum_uses_checked_addition() {
+        let config = StreamingConfig {
+            render_radius: u32::MAX,
+            dependency_halo: 1,
+            retention_radius: u32::MAX,
+            ..StreamingConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(DemandError::RadiusOverflow {
+                render_radius: u32::MAX,
+                dependency_halo: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn zero_budgets_are_rejected() {
+        assert_eq!(
+            StreamingConfig {
+                hard_resident_cap: 0,
+                ..StreamingConfig::default()
+            }
+            .validate(),
+            Err(DemandError::ZeroResidentCap)
+        );
+        assert_eq!(
+            StreamingConfig {
+                max_cpu_evictions_per_update: 0,
+                ..StreamingConfig::default()
+            }
+            .validate(),
+            Err(DemandError::ZeroEvictionBudget)
+        );
+    }
+
+    #[test]
+    fn oversized_radius_is_rejected_before_iteration() {
+        let config = StreamingConfig {
+            render_radius: u32::MAX,
+            dependency_halo: 0,
+            retention_radius: u32::MAX,
+            ..StreamingConfig::default()
+        };
+        assert_eq!(
+            DemandSets::around(ChunkCoord::default(), config),
+            Err(DemandError::RadiusTooLarge)
+        );
+    }
+
+    #[test]
+    fn a_validated_dependency_set_is_always_inside_retention() -> Result<(), DemandError> {
+        for (render_radius, dependency_halo, retention_radius) in
+            [(0, 1, 1), (1, 1, 2), (1, 2, 3), (2, 1, 4)]
+        {
+            let config = StreamingConfig {
+                render_radius,
+                dependency_halo,
+                retention_radius,
+                ..StreamingConfig::default()
+            };
+            let sets = DemandSets::around(ChunkCoord::new(-3, 1, 2), config)?;
+            assert!(
+                sets.dependency.is_subset(&sets.retention),
+                "dependency escaped retention for {config:?}"
+            );
+            assert!(sets.render.is_subset(&sets.dependency));
+        }
         Ok(())
     }
 }

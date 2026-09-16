@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A complete and merged; M3B1 headless runtime implemented on feature branch; M3B2 not started**
+Status: **M3A complete and merged; M3B (headless runtime plus camera-driven GPU integration) implemented on the feature branch and awaiting review**
 Planning branch: `feat/m3b-streaming-runtime`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -159,7 +159,7 @@ All five steps were exercised on 2026-09-16. Headless coverage includes exact Eu
 
 ## Milestone: M3B — Streaming Runtime
 
-Status: **M3B1 implemented on the feature branch; presentation integration remains deferred to M3B2**.
+Status: **M3B1 and M3B2 implemented on the feature branch; headless gates pass; the owner's interactive Windows smoke is still pending**.
 
 ### M3B1 implementation result
 
@@ -172,7 +172,35 @@ Status: **M3B1 implemented on the feature branch; presentation integration remai
 - The final release `streaming-probe` at center `(0,0,0)` observed 27 render / 81 dependency / 125 retention coordinates, 81 loads, 63 resident chunk payloads (4,128,768 bytes), 18 known absences, 27 ready meshes, 2,064,384 cumulative snapshot bytes, zero stale results on the nominal path, and 5,163 microseconds to idle on the audited host. This is diagnostic timing, not a performance target.
 - Headless tests cover demand counts/movement/oscillation, cap-safe teleport, request-token ABA and overflow, stale load/center/neighbor results, known absence versus unavailability, neighbor arrival, unload during work, fairness, slab correctness, borrowed/owned topology equivalence, and worker shutdown.
 
-M3B1 deliberately does not connect demand to the camera and does not upload, retire, or render streaming meshes. Those presentation concerns remain M3B2.
+M3B1 deliberately did not connect demand to the camera and did not upload, retire, or render streaming meshes. M3B2 adds exactly those presentation concerns on top of it.
+
+### M3B1 hardening (applied with M3B2)
+
+- `StreamingConfig::validate` now requires `retention_radius >= render_radius + dependency_halo`, computed with `checked_add`. The dependency set is the render cube grown along each axis by the halo, so a smaller retention radius would retire dependency records in the same update that created them. Typed errors: `RetentionTooSmall`, `RadiusOverflow`, `ZeroResidentCap`, `ZeroEvictionBudget`, `RadiusTooLarge`, `CoordinateOverflow`. Tests cover valid and invalid configurations and prove `render ⊆ dependency ⊆ retention` for every validated configuration.
+- CPU eviction finalization is bounded by `max_cpu_evictions_per_update` (default `8`) in deterministic `ChunkCoord` order. A retired record that still owns a `Chunk` keeps counting against the hard cap until released, so a large backlog throttles new loads rather than breaching the cap. `cpu_evictions_finalized` and `eviction_budget_hits` are reported.
+- A source-confirmed `KnownAbsent` chunk inside render demand now reports `MeshStatus::NotRequired` instead of `WaitingForNeighbors`; only `LoadQueued`/`Loading` render chunks are waiting for data. The first M3B2 client run exposed nine permanently "waiting" chunks at `y = 2` before this fix.
+- `ResidencySummary`, `render_ready_meshes()`, `eviction_backlog()`, and `center()` expose per-frame observability without one accessor per counter.
+
+Finding recorded while testing the backlog: with one worker and finalization running before dispatch, every `poll` frees at least one slot before reserving at most one, so an eviction backlog alone cannot produce a `hard_cap_blocks` event. The cap holds through accounting, not blocking. A deterministic test proves that a full backlog with no release refuses a load, and a real-worker test proves `resident + reserved <= cap` at every poll while a teleport backlog drains to zero.
+
+### M3B2 implementation result
+
+- `veldwake-client` depends on `veldwake-streaming`. The new `streaming` module owns `StreamingBridge`, which wraps the runtime, converts the camera into a demand center, decides what is drawable, and forwards bounded commands to a `ChunkPresentation` implementation. The runtime remains free of `wgpu`, `winit`, `bytemuck`, and client types.
+- Camera anchoring uses `floor`, never truncation: each finite axis becomes `i64` through `f64::floor` with an explicit `[-2^63, 2^63)` range check, then `WorldVoxelCoord::split` produces the chunk. Non-finite or out-of-range positions return `CameraAnchorError`, are counted, and keep the previous center; nothing saturates silently. `set_demand_center` runs only when the camera's chunk changes.
+- Frame order in `App::redraw`: camera update → `track_camera` → `StreamingBridge::update` (apply pending demand change, one non-blocking `poll`, draw-set reconciliation, budgeted uploads, budgeted releases) → camera uniform → render.
+- Drawability and deallocation are separate. Any presented chunk whose `MeshStamp` no longer equals the runtime's current render-demand ready mesh is deactivated in that same update, before any upload and regardless of release budget. Its buffers move to a pending-removal set released at most `max_removals_per_frame` (default `8`) per frame. A stale mesh is never drawn because the unload budget ran out.
+- The renderer replaces the static `Vec<GpuChunkMesh>` with `BTreeMap<ChunkCoord, GpuChunkMesh>` and implements `ChunkPresentation`: `upsert_chunk`, `deactivate_chunk`, `remove_chunk`, `gpu_payload_bytes`, `residency`. Only `active` entries are drawn. The renderer stores no stamps or generations; the bridge keeps `ChunkCoord -> MeshStamp` for what is presented.
+- Upload budget defaults: at most `2` uploads per frame, soft `4 MiB` per frame, one mesh larger than the soft limit may be the frame's only upload and is counted as `oversized_uploads`. Sizes are exact GPU bytes (`24`-byte vertices, `u32` indices, `16`-byte model uniform) computed before upload. A stamp already presented is never re-uploaded. Empty meshes reach no buffers and bypass the budget; presenting one only clears stale buffers.
+- Every five seconds the client emits two aggregate lines: camera chunk, demand counts, tracked/CPU-resident/`KnownAbsent`/evict-pending, waiting/dirty/meshing/ready, queues and in-flight jobs, presented/GPU-resident/GPU-active/pending removal; then dispatches, stale drops, fairness, cap blocks, evictions, interval and total uploads/bytes, deactivations, removals, deferrals, oversized events, anchor rejections, and snapshot/resident/CPU-mesh/GPU byte totals. No per-chunk-per-frame logging.
+- Twenty-three client tests are GPU-independent. An in-memory `ChunkPresentation` double proves: the settled draw set equals the render-demand ready set, dependency/retention chunks are never drawn, identical stamps are not re-uploaded, leaving render demand deactivates every stale mesh in one update while releases drain under budget, re-entry rebuilds with new request tokens, oversized meshes upload alone and defer the rest, camera anchoring at `0`, `31.999`, `32`, `-0.001`, `-1`, `-32`, and `-32.001`, and explicit rejection of `NaN`, `±inf`, and out-of-range positions.
+
+### M3B2 observed evidence
+
+Release client on the audited Intel Iris Xe / D3D12 host (`Bgra8UnormSrgb`, `Fifo`, `Opaque`, 1600×900), default camera in chunk `(1, 1, 1)`, first five-second interval: 291 frames at ≈58 FPS (vsync), demand 27/81/125, tracked 81, 51 CPU-resident, 30 `KnownAbsent`, 18 ready meshes (9 non-empty floor chunks plus 9 empty), 9 render chunks `KnownAbsent` at `y = 2`, `mesh_waiting` 0, 9 GPU uploads totalling 2,214,144 bytes, 9 GPU-active, 0 stale results, 0 cap blocks, 0 deferrals. Resident payload 3,342,336 bytes, CPU mesh 2,509,200 bytes, GPU 2,214,144 bytes, snapshot bytes dispatched 1,382,400. A second run in which input moved the camera to chunk `(2, 1, 2)` recorded 2 demand changes, 14 bounded CPU evictions, 12 immediate deactivations, 12 budgeted removals, 0 stale results, 0 anchor rejections, and 0 cap blocks. The release `streaming-probe` reached idle in 7,660 µs with unchanged counts. These are one-host observations, not targets.
+
+Interactive verification still owed by the owner before merge: continuous traversal across several positive and negative boundaries with chunks appearing and disappearing, no persistent incorrect seam, no speculative AIR for unloaded chunks, camera responsiveness during load/mesh, re-entry reconstruction, a distant teleport staying under the cap, and resize/minimize/restore/focus loss/Escape. Log evidence covers residency, budgets, and stale rejection; it does not replace looking at the screen.
+
+Accepted visible behavior: when a neighbor arrives or changes, the center mesh is invalidated, its GPU mesh stops drawing immediately, and the chunk reappears after the replacement is meshed and uploaded. The brief gap is deliberate; M3B never keeps a knowingly stale mesh on screen.
 
 M3B should prove bounded movement-driven residency, asynchronous CPU work, stale-result rejection, incremental GPU integration, and safe unload using deterministic diagnostic content. It is not product world generation and does not establish save, networking, gameplay, or long-term content formats.
 
@@ -360,4 +388,7 @@ Normal logs report transitions in aggregates, not one line per chunk per frame. 
 - A single worker may be insufficient, but adding workers before measuring queue latency would add nondeterministic completion and synchronization complexity.
 - Snapshot construction copies up to 76 KiB per dispatched mesh. Measure copied bytes and time before considering `Arc`/COW ownership.
 - Per-chunk GPU resources remain a diagnostic path. M3B validates lifetime and budgets, not scalable draw submission.
+- The `ChunkPresentation` trait exists for one renderer and one in-memory test double. Do not grow it into a render abstraction; add a method only when the bridge needs it.
+- Camera positions are `f32`; beyond ±2^24 world units integer precision degrades before any range check trips. Origin rebasing remains a later decision.
+- With one worker the bridge sees at most one newly ready mesh per frame, so upload deferrals only occur after a backlog (teleport, re-entry). Measure before assuming the budget binds in steady traversal.
 - No ADR is created during this planning change. Create one only if implementation accepts a durable crate/ownership/concurrency contract whose alternatives should be preserved beyond this milestone document.

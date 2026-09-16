@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is merged. M3B1 — Headless Streaming Runtime is implemented on `feat/m3b-streaming-runtime` and awaiting review; M3B2 presentation integration has not started.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is merged. M3B — Streaming Runtime (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime` and awaiting review; the owner's interactive Windows smoke is still pending.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -23,10 +23,14 @@ Last updated: 2026-09-16
 - The client renders the static chunks at signed offsets using immutable per-chunk model uniforms. CPU meshes remain local and the renderer still owns no authoritative world state.
 - `veldwake-streaming` is a headless std-only orchestration crate over `veldwake-voxel`: deterministic demand/retention sets, globally unique request tokens, bounded CPU residency, one bounded worker, lazy priority queues, owned center-plus-face-slab mesh snapshots, and generation-stamped stale-result rejection.
 - The finite diagnostic source reports `Present(Chunk)` or `KnownAbsent`; unavailable neighbors delay meshing. Only render-demand chunks request meshes, while dependency/retention records can remain CPU-only.
+- `StreamingConfig` rejects `retention_radius < render_radius + dependency_halo` with typed errors and checked arithmetic; CPU eviction finalization is bounded (default 8 per update) while retired payloads keep counting against the hard cap.
+- The client streams: camera position → `floor` → `WorldVoxelCoord::split` → demand center, updated only on chunk change; `StreamingBridge` polls the runtime once per frame, deactivates any GPU mesh whose stamp is no longer current before uploading, uploads under a 2-per-frame / 4 MiB soft budget with oversized accounting, and releases buffers at most 8 per frame.
+- The renderer keeps `BTreeMap<ChunkCoord, GpuChunkMesh>` with an `active` flag and draws only active entries; it knows no streaming stamps. Twenty-three GPU-independent client tests use an in-memory presentation double.
+- Five-second aggregate diagnostics report demand, residency, mesh states, queues, GPU residency, uploads/bytes, removals, budget hits, stale drops, and byte totals.
 
 ## What does not exist yet
 
-No camera/renderer integration for streaming, product world generation, disk cache/saves, LOD, authoritative simulation, gameplay, audio, networking, mod runtime, UI framework, or internal editor exists. M3B1 is headless and its finite diagnostic source is not a world generator.
+No product world generation, disk cache/saves, LOD, greedy meshing, generalized batching/instancing, origin rebasing, multiple workers, authoritative simulation, gameplay, physics, audio, networking, mod runtime, UI framework, or internal editor exists. The finite diagnostic source is not a world generator, and the M3A static fixture is no longer rendered by the client (its voxel-crate tests remain).
 
 ## Current decisions
 
@@ -72,4 +76,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3B1 — Headless Streaming Runtime:** implementation and local validation are complete on the feature branch; external review is next. After acceptance, the next implementation scope is M3B2 camera-driven demand and bounded GPU integration; do not begin it as part of M3B1. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.
+**M3B — Streaming Runtime:** M3B1 and M3B2 are implemented on the feature branch with all headless gates passing; the owner's interactive Windows smoke and review are next. Do not begin any M3C scope (LOD, cache/persistence experiment, debug visualization, more workers) before acceptance. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.

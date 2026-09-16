@@ -1447,6 +1447,7 @@ dependencies = [
  "pollster",
  "tracing",
  "tracing-subscriber",
+ "veldwake-streaming",
  "veldwake-voxel",
  "wgpu",
  "winit",
