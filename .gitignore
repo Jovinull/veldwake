@@ -1,0 +1,40 @@
+# Rust / build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Generated runtime and tooling caches
+/cache/
+/generated/
+/captures/
+/coverage/
+*.profraw
+*.profdata
+
+# Editors and local tooling
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local.toml
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Keep source material and documentation tracked.
+!docs/source/**

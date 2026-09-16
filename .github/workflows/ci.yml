@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust quality gates
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Install cargo-nextest
+        run: cargo install --locked cargo-nextest --version 0.9.144
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Build workspace
+        run: cargo build --workspace --all-features
+
+      - name: Run tests
+        # M0 has no behavioral code. Remove --no-tests=pass with the first real test.
+        run: cargo nextest run --workspace --no-tests=pass

@@ -1,0 +1,23 @@
+# Architecture Decision Records
+
+ADRs preserve durable decisions and their tradeoffs. They are not a substitute for subsystem documentation or a log of every implementation detail.
+
+## Status values
+
+- **Proposed:** under review; not binding.
+- **Accepted:** current decision.
+- **Superseded:** replaced by a named later ADR; retained historically.
+- **Rejected:** considered and not chosen.
+- **Deprecated:** once valid, now discouraged pending/removing use.
+
+## Process
+
+Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence and alternatives, link affected docs, and update this index. Accepted ADRs are immutable except for typo/link clarification; change a decision with a superseding ADR.
+
+## Index
+
+| ID | Title | Status | Date |
+|---|---|---|---|
+| [0001](0001-rust-custom-engine-foundation.md) | Rust custom-engine foundation | Accepted | 2026-09-16 |
+| [0002](0002-presentation-independent-authority.md) | Presentation-independent authority | Accepted | 2026-09-16 |
+| [0003](0003-procedural-first-audiovisual-production.md) | Procedural-first audiovisual production | Accepted | 2026-09-16 |

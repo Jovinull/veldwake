@@ -1,0 +1,10 @@
+[package]
+name = "veldwake-foundation"
+version = "0.0.0"
+description = "Minimal dependency-free boundary used to validate Veldwake's repository foundation"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

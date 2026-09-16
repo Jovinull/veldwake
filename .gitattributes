@@ -1,0 +1,15 @@
+# Keep repository-authored text stable across operating systems.
+* text=auto eol=lf
+
+# Historical evidence must remain byte-for-byte identical to its captured checksum.
+/ideia.txt -text
+/docs/source/ideia-original.txt -text
+
+# Explicit binary families for future generated/reference artifacts.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.wav binary
+*.ogg binary
+*.bin binary

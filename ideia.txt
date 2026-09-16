@@ -1,0 +1,3120 @@
+Eu sempre tive muita vontade de criar meu próprio cubo Word ou Velore. Eu quero que você pense sobre, explore, pesquise e levante o que eu vou falar sobre isso. Sempre quis fazer. Eu quero usar o Codex e o Cloud para desenvolver esse jogo pra mim, ok? Quero fazer isso e tudo mais. Posso investir horas e horas e horas. Eu não quero ter que fazer sons, nem quero ter que fazer arts, nem quero ter que modelar personagens 3Ds, nem nada do tipo. Eu quero nada desse tipo. Quero que tudo seja gerado no código, que seja muito leve, bem otimizado e tal. Não quero usar nenhuma game engine como Unity ou Unreal, ok? Quero que seja um jogo como o Cube World mesmo, Veloren. Pode ir até além, sabe? Pode ir além. Pode pegar melhorias que esses jogos não têm e tudo mais. Mas ir além. E não só ficar nesses jogos tipo Minecraft também, pode ser uma boa inspiração. Só que eu não quero me tornar um jogo genérico como esse. Quero ter diferenciais, mas nada também tão exagerado porque eu gosto da ideia desses jogos aqui. Quero que você explore e pense nas tecnologias que vamos usar pra tudo isso, e parte gráfica e de som sem ter que usar alguma coisa externa pra fazer, porque eu não quero depender disso. Mas eu quero que fique bom, que fique bonito, fique atraente
+
+Sim. E, no seu caso, eu **não tentaria fazer “um clone de Cube World”**. Eu faria um RPG voxel 3D cujo principal diferencial técnico e artístico fosse justamente isto:
+
+> **o jogo inteiro nasce de código.**
+
+Terreno, cidades, criaturas, armas, árvores, dungeons, animações, efeitos, materiais, sons e até música seriam descritos por regras e geradores. Você não precisaria abrir Blender, Aseprite, Photoshop, FMOD ou uma DAW para produzir conteúdo.
+
+E isso não precisa resultar em algo feio ou com aparência de experimento técnico.
+
+A direção que eu escolheria é algo visualmente entre estas referências:
+
+![Image](https://s3.eu-central-2.wasabisys.com/veloren-blog/cdn/229/screenshot_1711649903952.png?height=216\&width=384)
+
+![Image](https://s3.eu-central-2.wasabisys.com/veloren-blog/cdn/235/screenshot_1718904115353.png?height=216\&width=384)
+
+![Image](https://cubeworld.com/media/shrine.jpg)
+
+![Image](https://cdn.akamai.steamstatic.com/steam/apps/1128000/ss_98156101d5ea52e62420a3567505d3405db29429.1920x1080.jpg?t=1591986336)
+
+## Primeiro: isso realmente é possível?
+
+É.
+
+Mas existe uma diferença importante entre:
+
+**“não usar assets”**
+
+e
+
+**“não produzir assets manualmente”.**
+
+Eu escolheria a segunda definição.
+
+Você não desenharia espada por espada. Em vez disso, escreveríamos um sistema:
+
+```text
+WeaponDescriptor
+ ├─ category: longsword
+ ├─ blade_length: 0.92
+ ├─ blade_width: 0.07
+ ├─ edge_profile: tapered
+ ├─ guard: crescent
+ ├─ pommel: octagonal
+ ├─ material: steel
+ ├─ wear: 0.14
+ ├─ culture: northern
+ └─ seed: 8192381
+```
+
+E o engine transformaria isso em:
+
+```text
+descrição
+   ↓
+voxel sculpture
+   ↓
+mesh
+   ↓
+material procedural
+   ↓
+arma no jogo
+```
+
+O mesmo princípio serviria para árvores, monstros, personagens, armaduras, casas, castelos, ruínas e praticamente tudo.
+
+Isso é extremamente compatível com desenvolvimento assistido por Codex porque o problema deixa de ser:
+
+> “faça 300 modelos.”
+
+e passa a ser:
+
+> “construa um gerador capaz de produzir uma família infinita de modelos.”
+
+Esse segundo problema é essencialmente engenharia de software.
+
+---
+
+# O jogo que eu construiria
+
+Por enquanto vou chamá-lo simplesmente de **Project World**, porque vale a pena decidir o nome somente depois que a identidade estiver consolidada.
+
+Seria:
+
+**Action RPG voxel + mundo procedural + exploração + mundo persistente + simulação sistêmica.**
+
+Cube World continua sendo uma referência muito boa de sensação visual e exploração. A própria descrição oficial ainda o define como um action RPG voxel com foco em exploração em um mundo fantasy procedural.
+
+Veloren é ainda mais interessante tecnicamente. O projeto declara explicitamente inspiração em Cube World, Breath of the Wild, Dwarf Fortress e Minecraft. ([GitLab][1])
+
+Mas eu não copiaria nenhum deles.
+
+O conceito central seria:
+
+> **um mundo procedural que realmente vive, muda e cria sua própria história.**
+
+Não simplesmente um mapa procedural cheio de mobs procedurais.
+
+---
+
+# O diferencial fundamental
+
+Imagine que você entra no mundo pela primeira vez.
+
+Existe uma pequena cidade chamada, por exemplo:
+
+**Ravenfall.**
+
+Ela não existe porque colocamos `Ravenfall.vox` dentro da pasta `assets/towns`.
+
+O jogo gerou uma região com minério de ferro e floresta abundante. Isso favoreceu uma comunidade de lenhadores e ferreiros.
+
+A comunidade cresceu.
+
+Uma estrada surgiu porque outra cidade próxima precisava desse ferro.
+
+A estrada gerou comércio.
+
+O comércio gerou uma vila intermediária.
+
+Uma população de goblins começou a atacar caravanas.
+
+Os comerciantes contrataram mercenários.
+
+Você encontra uma dessas caravanas atacada.
+
+Uma quest aparece:
+
+**“Descubra por que as caravanas desapareceram.”**
+
+Mas ninguém escreveu aquela quest especificamente.
+
+Ela nasceu porque:
+
+```text
+economia
++
+simulação
++
+NPCs
++
+facções
++
+eventos
+=
+quest
+```
+
+E se você ignorar o problema, talvez a rota comercial desapareça.
+
+A cidade fica sem alimento.
+
+NPCs migram.
+
+Os preços aumentam.
+
+Talvez a cidade entre em decadência.
+
+Você volta cinquenta horas depois e Ravenfall não é mais a mesma.
+
+Esse é o tipo de coisa que impediria seu jogo de virar:
+
+> “mais um RPG voxel indie.”
+
+---
+
+# Curiosamente, Veloren já aponta na mesma direção
+
+Pesquisando a arquitetura atual do Veloren, existe um subsistema extremamente interessante chamado **RTSim**, originalmente “Real-Time Simulation”.
+
+Ele mantém uma representação simplificada do mundo inteiro, inclusive regiões que nenhum jogador está vendo.
+
+A documentação cita NPCs, facções, conflitos, migração, territórios, economia, comércio, fauna, clima, desastres e narrativas emergentes como responsabilidades presentes ou pretendidas dessa camada. ([Veloren Docs][2])
+
+A própria roadmap do Veloren fala em facções e reinos orgânicos capazes de participar de disputas de poder. ([Veloren][3])
+
+E existem planos de derivar quests do estado real do mundo, além de cidades mudarem conforme economia e controle político evoluem. ([GitLab][4])
+
+Ou seja: é uma direção tecnicamente sólida.
+
+A diferença é que eu colocaria essa filosofia **no centro do seu jogo desde o primeiro dia**, em vez de adicioná-la posteriormente.
+
+---
+
+# A arquitetura teria duas realidades
+
+Isso é extremamente importante para performance.
+
+Você não pode simular 100.000 NPCs fazendo pathfinding, colisão, animação e combat AI ao mesmo tempo.
+
+Então teríamos:
+
+```text
+WORLD SIMULATION
+      │
+      │ mundo inteiro
+      │ baixa frequência
+      │ extremamente barato
+      ▼
+┌─────────────────────────┐
+│ comércio                │
+│ populações              │
+│ guerras                 │
+│ migração                │
+│ ecologia                │
+│ clima                   │
+│ caravanas               │
+│ cidades                 │
+│ histórias               │
+└─────────────────────────┘
+
+         jogador aproxima
+
+                 ↓
+
+LOCAL SIMULATION
+      │
+      │ alta precisão
+      ▼
+┌─────────────────────────┐
+│ física                  │
+│ combate                 │
+│ animação                │
+│ pathfinding             │
+│ partículas              │
+│ comportamento detalhado │
+└─────────────────────────┘
+```
+
+Um fazendeiro a 100 km de você pode ser simplesmente:
+
+```rust
+Npc {
+    profession: Farmer,
+    settlement: 921,
+    activity: Farming,
+    wealth: 143,
+}
+```
+
+Quando você chega perto dele, aquilo se materializa como entidade completa.
+
+É exatamente o tipo de separação que permite um mundo enorme sem destruir a CPU.
+
+---
+
+# Linguagem: eu usaria Rust
+
+Para este projeto específico, minha escolha seria:
+
+**Rust.**
+
+Não C++.
+
+Não C#.
+
+E provavelmente não Zig para a primeira versão desse projeto.
+
+O motivo não é simplesmente “Rust é moderno”.
+
+Veloren é uma demonstração prática de que essa combinação funciona. O cliente atual usa Rust, `winit`, `wgpu`, `specs`, Kira e outras bibliotecas relativamente low-level. ([GitLab][5])
+
+Você continuaria desenvolvendo **seu próprio engine**.
+
+Usar `wgpu`, `winit` ou uma biblioteca matemática não significa usar uma game engine, da mesma forma que usar OpenGL não significa estar usando Unity.
+
+Eu criaria mais ou menos esta stack:
+
+| Subsistema     | Tecnologia                                          |
+| -------------- | --------------------------------------------------- |
+| Linguagem      | **Rust**                                            |
+| GPU            | **wgpu + WGSL**                                     |
+| Window/Input   | `winit`                                             |
+| Matemática     | `glam`                                              |
+| Multithreading | `rayon` + jobs próprios                             |
+| Física         | `Rapier3D` inicialmente                             |
+| ECS            | pequeno ECS próprio ou biblioteca extremamente leve |
+| Networking     | `QUIC`, provavelmente `quinn`                       |
+| Serialização   | `serde` + formatos binários próprios                |
+| Compressão     | `zstd`                                              |
+| Modding        | **WebAssembly + Wasmtime**                          |
+| UI             | solução própria sobre wgpu                          |
+| Áudio          | mixer/synth próprio + `cpal`                        |
+| Profiling      | Tracy + GPU timestamps                              |
+| Build          | Cargo workspace                                     |
+| CI             | GitHub Actions                                      |
+| Server         | binário headless compartilhando o core              |
+
+O `wgpu` atualmente abstrai Vulkan, Direct3D 12, Metal e outros backends e continua sendo uma API gráfica Rust nativa e multiplataforma. ([Wgpu][6])
+
+Isso nos poupa uma quantidade gigantesca de trabalho de compatibilidade sem virar uma engine.
+
+---
+
+# Por que não Vulkan diretamente?
+
+Porque existe uma diferença entre:
+
+> desenvolver uma engine
+
+e
+
+> passar seis meses implementando gerenciamento de swapchain.
+
+Você quer criar um jogo.
+
+Com `wgpu`, ainda somos responsáveis por:
+
+```text
+renderer
+lighting
+shaders
+meshing
+occlusion
+materials
+LOD
+post processing
+particles
+terrain
+animation
+GPU memory strategy
+```
+
+Isso já é engine programming suficiente para muitos anos.
+
+Ao mesmo tempo, ganhamos DX12 no Windows, Vulkan no Linux/Windows e Metal no macOS através da mesma abstração. ([Wgpu][6])
+
+---
+
+# Visualmente eu não faria Minecraft
+
+Essa parte é muito importante.
+
+Minecraft trabalha fortemente com:
+
+```text
+cube
++
+texture atlas
+```
+
+Eu faria:
+
+```text
+voxel geometry
++
+vertex colors
++
+procedural materials
++
+stylized lighting
+```
+
+Não precisaríamos nem de texturas tradicionais na maior parte do jogo.
+
+Imagine uma pedra.
+
+A GPU conhece:
+
+```text
+material = granite
+world_position
+surface_normal
+height
+humidity
+temperature
+seed
+```
+
+O shader calcula pequenas variações:
+
+```wgsl
+base_color =
+    granite_color
+    * geological_noise(position)
+    * moisture_factor
+    * biome_tint;
+```
+
+Nenhum `granite.png`.
+
+---
+
+# Como deixar bonito sem fazer arte
+
+Aqui está a parte mais interessante do projeto.
+
+A beleza viria principalmente de **iluminação, composição, cores e movimento**, não de texturas pintadas.
+
+Um cenário poderia ter blocos extremamente simples e ainda apresentar:
+
+```text
+sunlight volumétrico
+soft shadows
+ambient occlusion
+atmospheric scattering
+fog
+distance haze
+cloud shadows
+water reflections
+wind vegetation
+color grading
+bloom discreto
+partículas
+chuva
+neve
+light shafts
+day/night cycle
+```
+
+Isso muda completamente a aparência.
+
+Cube World já demonstra como formas extremamente simples podem criar paisagens visualmente atraentes.
+
+Mas podemos levar bastante além.
+
+---
+
+# Eu usaria uma escala de voxels diferente para cada coisa
+
+O terreno não precisa usar a mesma resolução visual de uma espada.
+
+Por exemplo:
+
+```text
+WORLD VOXEL
+1 voxel ≈ 0,5–1 metro
+
+PROP VOXEL
+1 voxel ≈ 5–15 centímetros
+
+CHARACTER VOXEL
+1 voxel ≈ 3–8 centímetros
+```
+
+Isso permite algo interessante.
+
+Uma montanha continua barata.
+
+Mas o personagem pode ter:
+
+```text
+dedos simplificados
+barba
+capuz
+placas da armadura
+fivelas
+espadas detalhadas
+ornamentos
+```
+
+sem precisar de Blender.
+
+---
+
+# Personagens sem modelagem 3D
+
+Eu construiria um **procedural character compiler**.
+
+Você poderia ter:
+
+```text
+CharacterGenome
+```
+
+contendo:
+
+```text
+species
+sex/body morphology
+height
+body proportions
+head shape
+hair
+beard
+skin palette
+equipment
+culture
+age style
+seed
+```
+
+O compilador monta um volume voxel.
+
+Algo como:
+
+```text
+pelvis
+  ↓
+torso volume
+  ↓
+shoulders
+  ↓
+arms
+  ↓
+hands
+  ↓
+neck
+  ↓
+head
+```
+
+Cada peça seria criada por primitivas matemáticas.
+
+Cuboids.
+
+Spheres.
+
+Ellipsoids.
+
+SDFs.
+
+CSG.
+
+Voxels.
+
+---
+
+# E as animações?
+
+Também não precisamos animar no Blender.
+
+Usaríamos skeleton procedural.
+
+Por exemplo:
+
+```text
+root
+ ├── pelvis
+ │    ├── left_leg
+ │    │     └── left_foot
+ │    └── right_leg
+ │          └── right_foot
+ │
+ └── chest
+      ├── head
+      ├── left_arm
+      └── right_arm
+```
+
+A animação pode ser construída através de funções.
+
+Uma caminhada:
+
+```rust
+hip.rotation.x = sin(t) * 0.08;
+
+left_leg.rotation.x =
+    sin(t) * stride;
+
+right_leg.rotation.x =
+    sin(t + PI) * stride;
+```
+
+Mas posteriormente fazemos algo muito melhor:
+
+**procedural animation + IK.**
+
+O pé procura o terreno.
+
+O joelho se ajusta.
+
+A mão encontra a arma.
+
+O corpo inclina durante corrida.
+
+Uma criatura de oito patas usa o mesmo conceito.
+
+Isso nos permite gerar criaturas que nunca foram previamente animadas.
+
+---
+
+# E aqui nasce outro diferencial
+
+Imagine um gerador de criaturas.
+
+Não um catálogo de 50 monstros.
+
+Um sistema morfológico.
+
+Por exemplo:
+
+```text
+body = quadruped
+size = 2.4
+legs = 6
+neck = long
+head = horned
+tail = armored
+skin = basalt
+element = fire
+```
+
+O sistema constrói:
+
+```text
+modelo
++
+skeleton
++
+collider
++
+animação
++
+stats
++
+sons
+```
+
+automaticamente.
+
+Isso é muito mais interessante para seu objetivo que pedir para IA gerar GLTFs aleatórios.
+
+---
+
+# Vegetação também seria matemática
+
+Uma árvore não precisaria existir como arquivo.
+
+Usaríamos L-systems ou gramáticas próprias:
+
+```text
+seed
+ ↓
+trunk
+ ↓
+branch
+ ├── branch
+ │    ├── leaf cluster
+ │    └── branch
+ └── branch
+```
+
+E espécies poderiam ser definidas geneticamente:
+
+```text
+branch_angle
+trunk_width
+branch_frequency
+leaf_density
+leaf_shape
+height
+gravity_bias
+wind_response
+```
+
+Assim conseguimos milhares de árvores diferentes.
+
+---
+
+# Cidades procedurais
+
+Aqui eu colocaria muito esforço.
+
+Não simplesmente:
+
+> randomicamente coloque casas.
+
+Teríamos uma **gramática arquitetônica**.
+
+Uma cultura definiria:
+
+```text
+roof style
+window style
+building materials
+street width
+tower frequency
+wall style
+preferred shapes
+decorations
+colors
+```
+
+Uma cidade mineradora cresce de um jeito.
+
+Uma capital comercial cresce de outro.
+
+Uma cidade élfica cresce de outro.
+
+Uma vila formada em torno de ruínas antigas cresce de outro.
+
+E tudo isso é código.
+
+---
+
+# Mundo procedural sério
+
+Eu não faria:
+
+```rust
+height = perlin_noise(x, y)
+```
+
+e chamaria aquilo de worldgen.
+
+Veloren usa uma abordagem muito mais interessante: uma etapa geológica começa a partir de propriedades como altitude, resistência da rocha, umidade e temperatura e aplica processos como erosão antes das etapas posteriores que acrescentam rios, lagos e outros elementos. ([Veloren][7])
+
+Eu desenvolveria nossa geração aproximadamente como:
+
+```text
+tectonic plates
+      ↓
+geology
+      ↓
+elevation
+      ↓
+erosion
+      ↓
+hydrology
+      ↓
+temperature
+      ↓
+humidity
+      ↓
+biomes
+      ↓
+flora/fauna
+      ↓
+resources
+      ↓
+civilizations
+      ↓
+roads
+      ↓
+settlements
+      ↓
+ruins/history
+      ↓
+current world
+```
+
+Isso significa que uma mina existe porque existe minério.
+
+Uma cidade existe porque aquele lugar fazia sentido economicamente.
+
+Uma estrada existe porque conecta dois lugares importantes.
+
+Uma ruína existe porque alguma coisa existiu ali.
+
+---
+
+# Quero também história antes do jogador aparecer
+
+Este é um dos componentes que mais daria personalidade ao projeto.
+
+Ao criar o mundo:
+
+```text
+Year -500
+world created
+
+Year -420
+tribe A settles valley
+
+Year -330
+city founded
+
+Year -291
+iron discovered
+
+Year -180
+kingdom expands
+
+Year -141
+war begins
+
+Year -132
+city destroyed
+
+Year -80
+trade route abandoned
+
+Year 0
+player appears
+```
+
+Agora aquela dungeon que você encontrou talvez seja:
+
+**a cidade destruída 132 anos atrás.**
+
+O boss pode ser consequência daquele evento.
+
+Um item raro pode ter pertencido ao rei daquela civilização.
+
+Isso transforma procedural generation em **procedural history**.
+
+---
+
+# Minecraft entraria como inspiração em outra coisa
+
+Não copiaria seu gameplay.
+
+Eu pegaria dele a ideia de:
+
+**o mundo ser matéria.**
+
+Você pode:
+
+```text
+cavar
+construir
+destruir
+descobrir
+alterar
+```
+
+Mas o jogo continuaria sendo um action RPG.
+
+Imagine derrotar uma criatura gigantesca que destrói parte de uma vila durante a luta.
+
+Os voxels realmente desaparecem.
+
+Depois os moradores reconstroem aquilo.
+
+Isso casa perfeitamente com a simulação.
+
+---
+
+# Combate
+
+Eu iria muito mais perto de:
+
+**Cube World + Zelda + Monster Hunter leve**
+
+que Minecraft.
+
+Teríamos armas com identidade mecânica:
+
+```text
+sword
+greatsword
+dagger
+spear
+bow
+staff
+shield
+gauntlets
+axe
+hammer
+```
+
+Mas não faria a progressão tradicional:
+
+```text
+Sword +3
+Sword +4
+Sword +5
+```
+
+Eu gostaria que equipamento procedurally generated tivesse propriedades físicas.
+
+Uma espada longa realmente tem alcance maior.
+
+Uma arma pesada realmente altera a animação.
+
+O centro de massa influencia ataques.
+
+Uma arma larga bloqueia melhor.
+
+Isso também pode ser calculado automaticamente a partir da geometria.
+
+---
+
+# O loot pode ser infinito sem parecer lixo procedural
+
+Esse é outro problema comum.
+
+Procedural não pode significar:
+
+```text
+Sword of Fire +37%
+Sword of Fire +42%
+Sword of Fire +44%
+```
+
+O gerador precisa produzir **categorias semanticamente interessantes**.
+
+Por exemplo:
+
+```text
+material
+craftsmanship
+culture
+age
+geometry
+enchantment
+history
+maker
+owner
+```
+
+Então você encontra:
+
+> uma espada anã produzida há 84 anos, usada por determinado guerreiro em uma guerra existente na história do mundo.
+
+E não simplesmente:
+
+> Rare Sword #184622.
+
+---
+
+# Física
+
+Eu não escreveria um solver de rigid bodies logo de início.
+
+Isso seria esforço de baixo retorno.
+
+Rapier atualmente fornece rigid bodies, colliders, joints, sensores, snapshotting e uma opção de simulação determinística entre máquinas compatíveis. ([Rapier][8])
+
+Portanto:
+
+```text
+nosso engine
+     ↓
+Rapier
+```
+
+é completamente aceitável.
+
+Depois podemos substituir partes especializadas.
+
+---
+
+# Renderização de voxels
+
+Aqui vale bastante engenharia.
+
+Eu começaria com:
+
+```text
+chunked voxel world
++
+greedy meshing
++
+frustum culling
++
+distance LOD
++
+occlusion
++
+async chunk generation
+```
+
+E evoluiria para:
+
+```text
+GPU indirect rendering
+meshlets
+compute culling
+hierarchical Z buffer
+GPU-driven rendering
+```
+
+`meshoptimizer`, por exemplo, fornece geração e otimização de meshlets e estruturas voltadas a cluster culling. ([GitHub][9])
+
+Isso permitiria cenários gigantescos com distâncias de renderização bem superiores ao necessário inicialmente.
+
+---
+
+# O mundo não ficaria todo carregado
+
+Teríamos algo parecido com:
+
+```text
+            CAMERA
+
+        FULL SIMULATION
+             200 m
+
+       HIGH DETAIL WORLD
+             1 km
+
+          LOW DETAIL
+             8 km
+
+        TERRAIN LOD
+            30 km+
+
+       world simulation
+        entire planet
+```
+
+Você poderia enxergar montanhas a dezenas de quilômetros.
+
+Mas elas não seriam compostas por milhões de voxels individuais naquela distância.
+
+---
+
+# Multiplayer desde a arquitetura inicial
+
+Mesmo que não lancemos multiplayer cedo.
+
+Eu faria:
+
+```text
+server authoritative
+```
+
+e single-player seria basicamente:
+
+```text
+client
+   ↕
+local server
+```
+
+É uma decisão arquitetural excelente.
+
+Veloren também separa seu client core da representação gráfica, inclusive permitindo conceitualmente frontends diferentes. ([Veloren][10])
+
+No nosso caso teríamos:
+
+```text
+world-core
+simulation
+gameplay
+protocol
+server
+client
+renderer
+```
+
+com dependências muito bem delimitadas.
+
+---
+
+# Modding seria uma feature de primeira classe
+
+Eu adicionaria isso cedo.
+
+Não Lua.
+
+Eu usaria:
+
+**WebAssembly Components.**
+
+Wasmtime possui uma API de embedding para WebAssembly e Component Model, permitindo instanciar componentes dentro da aplicação host. ([Wasmtime][11])
+
+Então alguém poderia escrever mod em:
+
+```text
+Rust
+C
+C++
+Zig
+Go
+AssemblyScript
+```
+
+e compilar para WASM.
+
+Um mod poderia adicionar:
+
+```text
+biomes
+items
+creatures
+world rules
+quests
+AI behaviours
+generators
+```
+
+sem ganhar acesso irrestrito ao computador.
+
+Isso é excelente para um jogo que quer viver muitos anos.
+
+---
+
+# Agora vem a parte do som
+
+Também dá para eliminar praticamente todos os arquivos de áudio.
+
+Eu faria um **procedural audio engine**.
+
+Imagine uma espada acertando pedra.
+
+Em vez de:
+
+```text
+sword_hit_rock_04.wav
+```
+
+teríamos:
+
+```text
+impact energy
+        ↓
+noise burst
+        ↓
+metal resonator
+        ↓
+stone resonator
+        ↓
+bandpass filter
+        ↓
+reverb
+        ↓
+sound
+```
+
+Mudando parâmetros, cada golpe fica ligeiramente diferente.
+
+Passos funcionariam da mesma forma.
+
+```text
+foot velocity
++
+terrain material
++
+character weight
+=
+footstep
+```
+
+Neve.
+
+Pedra.
+
+Madeira.
+
+Grama.
+
+Metal.
+
+Todos sintetizados.
+
+---
+
+# Até o vento
+
+O vento poderia ser simplesmente ruído filtrado.
+
+Uma tempestade:
+
+```text
+pink noise
++
+low-pass
++
+gust envelope
++
+spatial modulation
+```
+
+Chuva:
+
+```text
+random impulses
++
+filtered noise
++
+surface response
+```
+
+Fogueira:
+
+```text
+crackle impulses
++
+brown noise
++
+random envelopes
+```
+
+Nenhum WAV obrigatório.
+
+---
+
+# E música?
+
+Essa é a única parte na qual eu faria algo particularmente experimental.
+
+Criaria um **procedural music system**.
+
+Não IA generativa em runtime.
+
+Um compositor algorítmico.
+
+O mundo define:
+
+```text
+biome
+time
+weather
+danger
+culture
+player state
+```
+
+e isso alimenta:
+
+```text
+harmony
+tempo
+instrument selection
+melody density
+rhythm
+```
+
+Um sintetizador interno produziria instrumentos.
+
+Podemos implementar:
+
+```text
+wavetable synthesis
+FM synthesis
+subtractive synthesis
+physical modelling
+reverb
+delay
+filters
+```
+
+A música literalmente poderia nunca repetir exatamente da mesma forma.
+
+E isso daria ao projeto uma identidade enorme.
+
+---
+
+# Personagens também não precisariam de vozes gravadas
+
+Eu faria uma linguagem vocal estilizada.
+
+Algo parecido conceitualmente com jogos em que personagens emitem sílabas sintetizadas enquanto o texto aparece, mas com sistema próprio.
+
+Cada espécie teria:
+
+```text
+pitch
+formants
+cadence
+syllable inventory
+emotion
+```
+
+Resultado:
+
+```text
+NPC humano
+Goblin
+Gigante
+Espírito
+```
+
+todos teriam vozes proceduralmente distintas.
+
+Sem contratar dublador.
+
+Sem arquivos.
+
+---
+
+# Uma vantagem enorme dessa abordagem
+
+O jogo pode ficar surpreendentemente pequeno.
+
+Imagine um RPG gigantesco em que grande parte do conteúdo é:
+
+```text
+algorithms
++
+seeds
++
+descriptors
+```
+
+em vez de:
+
+```text
+30 GB textures
+20 GB audio
+40 GB models
+```
+
+Não significa que seria minúsculo automaticamente, mas a relação **conteúdo/tamanho** pode ser absurda.
+
+---
+
+# Onde a IA entra nisso
+
+É aqui que acredito que o projeto se torna realisticamente interessante para você.
+
+Você não utilizaria Codex para:
+
+> “faça meu jogo inteiro.”
+
+Você trataria Codex como uma equipe de engenharia.
+
+O Codex atual suporta fluxos multiagente, worktrees e ambientes em nuvem para tarefas paralelas de desenvolvimento. ([OpenAI][12])
+
+A infraestrutura atual também foi concebida para agentes realizando tarefas longas em ambientes com código, ferramentas, testes e artefatos persistentes. ([OpenAI][13])
+
+Portanto podemos estruturar o repositório de modo que agentes diferentes trabalhem em:
+
+```text
+renderer
+worldgen
+voxel
+simulation
+audio
+physics
+networking
+gameplay
+procedural-art
+tooling
+```
+
+sem todos alterarem os mesmos arquivos.
+
+Inclusive deixei disponível a conexão com **GitHub** nesta conversa; se você conectá-la, em trabalhos futuros consigo trabalhar diretamente com o contexto do repositório, issues e PRs em vez de depender somente do que você colar aqui.
+
+---
+
+# Mas existe uma condição
+
+Temos que fazer o projeto **AI-friendly desde o primeiro commit**.
+
+Nada de um monolito:
+
+```text
+src/main.rs
+28.000 linhas
+```
+
+Eu faria algo próximo disso:
+
+```text
+project/
+├── crates/
+│   ├── core/
+│   ├── math/
+│   ├── platform/
+│   ├── render/
+│   ├── voxel/
+│   ├── procedural/
+│   ├── worldgen/
+│   ├── world/
+│   ├── simulation/
+│   ├── physics/
+│   ├── animation/
+│   ├── audio/
+│   ├── gameplay/
+│   ├── ai/
+│   ├── net/
+│   ├── server/
+│   ├── client/
+│   ├── mods/
+│   └── tools/
+│
+├── shaders/
+├── tests/
+├── benchmarks/
+├── docs/
+└── game/
+```
+
+E cada módulo teria invariants e documentação própria.
+
+Isso é muito mais importante quando agentes de IA estão contribuindo.
+
+---
+
+# O segredo: não gerar conteúdo em runtime quando não precisa
+
+Por exemplo, um monstro procedural pode ser criado desta forma:
+
+```text
+descriptor
+     ↓
+procedural compiler
+     ↓
+voxel model
+     ↓
+optimized mesh
+     ↓
+cache
+```
+
+Na próxima vez:
+
+```text
+descriptor hash
+     ↓
+cache hit
+     ↓
+load mesh
+```
+
+Assim temos o melhor dos dois mundos:
+
+**conteúdo gerado por código + performance semelhante à de assets tradicionais.**
+
+---
+
+# A engine pode inclusive ter seu próprio “procedural asset compiler”
+
+Eu daria a isso um papel central.
+
+Algo como:
+
+```text
+World Compiler
+```
+
+O Codex poderia escrever:
+
+```rust
+let wolf = CreatureBuilder::new()
+    .quadruped()
+    .body_length(1.4)
+    .leg_length(0.55)
+    .fur(Fur::Dense)
+    .ears(Ear::Pointed)
+    .tail(Tail::Bushy)
+    .build();
+```
+
+Depois executamos:
+
+```bash
+cargo run -p world-compiler
+```
+
+E ele produz automaticamente previews.
+
+O agente olha os renders.
+
+Ajusta parâmetros.
+
+Renderiza novamente.
+
+Ou seja:
+
+**até o processo artístico pode virar um loop de engenharia automatizado.**
+
+---
+
+# O estilo visual que eu escolheria
+
+Eu não iria para fotorealismo.
+
+Isso sabotaria completamente a proposta.
+
+Eu escolheria:
+
+**stylized high-detail voxel fantasy.**
+
+Cube World seria o ancestral visual.
+
+Mas haveria:
+
+```text
+mais detalhe
+melhor iluminação
+melhores sombras
+melhor atmosfera
+melhor vegetação
+melhor água
+melhores animações
+muito mais densidade
+```
+
+Continuaria obviamente voxel.
+
+Não tentaria esconder isso.
+
+---
+
+# Onde não devemos exagerar
+
+Existe uma armadilha enorme nesse projeto:
+
+```text
+“já que tudo é procedural,
+vamos simular tudo.”
+```
+
+Não.
+
+Não precisamos simular:
+
+> metabolismo individual de cada peixe.
+
+Precisamos simular coisas que produzem consequências percebidas pelo jogador.
+
+A regra seria:
+
+> **Se uma simulação não gera gameplay observável, ela não existe.**
+
+Isso evita transformar o projeto numa tese acadêmica infinita.
+
+---
+
+# A progressão também precisa ser diferente
+
+Eu evitaria o problema de muitos RPGs procedurais:
+
+```text
+bioma novo
+→
+mesmos inimigos
+→
+mais HP
+→
+mais dano
+```
+
+Quero progressão horizontal junto da vertical.
+
+Você ficaria mais poderoso, obviamente.
+
+Mas também ganharia:
+
+```text
+mobilidade
+conhecimento
+crafting
+magic
+mounts
+navigation
+world access
+social influence
+settlement capabilities
+```
+
+Explorar uma nova região deve alterar como você joga, e não simplesmente o número acima da cabeça do inimigo.
+
+---
+
+# E provavelmente não teria classes rígidas
+
+Seu personagem seria definido pelo que usa e aprende.
+
+Uma build seria composta por:
+
+```text
+weapon
+equipment
+abilities
+magic
+traits
+movement skills
+```
+
+Quer virar arqueiro?
+
+Use arco.
+
+Quer misturar:
+
+```text
+greatsword
++
+necromancy
++
+glider
++
+heavy armor
+```
+
+Faça isso.
+
+Isso combina muito mais com um mundo de exploração.
+
+---
+
+# O mapa também não deveria parecer infinito por parecer infinito
+
+Um mapa infinito procedural frequentemente vira:
+
+> quantidade infinita de coisas que não importam.
+
+Prefiro um mundo gigantesco porém finito.
+
+Por exemplo:
+
+```text
+continentes
+oceanos
+ilhas
+climas
+civilizações
+```
+
+E uma seed reproduz tudo.
+
+Isso permite existência de uma **história global coerente**.
+
+---
+
+# O que eu acho que seria o núcleo do projeto
+
+Eu resumiria a identidade numa frase:
+
+> **Um action RPG voxel em um mundo completamente procedural e persistente, no qual geografia, ecologia, civilizações, economia e história continuam existindo e evoluindo independentemente do jogador.**
+
+E existe uma segunda frase igualmente importante:
+
+> **Todo o conteúdo audiovisual nasce de sistemas, não de uma pipeline tradicional de assets.**
+
+Essas duas coisas juntas são incomuns o suficiente para o projeto ter personalidade própria.
+
+---
+
+# Como eu desenvolveria
+
+Não começaria criando o RPG.
+
+Começaria criando uma pequena engine que mostra:
+
+```text
+uma janela
+↓
+uma câmera
+↓
+um chunk
+↓
+muitos chunks
+↓
+streaming
+↓
+worldgen
+↓
+iluminação
+↓
+personagem
+↓
+movimento
+```
+
+Depois disso, a evolução seria aproximadamente esta:
+
+| Estágio            | Resultado                            |
+| ------------------ | ------------------------------------ |
+| Foundation         | janela, wgpu, input, jobs, profiling |
+| Voxel Engine       | chunks, meshing, streaming, save     |
+| Renderer           | iluminação, sombras, água, atmosfera |
+| Worldgen           | terreno, clima, rios, cavernas       |
+| Procedural Art     | árvores, props, criaturas, armas     |
+| Character          | skeleton, IK, animação               |
+| Gameplay           | combate e exploração                 |
+| World Simulation   | NPCs, cidades, economia              |
+| Procedural History | guerras, ruínas, eventos             |
+| Audio              | synth, ambience, procedural music    |
+| Networking         | server authoritative                 |
+| Modding            | WASM                                 |
+| Content            | expansão dos geradores               |
+
+O objetivo inicial não seria:
+
+> “fazer um Cube World.”
+
+Seria chegar ao primeiro momento em que conseguimos abrir o executável e pensar:
+
+> **“eu poderia andar nesse mundo por horas.”**
+
+Quando isso acontecer, temos o jogo.
+
+---
+
+# E sobre performance
+
+Eu colocaria uma meta agressiva:
+
+**1080p / 60 FPS em hardware intermediário sem depender de upscaling.**
+
+CPU:
+
+```text
+parallel world generation
+parallel chunk meshing
+job system
+data-oriented simulation
+LOD simulation
+```
+
+GPU:
+
+```text
+chunk batching
+indirect drawing
+frustum culling
+occlusion culling
+LOD
+GPU particles
+GPU vegetation
+```
+
+Memória:
+
+```text
+palette compression
+chunk compression
+region streaming
+object pools
+compact ECS
+```
+
+Rapier também oferece execução paralela através de Rayon quando habilitada. ([Rapier][8])
+
+---
+
+# Isso é maior que Cube World?
+
+Potencialmente, sim.
+
+Não necessariamente em quilômetros.
+
+Em **profundidade sistêmica**.
+
+Cube World seria inspiração para:
+
+```text
+aventura
+voxel
+exploração
+combate
+```
+
+Minecraft:
+
+```text
+mundo modificável
+emergência
+liberdade
+```
+
+Veloren:
+
+```text
+arquitetura
+worldgen
+multiplayer
+world simulation
+```
+
+Dwarf Fortress:
+
+```text
+história
+civilizações
+causalidade
+```
+
+Zelda:
+
+```text
+travessia
+descoberta
+interação ambiental
+```
+
+Mas o produto final não precisaria parecer nenhum deles individualmente.
+
+---
+
+# O ponto que mais me convence
+
+Sua restrição de:
+
+> “não quero modelar, desenhar nem produzir sons”
+
+não é uma desvantagem neste caso.
+
+Ela pode virar **a principal decisão arquitetural do jogo**.
+
+Em vez de tentar esconder a ausência de artistas, podemos criar uma tecnologia que torne desnecessário ter milhares de assets manuais.
+
+E isso é algo que Codex consegue ajudar extraordinariamente bem porque estamos transformando **produção artística repetitiva em problemas de geração, regras, geometria, shaders, DSP e otimização**.
+
+É muito mais próximo de construir um sistema do que de produzir conteúdo manualmente.
+
+---
+
+## O que eu faria a partir daqui
+
+Eu considero essa ideia suficientemente boa para não começar escrevendo código aleatoriamente. O próximo passo deveria ser criar **o documento fundador do projeto**: visão do jogo, gameplay loop, identidade visual, filosofia procedural, arquitetura da engine, estrutura do workspace Rust, worldgen, renderização, procedural-art, áudio procedural, modding, multiplayer e um roadmap de milestones.
+
+E então transformar esse documento num **prompt mestre para o Codex**, já com a primeira milestone extremamente específica: abrir uma janela usando Rust + wgpu e chegar, incrementalmente, a uma pequena região voxel procedural renderizada pela nossa própria engine.
+
+Essa é a abordagem que eu usaria para tentar transformar isso em **seu próprio Cube World/Veloren**, e não em apenas mais um clone deles.
+
+[1]: https://gitlab.com/veloren/veloren/-/blob/master/voxygen/Cargo.toml?utm_source=chatgpt.com "voxygen/Cargo.toml · master · Veloren / veloren · GitLab"
+[2]: https://docs.veloren.net/veloren_rtsim/index.html?utm_source=chatgpt.com "veloren_rtsim - Rust"
+[3]: https://book.veloren.net/players/roadmap.html?utm_source=chatgpt.com "Roadmap - Veloren: An Owner's Manual"
+[4]: https://gitlab.com/veloren/veloren/-/work_items/1444?utm_source=chatgpt.com "Tracking: Worldgen Work (#1444) · Issues · Veloren / veloren · GitLab"
+[5]: https://gitlab.com/veloren/veloren/-/work_items/2192?utm_source=chatgpt.com "Dependency Dashboard (#2192) · Issues · Veloren / veloren · GitLab"
+[6]: https://wgpu.rs/doc/wgpu/documentation/features/index.html?utm_source=chatgpt.com "wgpu::documentation::features - Rust"
+[7]: https://book.veloren.net/internals/worldgen/worldgen.html?utm_source=chatgpt.com "Worldgen - Veloren: An Owner's Manual"
+[8]: https://rapier.rs/docs/user_guides/rust/getting_started/?utm_source=chatgpt.com "Getting started | Rapier"
+[9]: https://github.com/onedevapp/MeshOptimizer?utm_source=chatgpt.com "GitHub - onedevapp/MeshOptimizer: Mesh optimization library that makes meshes smaller and faster to render · GitHub"
+[10]: https://book.veloren.net/contributors/developers/codebase-structure.html?utm_source=chatgpt.com "Project Architecture - Veloren: An Owner's Manual"
+[11]: https://docs.wasmtime.dev/api/wasmtime/component/index.html?utm_source=chatgpt.com "wasmtime::component - Rust"
+[12]: https://openai.com/pt-BR/codex/?utm_source=chatgpt.com "Codex no ChatGPT | Agentes de programação com IA para engenharia de software | OpenAI"
+[13]: https://openai.com/index/introducing-the-agents-api/?utm_source=chatgpt.com "Introducing the Agents API | OpenAI"
+
+
+Perfeito — o **GitHub já está conectado**. Isso é especialmente útil para esse projeto: quando criarmos o repositório, posso trabalhar com a estrutura real dele, acompanhar issues/PRs e analisar o código sem você precisar ficar colando arquivos aqui.
+
+Para esse jogo, eu usaria o GitHub como a “fonte da verdade” do projeto: arquitetura, ADRs, milestones, benchmarks, documentação do worldgen e tarefas para os agentes. Quando começarmos a implementação, vale estruturar o repositório desde o primeiro commit para Codex e outros agentes conseguirem trabalhar em paralelo sem transformar a codebase num caos.
+
+
+Faça um levantamento sobre os jogos desse tipo, sobre o publico, oque o pessoal gostaria e oque pode tornar esses jogos masi divertidos e infinito de modo que faça as pessoas terem interesse em continuar jogando e tals. Além disso procure um bom nome sem uso ainda e que não tenha cara de Ia e chame atenção. Faça uma pesquisa/levantamento de mais cosias que achem uteis e interessantes debater. COnsidere o que falei, eu não quero ter que gerar musicas ou assets, quero que tudo seja feito in codde e que não fique mal feito ou com cara de bug, me responda aqui, voxel é facil para o codex fazer? sei que 3D ainda tem dificuldade e pxielart até dar. Pense tambem em QUALIDADE de codigo padrão de projetos que vamos seguir, e esse tipo de coisa para definir desde o inicio do projeto.
+
+Sim. Depois de olhar Cube World, Veloren, Hytale, Vintage Story, Trove, Portal Knights, Enshrouded, Valheim e No Man’s Sky, eu acho que existe um espaço muito interessante para esse projeto — e **voxel é provavelmente uma das melhores escolhas possíveis para desenvolver um jogo 3D grande com Codex sem depender de artistas 3D**.
+
+A conclusão mais importante da pesquisa foi outra: o problema desse gênero não é conseguir gerar um mundo enorme. Isso já foi resolvido várias vezes. O problema é fazer o jogador continuar pensando:
+
+> **“Quero saber o que existe depois daquela montanha.”**
+
+E, 100 horas depois:
+
+> **“Quero saber no que meu mundo se transformou.”**
+
+![Image](https://images.openai.com/static-rsc-4/uO0fScMt6neTpFbZ6a618rwNzqasVCJasIlZG15p37i7FV8cXDrK5AWGIw1FFyDlFb8-Pq1YSHUZA2OIBs7QmxWMt9jHWczvu-h6_J03zzp8fcBGPHQBXSHkCoLbRVHzPkLvcPkI_wZ3hEA_ipCcZlCkjzkMSSJxqWpcPMKYhTKnccIIeKSASZyoM3jpt1u7?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/fbdsQW_asBhFLbn1J6evNIVdlVjC2T4lNL14RNHrIeePYKZhnUuJdQjmuShYBkZDxVATpzYZqWbgmn0KvllTcDUN1Y9U6I8VsCjP4MXH9IkjNy_Oiw0U1J-RszP-cCPhtu_95XgHe5GbC7jNCLGBkskXi4b-AljBaov-PlMXfYHsnuRsBa9qRUntOXjcFA9X?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/Zjj9pot4mc7FP-3vpfxHMC6itY9psnQ3F3GZPrsxhepaHu5YCWnMIOZnfn8GFhZBxEhfyYAX7ayhSZ2uPnZMEYCrBBALHDmjwQmfEoUU-MdPPPWVVjgRFngt_hKivO7GlMUxpqoVLZSEHw4CAfYgwFLcn5flOc8ncAK8FU_F8tKGpmh6UUJ2628dR7Fhr1oZ?purpose=fullsize)
+
+## O mercado existe — e é enorme
+
+Não estamos falando de um nicho minúsculo de gente nostálgica de Cube World.
+
+Minecraft já havia passado de **300 milhões de cópias vendidas** em 2023. ([Minecraft.net][1]) Valheim chegou à versão 1.0 agora em setembro de 2026 e mantém mais de **261 mil reviews em inglês, com 94% positivas** no Steam. ([Loja Steam][2]) Enshrouded, que mistura construção, exploração, RPG e terreno modificável, possui mais de **93 mil reviews de compradores do Steam** e avaliação muito positiva. ([Loja Steam][3])
+
+No Man's Sky continua relevante dez anos depois, com cerca de **184 mil reviews em inglês e 92% de avaliações recentes positivas**, mesmo sendo fundamentalmente um jogo sobre exploração procedural. ([Loja Steam][4])
+
+E Hytale finalmente entrou em Early Access em **13 de janeiro de 2026**; a equipe voltou à visão original e, em julho, relatava estar enviando atualizações semanalmente enquanto reconstruía as fundações do jogo. ([Hytale][5])
+
+Portanto, a combinação:
+
+**mundo procedural + RPG + exploração + construção + co-op + progressão**
+
+continua tendo demanda muito grande.
+
+A questão é fazer uma versão que resolva problemas recorrentes do gênero.
+
+## O que cada jogo ensina para nós
+
+| Jogo               | O que funciona                                                                               | Problema que devemos observar                                                                                                                                                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Cube World**     | Exploração, visual extremamente reconhecível, mobilidade, sensação de aventura               | A versão Steam tem apenas 38% de reviews positivas em inglês. A progressão regional dividiu bastante a comunidade porque equipamentos perdiam relevância ao atravessar regiões. ([Loja Steam][6])                                               |
+| **Veloren**        | Atmosfera, worldgen, grandes paisagens, voo, arquitetura sistêmica                           | Jogadores elogiam iluminação e atmosfera, mas criticam combate sem impacto, viagens lentas e interações repetitivas. Uma crítica publicada há poucos dias menciona explicitamente coleta, mineração e deslocamento como fricções. ([Reddit][7]) |
+| **Vintage Story**  | Progressão extremamente significativa, sistemas profundos, construção, sensação de conquista | Jogadores com centenas de horas ainda reclamam de deslocamento excessivamente tedioso e alguns sistemas demorados demais. ([Reddit][8])                                                                                                         |
+| **Trove**          | Loop acessível, classes, loot, mundo voxel e progressão                                      | O endgame é criticado por repetição, grind enorme e time-gates semanais. ([Loja Steam][9])                                                                                                                                                      |
+| **Portal Knights** | RPG + construção + co-op muito acessível                                                     | É comparativamente menos sistêmico; seu diferencial depende mais do conteúdo existente. Ainda mantém avaliações muito positivas. ([Loja Steam][10])                                                                                             |
+| **Hytale**         | Excelente proposta de sandbox RPG, construção e ferramentas                                  | Feedback do Early Access aponta justamente falta de propósito, perigo e progressão significativa quando o mundo ainda não oferece razões suficientes para agir. ([Reddit][11])                                                                  |
+| **Valheim**        | Progressão clara, expedição, preparação, chefes, construção, co-op                           | Mostra que não é necessário ter gráficos complexos para criar aventura memorável; o importante é a jornada e a progressão. A versão 1.0 continua extremamente bem avaliada. ([Loja Steam][2])                                                   |
+| **No Man's Sky**   | Escala gigantesca, exploração, bases, coleções e atualizações contínuas                      | Mostra uma coisa crucial: procedural sozinho não segura o jogador; novos sistemas e razões para voltar são necessários. Mesmo dez anos depois continua recebendo grandes expansões. ([Loja Steam][4])                                           |
+
+E existe uma conclusão muito consistente nessas comunidades:
+
+**tamanho do mundo não é conteúdo.**
+
+Essa distinção precisa virar praticamente uma lei do nosso projeto.
+
+---
+
+# O que esse público realmente quer
+
+Eu dividiria nossos jogadores em cinco comportamentos, e o jogo precisa permitir que eles coexistam.
+
+| Perfil          | O que faz continuar jogando                                                                            |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| Explorador      | paisagens inesperadas, lugares realmente raros, cavernas, ruínas, criaturas e segredos                 |
+| Aventureiro/RPG | combate bom, builds, equipamentos, habilidades, chefes e desafios                                      |
+| Construtor      | transformar o mundo, criar bases, vilas, estradas, máquinas ou estruturas                              |
+| Sistêmico       | economia, crafting, ecologia, NPCs, otimização e consequências                                         |
+| Social          | aventuras em grupo, especializações complementares, comércio, construções e descobertas compartilhadas |
+
+Vintage Story é particularmente interessante aqui. Um jogador descreve explicitamente três coisas que o mantêm envolvido: **criatividade, progressão visível e profundidade mecânica**. Outro destaca que cada nova era de materiais muda o processo, em vez de simplesmente repetir o mesmo crafting com números maiores. ([Reddit][12])
+
+Isso é uma pista enorme para nós.
+
+Não queremos:
+
+```text
+madeira
+↓
+pedra
+↓
+ferro
+↓
+ouro
+↓
+material mágico
+
++10%
++20%
++30%
++40%
+```
+
+Queremos que cada avanço **mude alguma coisa na forma de jogar**.
+
+---
+
+# O segredo para o jogo parecer “infinito”
+
+Não quero que o jogo seja infinito por possuir `2^64` seeds.
+
+Isso não significa absolutamente nada para o jogador.
+
+Quero quatro tipos diferentes de infinitude:
+
+| Tipo             | Exemplo                                   |
+| ---------------- | ----------------------------------------- |
+| **Espacial**     | geografia, cavernas, regiões, ruínas      |
+| **Combinatória** | criaturas, equipamentos, dungeons, builds |
+| **Sistêmica**    | economia, população, facções, ecologia    |
+| **Humana**       | construção, multiplayer, mods, desafios   |
+
+A quarta é especialmente poderosa.
+
+Minecraft continua praticamente inesgotável não porque Mojang tenha escrito 300 milhões de quests. O jogador cria coisas.
+
+Nosso jogo deveria aplicar isso ao RPG.
+
+---
+
+# Minha proposta para o coração do jogo
+
+Eu consolidaria o conceito em quatro pilares.
+
+### **Adventure**
+
+Você explora porque não sabe o que encontrará.
+
+Não colocaria 47 ícones no mapa dizendo exatamente onde estão as atividades.
+
+Você sobe uma montanha e enxerga:
+
+```text
+uma torre no horizonte
+uma floresta estranha
+fumaça
+uma tempestade
+uma criatura voando
+uma estrada abandonada
+```
+
+E decide para onde ir.
+
+Essa sensação é muito mais valiosa que:
+
+```text
+?
+?
+?
+?
+?
+```
+
+no mapa.
+
+### **Mastery**
+
+O personagem começa fisicamente limitado.
+
+Você não recebe tudo imediatamente.
+
+Hytale recebeu justamente críticas de alguns jogadores porque mobilidade e recursos avançados estavam disponíveis cedo demais, reduzindo a sensação de crescimento. ([Reddit][11])
+
+Então encontrar:
+
+**gancho → mount → barco → glider → magia de movimento → criatura voadora**
+
+altera progressivamente o mundo acessível.
+
+Uma montanha que parecia gigantesca quando você tinha duas horas de jogo deixa de ser um obstáculo quando possui cem.
+
+Isso cria uma sensação fantástica de evolução.
+
+### **Creation**
+
+O mundo seria modificável.
+
+Não precisa virar Minecraft.
+
+Mas eu permitiria:
+
+```text
+escavar
+cortar
+construir
+plantar
+criar estradas
+erguer acampamentos
+fundar assentamentos
+```
+
+O jogador deixa marcas.
+
+### **World Memory**
+
+Esse seria o nosso grande diferencial.
+
+O mundo **se lembra do que aconteceu**.
+
+E não apenas das coisas feitas pelo jogador.
+
+Veloren já tem exatamente uma fundação interessante para algo assim: seu RTSim acompanha estado mundial fora das áreas carregadas e a roadmap pretende conectar recursos, populações, economia e quests geradas por necessidades reais do mundo. ([Veloren][13])
+
+Nós transformaríamos isso em um pilar central.
+
+---
+
+# Imagine isso acontecendo
+
+Você encontra uma vila pequena.
+
+Há uma mina próxima.
+
+Você descobre que criaturas começaram a ocupar a mina.
+
+Pode ignorar.
+
+Vinte horas depois você retorna.
+
+A mina continuou fechada.
+
+Sem minério, alguns ferreiros foram embora.
+
+O preço de ferramentas aumentou.
+
+Uma rota comercial mudou.
+
+A vila encolheu.
+
+Outra facção ocupou parte daquela região.
+
+Uma quest completamente diferente apareceu.
+
+Agora imagine o contrário.
+
+Você exterminou as criaturas.
+
+A mina volta a operar.
+
+A vila cresce.
+
+Novas casas aparecem proceduralmente.
+
+Comerciantes chegam.
+
+Uma muralha é construída.
+
+Talvez cinquenta horas depois aquela vila seja uma cidade.
+
+**Isso cria replay sem precisar escrever mil quests.**
+
+---
+
+# E isso resolve um problema enorme de procedural generation
+
+Uma crítica recorrente a mundos procedurais é:
+
+> “Já vi uma floresta. A próxima floresta muda as árvores, mas continua sendo a mesma coisa.”
+
+Nosso objetivo seria gerar **causalidade**, não apenas aparência.
+
+Um lugar interessante precisa poder ser descrito como:
+
+> “Essa é a cidade que surgiu porque duas rotas comerciais se encontraram aqui depois que a guerra fechou a passagem do norte.”
+
+Isso é muito mais memorável que:
+
+> “Village Type B, seed 792661.”
+
+---
+
+# Mas não vamos simular Dwarf Fortress inteiro
+
+Essa é uma decisão importante.
+
+Seria fácil transformar isso num projeto eterno.
+
+Nossa regra deveria ser:
+
+> **Só simulamos aquilo que eventualmente consegue produzir uma consequência observável para o jogador.**
+
+Então podemos começar com somente:
+
+```text
+resources
+population
+danger
+faction influence
+trade
+```
+
+E construir em cima disso.
+
+Não precisamos simular a digestão de cada camponês.
+
+---
+
+# Outro ensinamento: viajar precisa ser divertido
+
+Isso apareceu tanto em feedback atual do Veloren quanto do Vintage Story. Jogadores gostam de mundos grandes, mas reclamam quando atravessá-los vira tempo morto. ([Reddit][14])
+
+Portanto:
+
+**eu não colocaria fast travel tradicional muito cedo.**
+
+Eu faria algo melhor:
+
+> **transformaria traversal em progressão.**
+
+Começa:
+
+```text
+andar
+```
+
+Depois:
+
+```text
+correr
+escalar
+nadar
+cavalo
+barco
+glider
+grappling hook
+airship
+flying mount
+magia
+```
+
+Cada sistema também cria gameplay.
+
+Um glider depende de altitude e vento.
+
+Um barco cria expedições marítimas.
+
+Uma airship requer infraestrutura.
+
+A viagem continua existindo, mas fica cada vez mais divertida.
+
+---
+
+# Combate é absolutamente inegociável
+
+Esse é um dos maiores alertas da pesquisa.
+
+Veloren possui worldgen tecnicamente impressionante, mas críticas sobre combate aparecem repetidamente: sensação fraca dos golpes, inimigos muito resistentes e dificuldade de leitura. ([Reddit][15])
+
+Vintage Story também recebe elogios enormes por seus sistemas e críticas fortes ao combate. ([Reddit][16])
+
+Portanto não podemos pensar:
+
+> “combate vem depois.”
+
+Tem que haver um vertical slice muito cedo contendo:
+
+```text
+movimento
++
+esquiva
++
+ataque
++
+hit reaction
++
+inimigo
++
+som
++
+partícula
++
+câmera
+```
+
+E isso precisa ser **gostoso** antes de criarmos 300 monstros.
+
+Um único slime divertido de enfrentar é mais valioso que 100 monstros procedurais ruins.
+
+---
+
+# Sobre o que você perguntou: voxel é fácil para Codex?
+
+**Comparativamente: sim. Bastante.**
+
+Não significa que seja trivial.
+
+Mas existe uma diferença enorme entre pedir para Codex produzir:
+
+> “um dragão 3D profissional, topology boa, UVs, materiais, rig e animações”
+
+e pedir:
+
+> “implemente um gerador voxel determinístico de dragões baseado em volumes, SDFs e parâmetros morfológicos.”
+
+O segundo é essencialmente **programação**.
+
+E isso é justamente onde Codex é muito mais forte.
+
+OpenAI atualmente posiciona Codex para tarefas completas de engenharia, incluindo implementação, refactors, testes e trabalho paralelo usando agentes/worktrees. ([OpenAI][17]) A infraestrutura atual também foi construída para agentes executarem tarefas longas com arquivos, ferramentas, ambientes e artefatos persistentes. ([OpenAI][18])
+
+E hoje o Codex também possui workflows voltados à iteração em jogos e interfaces usando computador e navegador. ([OpenAI][19])
+
+Voxel casa extraordinariamente bem com isso.
+
+---
+
+# Porque voxel combina tão bem com agente de código
+
+Um objeto voxel pode ser representado simplesmente por:
+
+```text
+Voxel[x][y][z]
+```
+
+Ou através de volumes matemáticos.
+
+Uma cabeça:
+
+```rust
+ellipsoid(center, radius)
+```
+
+Um braço:
+
+```rust
+capsule(start, end, radius)
+```
+
+Um chifre:
+
+```rust
+tapered_cone(start, direction, length)
+```
+
+Então uma criatura vira:
+
+```text
+CreatureDescriptor
+        ↓
+Morphology Generator
+        ↓
+Voxel Volume
+        ↓
+Surface Classification
+        ↓
+Material Generator
+        ↓
+Mesh Generator
+        ↓
+LOD
+        ↓
+GPU
+```
+
+Codex consegue trabalhar muito melhor sobre isso que sobre um `.blend` gigantesco.
+
+---
+
+# E conseguimos testar “arte”
+
+Aqui aparece algo extremamente poderoso.
+
+Podemos construir fixtures:
+
+```text
+orc_seed_001
+wolf_seed_001
+village_seed_001
+forest_seed_001
+sword_seed_001
+```
+
+E a CI renderiza automaticamente cada um.
+
+Então fazemos **visual regression tests**.
+
+Se um agente alterar o gerador de árvores e acidentalmente transformar todas em postes gigantes:
+
+```text
+expected screenshot
+        ↓
+perceptual diff
+        ↓
+FAILED
+```
+
+Esse tipo de pipeline é ideal para desenvolvimento por agentes.
+
+Inclusive encontrei projetos recentes experimentando exatamente a separação que eu quero: simulação determinística independente do renderer, fixtures, captura automática de screenshots e gates de qualidade visual. ([GitHub][20])
+
+---
+
+# Mas existe uma armadilha
+
+Não podemos pedir:
+
+> “gere árvores proceduralmente.”
+
+Porque Codex pode produzir árvores tecnicamente corretas e visualmente horríveis.
+
+Precisamos criar **direção artística como código**.
+
+Algo semelhante a:
+
+```text
+STYLE_BIBLE
+
+shape language
+palette rules
+silhouette rules
+proportions
+material response
+lighting rules
+detail frequency
+animation exaggeration
+```
+
+Então um personagem não pode simplesmente receber qualquer tamanho.
+
+Teríamos restrições:
+
+```text
+head_ratio: 0.18..0.24
+shoulder_ratio: 0.32..0.47
+leg_ratio: 0.43..0.57
+palette_contrast >= threshold
+silhouette_readability >= threshold
+```
+
+É isso que evita a aparência de:
+
+> “procedural slop.”
+
+---
+
+# Não quero geração aleatória. Quero geradores artísticos
+
+Existe uma diferença enorme.
+
+Ruim:
+
+```rust
+random()
+random()
+random()
+```
+
+Bom:
+
+```text
+CULTURE: Highland
+
+Architecture grammar
+ ├─ stone foundation
+ ├─ steep roof
+ ├─ narrow window
+ ├─ timber supports
+ ├─ cold palette
+ └─ large fireplace
+```
+
+Depois aplicamos variação controlada.
+
+Assim:
+
+**100 casas diferentes ainda parecem pertencer à mesma civilização.**
+
+---
+
+# Personagens também
+
+Eu faria famílias morfológicas.
+
+Por exemplo:
+
+```text
+Humanoid
+Quadruped
+Avian
+Serpentine
+Insectoid
+Construct
+Amorphous
+```
+
+Cada uma possui skeleton generator próprio.
+
+Um lobo e um urso usam o mesmo arquétipo quadrúpede, mas parâmetros diferentes.
+
+Posteriormente podemos gerar:
+
+```text
+Wolf
+Dire Wolf
+Ice Wolf
+Six-legged Ash Hound
+```
+
+sem criar quatro rigs.
+
+---
+
+# Isso também resolve animações
+
+A animação pode ser paramétrica.
+
+Em vez de:
+
+```text
+orc_walk.anim
+goblin_walk.anim
+dwarf_walk.anim
+```
+
+temos:
+
+```text
+WalkCycle {
+    stride
+    cadence
+    hip_bob
+    arm_swing
+    aggression
+}
+```
+
+E IK resolve contato dos pés.
+
+Um dwarf e um goblin passam pelos mesmos sistemas.
+
+---
+
+# E o visual pode ficar realmente bonito
+
+Aqui eu não economizaria engenharia.
+
+Não quero:
+
+> Minecraft com shader bonito.
+
+Quero **voxel estilizado de alta qualidade**.
+
+A geometria permaneceria voxel, mas o renderer forneceria:
+
+```text
+physically plausible sunlight
+soft shadows
+ambient occlusion
+atmospheric scattering
+fog
+volumetrics
+cloud shadows
+water
+vegetation movement
+particles
+color grading
+wind
+weather
+day/night
+```
+
+É justamente por isso que Veloren consegue ter cenas muito bonitas mesmo usando formas simples — jogadores mencionam atmosfera, chuva, iluminação e vegetação entre os elementos visualmente mais impressionantes. ([Reddit][7])
+
+---
+
+# Texturas quase desaparecem
+
+Podemos usar majoritariamente:
+
+**vertex colors + procedural materials.**
+
+Por exemplo:
+
+```text
+stone
+```
+
+é:
+
+```text
+base color
++
+world-space noise
++
+normal
++
+height
++
+moisture
++
+weathering
+```
+
+Não precisamos de:
+
+```text
+stone_01.png
+stone_02.png
+stone_03.png
+```
+
+Isso ajuda absurdamente sua restrição.
+
+---
+
+# Áudio também pode ser código
+
+Eu manteria exatamente sua regra:
+
+**nenhuma dependência de produção manual de SFX ou música.**
+
+Mas com uma ressalva:
+
+> áudio procedural precisa ter direção sonora, assim como arte procedural precisa ter direção artística.
+
+Um golpe:
+
+```text
+material A
++
+material B
++
+impact velocity
++
+weapon mass
++
+resonator
++
+noise transient
++
+room response
+```
+
+gera o som.
+
+Uma espada batendo em pedra soa diferente de madeira.
+
+Passos dependem de:
+
+```text
+character mass
+shoe
+surface
+speed
+weather
+```
+
+Chuva, fogo, vento, tempestade e água também são excelentes candidatos a síntese procedural.
+
+---
+
+# Música é onde eu seria mais conservador
+
+Não faria:
+
+```text
+random notes = music
+```
+
+Isso rapidamente fica com cara de software.
+
+Criaria um **compositor algorítmico baseado em motivos**.
+
+O jogo conhece:
+
+```text
+culture
+biome
+danger
+time
+weather
+location
+recent events
+```
+
+E seleciona:
+
+```text
+motif
+scale
+harmony
+tempo
+instrument voices
+density
+```
+
+Os instrumentos seriam sintetizadores implementados pelo nosso próprio DSP.
+
+Assim a música pode variar sem virar ruído musical.
+
+---
+
+# Não precisamos nem armazenar o resultado procedural
+
+Geramos e cacheamos.
+
+Por exemplo:
+
+```text
+DragonDescriptor
+      ↓
+hash
+      ↓
+cache lookup
+      ↓
+missing
+      ↓
+compile
+      ↓
+optimized mesh
+      ↓
+cache
+```
+
+A partir daí ele funciona como um asset comum.
+
+Ou seja:
+
+**procedural na produção não significa procedural caro a cada frame.**
+
+Isso é importantíssimo.
+
+---
+
+# Stack que eu fecharia agora
+
+Continuo escolhendo **Rust**.
+
+Usaria Rust 2024 com toolchain stable explicitamente fixada.
+
+A camada gráfica seria `wgpu`. A versão atual documentada é 30.x e fornece backends Vulkan, Metal, DX12 e WebGPU, com GL como backend secundário. ([Docs.rs][21])
+
+Nada de Bevy como game engine.
+
+Nossa base seria aproximadamente:
+
+| Componente    | Escolha                       |
+| ------------- | ----------------------------- |
+| Linguagem     | **Rust**                      |
+| GPU           | **wgpu + WGSL**               |
+| Janela/Input  | `winit`                       |
+| Matemática    | `glam`                        |
+| Parallelism   | `rayon` + job system próprio  |
+| Física        | `Rapier3D`                    |
+| Áudio         | `cpal` + DSP próprio          |
+| Logging       | `tracing`                     |
+| Profiling     | Tracy                         |
+| Compressão    | `zstd`                        |
+| Serialization | schema versionado sobre Serde |
+| Networking    | `quinn`/QUIC futuramente      |
+| Mods          | WebAssembly futuramente       |
+| Dev UI        | `egui`, apenas tooling        |
+| Game UI       | renderer próprio              |
+
+Rapier atualmente está em 0.35.x e oferece física 3D cross-platform, snapshots e suporte a simulação determinística em plataformas IEEE-754 compatíveis. ([Docs.rs][22])
+
+---
+
+# Um ponto importante: usar bibliotecas não é usar engine
+
+Eu não quero que gastemos cinco meses implementando:
+
+```text
+Windows Raw Input
+DXGI
+Vulkan swapchains
+WASAPI
+gamepad drivers
+```
+
+Isso não acrescenta identidade nenhuma ao jogo.
+
+Nós construiremos:
+
+**engine, renderer, world, asset generation, simulation, animation, gameplay.**
+
+Mas utilizaremos bibliotecas pequenas para problemas de infraestrutura já resolvidos.
+
+---
+
+# E eu adotaria uma arquitetura inspirada numa coisa que Veloren fez muito bem
+
+Veloren deliberadamente separa seu projeto em crates, mantém client/server desacoplados de frontends e procura modularidade, performance e evitar lock-in. ([Veloren][23])
+
+O projeto atual inclusive continua dividido em `common`, `client`, `server`, `network`, `world`, `rtsim`, `voxygen`, plugins etc. ([GitLab][24])
+
+Nós faríamos algo similar, mas adequado ao nosso projeto e já pensado para agentes:
+
+```text
+veldwake/
+├── crates/
+│   ├── foundation/
+│   ├── platform/
+│   ├── render/
+│   ├── voxel/
+│   ├── procedural/
+│   ├── world/
+│   ├── worldgen/
+│   ├── simulation/
+│   ├── gameplay/
+│   ├── physics/
+│   ├── animation/
+│   ├── audio/
+│   ├── net/
+│   ├── server/
+│   ├── client/
+│   └── testkit/
+│
+├── shaders/
+├── tools/
+├── benchmarks/
+├── fixtures/
+├── docs/
+│   ├── adr/
+│   ├── design/
+│   ├── architecture/
+│   └── specifications/
+│
+├── AGENTS.md
+├── Cargo.toml
+└── rust-toolchain.toml
+```
+
+Não criaria todas essas crates no dia 1. Mas essa seria a direção de dependências.
+
+---
+
+# Quero padrões de engenharia absurdamente altos desde o primeiro commit
+
+Isso é **especialmente importante por causa do Codex**.
+
+Um agente consegue produzir código muito rápido.
+
+Consequentemente também consegue produzir dívida técnica muito rápido.
+
+Nossa regra não será:
+
+> “funcionou, merge.”
+
+Será:
+
+> **“prove que funciona.”**
+
+Eu estabeleceria esta constituição técnica:
+
+| Área           | Regra                                                                  |
+| -------------- | ---------------------------------------------------------------------- |
+| Formatting     | `cargo fmt --check` obrigatório                                        |
+| Lints          | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| Testes         | `cargo nextest`                                                        |
+| Coverage       | `cargo llvm-cov`                                                       |
+| Segurança deps | `cargo deny` + audit                                                   |
+| Benchmarks     | Criterion e benchmarks próprios                                        |
+| Property tests | `proptest`                                                             |
+| Fuzzing        | `cargo-fuzz` para save/network/world parsers                           |
+| Visual         | screenshot regression                                                  |
+| Worldgen       | golden seeds                                                           |
+| Determinismo   | seed igual → estado inicial igual                                      |
+| Unsafe         | proibido por padrão                                                    |
+| Erros          | nada de `unwrap()` arbitrário em runtime                               |
+| Saves          | schema explicitamente versionado                                       |
+| Logging        | structured tracing                                                     |
+| Performance    | métricas por subsistema                                                |
+| Arquitetura    | ADR obrigatório para decisão estrutural                                |
+| PR             | teste + evidência + impacto                                            |
+| Agent          | nenhum agente pode “consertar” teste removendo-o                       |
+
+Veloren também mantém configurações de `rustfmt`, Clippy e CI no próprio repositório, o que reforça que esse tipo de disciplina funciona mesmo num projeto de jogo Rust grande. ([GitLab][25])
+
+---
+
+# Eu iria ainda mais longe por causa do Codex
+
+Teríamos um `AGENTS.md` raiz.
+
+Ele definiria coisas como:
+
+```text
+Renderer never owns simulation state.
+
+Simulation never imports renderer.
+
+World generation must be deterministic.
+
+No blocking IO on game thread.
+
+No heap allocation in documented hot paths.
+
+Never change a public data contract without migration.
+
+Every new gameplay system requires tests.
+
+Every renderer change requires screenshot fixtures.
+
+Every optimization requires benchmark evidence.
+
+Never silence a lint without documenting why.
+
+Never introduce unsafe without an ADR and SAFETY invariant.
+```
+
+E cada subsistema pode possuir seu próprio `AGENTS.md`.
+
+O Codex atual permite ensinar padrões e workflows específicos ao projeto, e seus fluxos multiagente podem operar paralelamente em worktrees. ([OpenAI][17])
+
+Então isso é exatamente como deveríamos usá-lo.
+
+---
+
+# Também teremos uma coisa que considero essencial: invariants
+
+Por exemplo:
+
+```text
+WORLD-001
+Given the same world version and seed,
+world generation must be deterministic.
+
+SIM-003
+Simulation must execute without renderer.
+
+REN-007
+Chunk generation may never block the render thread.
+
+SAVE-002
+Every released save schema must remain migratable.
+
+NET-004
+Client input cannot authoritatively create game state.
+```
+
+Essas regras ficam versionadas.
+
+O agente consegue trabalhar contra elas.
+
+---
+
+# Single-player e multiplayer deveriam compartilhar a arquitetura
+
+Eu manteria a decisão anterior:
+
+```text
+single player
+
+client
+  ↕
+local server
+```
+
+e:
+
+```text
+multiplayer
+
+client
+  ↕
+remote server
+```
+
+A lógica autoritativa é a mesma.
+
+Isso custa um pouco mais no começo.
+
+Evita um pesadelo colossal depois.
+
+---
+
+# Eu também quero um jogo profundamente observável
+
+Durante desenvolvimento apertamos F3 e vemos:
+
+```text
+FPS
+CPU frame
+GPU frame
+chunk count
+mesh generation queue
+VRAM
+RAM
+entities
+simulation ticks
+RTSim entities
+draw calls
+triangles
+network
+audio voices
+```
+
+E podemos abrir algo parecido com:
+
+```text
+/world inspect 122 310
+```
+
+para explicar:
+
+```text
+Biome: Temperate Forest
+Temperature: 14.8
+Humidity: 0.73
+Civilization influence: 0.28
+Danger: 0.63
+Wolf population: 84
+Trade route: #331
+```
+
+Isso torna debugging de sistemas procedurais infinitamente melhor.
+
+---
+
+# Performance também vira requisito arquitetural, não otimização final
+
+Por exemplo:
+
+```text
+render thread nunca espera worldgen
+worldgen nunca espera disk IO
+simulation possui fixed timestep
+render possui interpolation
+chunk meshing é assíncrono
+LOD é assíncrono
+saving é incremental
+```
+
+Vamos medir desde o primeiro protótipo.
+
+Rust + wgpu já possui ecossistema suficiente para isso. Existem engines voxel experimentais com Rust/wgpu usando worldgen e meshing paralelos, greedy meshing e iluminação dinâmica. ([GitHub][26])
+
+Não estamos tentando provar se tecnicamente é possível.
+
+Estamos tentando executar isso **muito melhor**.
+
+---
+
+# E agora o nome
+
+Eu descartei vários durante a pesquisa.
+
+**Stonewake** já está sendo usado por software, jogos e um estúdio. ([Stonewake Games][27])
+
+**Wildwake** já é um jogo anunciado no Steam. ([Loja Steam][28])
+
+**Veyrune** já é usado tanto por projeto relacionado a Minecraft quanto por um ARPG. ([Veyrune][29])
+
+**Alderwake** já é um projeto de jogo ativo. 
+
+**Wilderwake** parecia muito bom, mas já aparece como nome/termo central de um romance publicado em 2025 e também como um projeto web. ([Gail Borden Public Library District][30])
+
+Depois dessas eliminações, o nome que mais gostei foi:
+
+# **VELDWAKE**
+
+Pronúncia inglesa aproximada:
+
+**veld-weik**.
+
+E visualmente:
+
+**VELDWAKE**
+
+Eu gosto bastante dele.
+
+---
+
+# Por que Veldwake?
+
+`Veld` significa uma grande extensão de campo aberto/paisagem.
+
+`Wake` pode significar tanto:
+
+**despertar**
+
+quanto deixar um:
+
+**rastro/consequência.**
+
+Isso encaixa surpreendentemente bem:
+
+> um mundo vasto que está vivo e que desperta conforme acontecimentos deixam consequências.
+
+E não tem:
+
+```text
+Voxel
+Craft
+Block
+Cube
+Quest
+RPG
+```
+
+no nome.
+
+Ou seja, não prende a marca a uma mecânica.
+
+Poderia existir:
+
+**Veldwake**
+
+da mesma forma que existem:
+
+**Minecraft
+Veloren
+Valheim
+Terraria
+Hytale**
+
+Sem parecer “Voxel Fantasy Procedural Adventures™”.
+
+Fiz buscas exatas preliminares por **Veldwake** em web, jogos, software, GitHub e índices de marca que conseguimos consultar e não apareceu uma colisão indexada relevante. Isso **não equivale a clearance jurídico de marca** nem confirma disponibilidade de domínio; antes de registrar Steam/empresa/marca, faríamos uma segunda rodada formal em INPI, USPTO/EUIPO e registradores.
+
+Como nome de trabalho, entretanto, eu colocaria:
+
+> **Project Veldwake**
+
+desde já.
+
+---
+
+# E eu mudaria um pouco nossa definição do jogo
+
+Depois desta pesquisa, eu não o definiria mais somente como:
+
+> “Cube World/Veloren maior.”
+
+Isso diminuiria demais a ideia.
+
+Eu definiria assim:
+
+> **Veldwake é um action RPG voxel de exploração em um mundo procedural persistente que possui memória: geografia, criaturas, civilizações, economia e acontecimentos continuam evoluindo, e o jogador pode explorar, lutar, construir e alterar permanentemente essa história.**
+
+O detalhe seguinte é tão importante quanto:
+
+> **toda a identidade audiovisual é produzida por sistemas: geometria procedural, materiais, animação procedural, VFX, síntese sonora e composição algorítmica — sem uma pipeline tradicional de produção manual de assets.**
+
+Aí temos algo que realmente possui identidade.
+
+---
+
+# E não vamos cometer o erro de tentar ser infinito imediatamente
+
+Eu desenvolveria Veldwake através de **vertical slices cada vez maiores**.
+
+O primeiro grande marco não teria civilizações, multiplayer, economia, mods e 300 monstros.
+
+Ele teria:
+
+```text
+1 região
+1 floresta
+1 montanha
+1 pequena ruína
+1 personagem
+1 arma
+1 criatura
+1 ciclo dia/noite
+1 sistema climático simples
+```
+
+Mas tudo teria que estar **bonito e gostoso**.
+
+Se conseguimos fazer um personagem procedural agradável, uma árvore procedural bonita, um terreno impressionante e uma luta boa sem nenhum asset manual, então provamos a tecnologia central do projeto.
+
+Depois escalamos.
+
+Isso evita passar dois anos construindo uma engine gigantesca para descobrir que o jogo não é divertido.
+
+---
+
+# A coisa mais importante que eu definiria agora
+
+Existe um triângulo que Veldwake **não pode sacrificar**:
+
+**Wonder ↔ Mastery ↔ Consequence**
+
+**Wonder:** “o que existe ali?”
+
+**Mastery:** “agora consigo fazer coisas que antes não conseguia.”
+
+**Consequence:** “o que eu fiz realmente mudou alguma coisa.”
+
+Se todo sistema novo fortalecer pelo menos um desses três, provavelmente pertence ao jogo.
+
+Se não fortalecer nenhum deles, provavelmente é feature creep.
+
+E essa, depois de pesquisar as comunidades e os jogos atuais, é a direção que considero mais promissora para transformar sua vontade de criar “seu Cube World” em algo que tenha uma razão própria para existir.
+
+[1]: https://www.minecraft.net/en-us/article/minecraft-live-2023--the-recap-?utm_source=chatgpt.com "Minecraft Live 2023 The Recap | Minecraft"
+[2]: https://store.steampowered.com/app/892970/Valhei?l=english&utm_source=chatgpt.com "Valheim on Steam"
+[3]: https://store.steampowered.com/app/1203620/_Enshrouded/?curator_clanid=25043345&utm_source=chatgpt.com "Enshrouded on Steam"
+[4]: https://store.steampowered.com/app/275850/No_Man_s_Sky/?utm_source=chatgpt.com "Save 60% on No Man's Sky on Steam"
+[5]: https://hytale.com/news/2025/11/hytale-early-access-january-13-2026?utm_source=chatgpt.com "Hytale Early Access: January 13, 2026 | Hytale"
+[6]: https://store.steampowered.com/app/1128000?utm_source=chatgpt.com "Cube World on Steam"
+[7]: https://www.reddit.com/r/Veloren/comments/1c9gwps?utm_source=chatgpt.com "My new player experience"
+[8]: https://www.reddit.com/r/VintageStory/comments/1snhshe/vintage_story_after_250_hours_what_i_like_dislike/?utm_source=chatgpt.com "Vintage Story after 250+ hours, what i like, dislike, and some mild suggestions"
+[9]: https://store.steampowered.com/app/304050/Trove/?curator_clanid=32645788&l=brazilian&utm_source=chatgpt.com "Trove no Steam"
+[10]: https://store.steampowered.com/app/374040/Portal_Knights/?utm_source=chatgpt.com "Save 85% on Portal Knights on Steam"
+[11]: https://www.reddit.com/r/hytale/comments/1qcuaqx/hytale_early_access_review_no_impact_no_threat_no/?utm_source=chatgpt.com "Hytale Early Access Review: No Impact, No Threat, No Progression"
+[12]: https://www.reddit.com/r/VintageStory/comments/1m06p5x?utm_source=chatgpt.com "What's your reason on playing VS?"
+[13]: https://book.veloren.net/players/roadmap.html?utm_source=chatgpt.com "Roadmap - Veloren: An Owner's Manual"
+[14]: https://www.reddit.com/r/Veloren/comments/1we3qb4/feedback_and_suggestion/?utm_source=chatgpt.com "Feedback and suggestion"
+[15]: https://www.reddit.com/r/Veloren/comments/w7f3ns?utm_source=chatgpt.com "Combat Feedback"
+[16]: https://www.reddit.com/r/VintageStory/comments/1qdgmmf/overall_feelings_about_the_game_and_new_player/?utm_source=chatgpt.com "Overall feelings about the game and new player advice?"
+[17]: https://openai.com/pt-BR/codex/?utm_source=chatgpt.com "Codex no ChatGPT | Agentes de programação com IA para engenharia de software | OpenAI"
+[18]: https://openai.com/index/introducing-the-agents-api/?utm_source=chatgpt.com "Introducing the Agents API | OpenAI"
+[19]: https://openai.com/pt-BR/index/codex-for-almost-everything/?utm_source=chatgpt.com "Codex para (quase) tudo | OpenAI"
+[20]: https://github.com/euuuuuuan/hollowmere-public?utm_source=chatgpt.com "GitHub - euuuuuuan/hollowmere-public: A dark isometric browser action RPG vertical slice: pick the melee Reaver or the ranged Vessel, cross a drowned causeway, parry the two-phase Barrow Knight, then descend into the ossuary. Combat, checkpoints and 4 relics run inside a deterministic fixed-step simulation that Three.js renders but does not own. A finishable slice, not a full game. · GitHub"
+[21]: https://docs.rs/wgpu/latest/wgpu/struct.Backends.html?utm_source=chatgpt.com "Backends in wgpu - Rust"
+[22]: https://docs.rs/rapier3d/latest/rapier3d/?utm_source=chatgpt.com "rapier3d - Rust"
+[23]: https://book.veloren.net/contributors/developers/codebase-structure.html?utm_source=chatgpt.com "Project Architecture - Veloren: An Owner's Manual"
+[24]: https://gitlab.com/veloren/dev/veloren?utm_source=chatgpt.com "Veloren / dev / veloren · GitLab"
+[25]: https://gitlab.com/veloren/veloren/-/blob/master/.rustfmt.toml?utm_source=chatgpt.com ".rustfmt.toml · master · Veloren / veloren · GitLab"
+[26]: https://github.com/Shapur1234/Rezcraft?utm_source=chatgpt.com "GitHub - Shapur1234/Rezcraft: Voxel engine written in rust using wgpu, supporting both native and wasm · GitHub"
+[27]: https://www.stonewakegames.com/?utm_source=chatgpt.com "Stonewake — Coming Soon"
+[28]: https://store.steampowered.com/app/4315150/Wildwake/?l=brazilian&utm_source=chatgpt.com "Wildwake no Steam"
+[29]: https://veyrune.com/?utm_source=chatgpt.com "Veyrune — A New World Is Coming"
+[30]: https://gailborden.overdrive.com/media/12311224?utm_source=chatgpt.com "The Forest Keeps Its Own Time - Gail Borden Public Library District - OverDrive"
