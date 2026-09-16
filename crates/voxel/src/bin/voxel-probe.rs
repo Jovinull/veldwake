@@ -2,9 +2,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use veldwake_voxel::{
-    BoundaryPolicy, CHUNK_BYTES, CHUNK_EDGE, Chunk, ChunkCoord, ChunkNeighborhood, Face, VoxelId,
-    diagnostic_fixture, fingerprint, mesh_exposed_faces, mesh_exposed_faces_with_neighbors,
-    multichunk_diagnostic_fixture, multichunk_fingerprint,
+    BoundaryPolicy, CHUNK_BYTES, CHUNK_EDGE, Chunk, ChunkCoord, ChunkNeighborhood, CoarseGrid,
+    Face, VoxelId, diagnostic_fixture, fingerprint, mesh_exposed_faces,
+    mesh_exposed_faces_with_neighbors, multichunk_diagnostic_fixture, multichunk_fingerprint,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -31,6 +31,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             fingerprint(&chunk),
         );
     }
+
+    // M3C0 evidence: the coarse grid derived from the diagnostic fixture.
+    let fine = diagnostic_fixture();
+    let start = Instant::now();
+    let coarse = fine.downsample_2x();
+    let downsample_time = start.elapsed();
+    let start = Instant::now();
+    let coarse_mesh = mesh_exposed_faces(&coarse);
+    let coarse_mesh_time = start.elapsed();
+    println!(
+        "fixture=coarse-diagnostic solids={} quads={} vertices={} indices={} grid_bytes={} mesh_bytes={} downsample_time_us={} mesh_time_us={}",
+        coarse.solid_count(),
+        coarse_mesh.quad_count(),
+        coarse_mesh.vertices().len(),
+        coarse_mesh.indices().len(),
+        CoarseGrid::BYTES,
+        coarse_mesh.payload_bytes(),
+        downsample_time.as_micros(),
+        coarse_mesh_time.as_micros(),
+    );
 
     let chunks = multichunk_diagnostic_fixture();
     let start = Instant::now();

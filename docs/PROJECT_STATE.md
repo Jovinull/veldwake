@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3B — Streaming Runtime is complete and merged. M3C — Initial LOD + Streaming Debug Visualization is planned on `feat/m3c-lod-debug` and not implemented.** M3B merged through [PR #5](https://github.com/Jovinull/veldwake/pull/5) at merge commit `b5473dbb7836b65e6c6c5662a8abf6f02b6e8043`, and the Claude Code entry point through [PR #4](https://github.com/Jovinull/veldwake/pull/4) at `994e9863936441606d9bd675e1ea62bc74300bf9`; M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
+**M3B — Streaming Runtime is complete and merged. M3C0 (edge-generic dense grid and mesher) is implemented on `feat/m3c-lod-debug`; LOD selection, streaming integration, and debug rendering are planned, not implemented.** M3B merged through [PR #5](https://github.com/Jovinull/veldwake/pull/5) at merge commit `b5473dbb7836b65e6c6c5662a8abf6f02b6e8043`, and the Claude Code entry point through [PR #4](https://github.com/Jovinull/veldwake/pull/4) at `994e9863936441606d9bd675e1ea62bc74300bf9`; M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -17,6 +17,7 @@ Last updated: 2026-09-16
 - Startup diagnostics report the actual adapter/backend/surface configuration; lightweight presentation timing is reported every five seconds at `info`.
 - `cargo-deny` and `cargo-audit` are part of the dependency gates now that runtime dependencies exist.
 - `veldwake-voxel` provides a dependency-free dense `32³` chunk, checked local access, a stable diagnostic fixture, and a CPU exposed-face reference mesher with headless correctness tests.
+- M3C0: `DenseGrid<const EDGE>` with heap storage, `GridCoord<EDGE>`, `Chunk = DenseGrid<32>`, `CoarseGrid = DenseGrid<16>`, const-defaulted `ChunkNeighborhood`/`FaceSlab`/`OwnedMeshingSnapshot`/`MeshBoundaryError`, one edge-generic mesher loop, and the explicit `Chunk::downsample_2x` (any-solid occupancy, majority material, lowest-ID tie). All 32-edge fingerprints and topology are unchanged; the coarse diagnostic fixture is locked at 16 solids / 82 quads.
 - The client builds and meshes the static fixture chunks once at startup, converts voxel IDs to diagnostic colors in presentation code, and creates immutable GPU buffers without per-frame remeshing or upload.
 - Signed `ChunkCoord(i32)` and `WorldVoxelCoord(i64)` conversions use checked Euclidean semantics; borrowed neighborhoods distinguish known voxel data from missing chunks.
 - Neighbor-aware CPU meshing removes solid seams in all six directions. The deterministic three-chunk fixture has 51 solids, fingerprint `0xe65ae5533c4db16a`, and exact topology 202 quads / 808 vertices / 1,212 indices.
@@ -76,4 +77,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3C — Initial LOD + Streaming Debug Visualization:** planned, not implemented. Implementation starts with M3C0 (edge-generic dense grid and mesher with the 32-edge topology locked), then the `Lod1` ring with the coarse-occupancy seam rule, level-aware stamps, baseline-versus-LOD measurement, and keyboard-toggled debug views. See the M3C section of [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves/cache, ECS, gameplay, physics, networking, multiple workers, origin rebasing, render graph, generalized batching, and biomes remain excluded.
+**M3C — Initial LOD + Streaming Debug Visualization:** M3C0 is implemented (edge-generic grid and mesher, 32-edge topology locked, explicit 32→16 downsample). Next: the `Lod1` ring with the spatial transition band and coarse-occupancy seam rule, level-aware stamps, cap 810 with the recorded set counts, baseline-versus-LOD measurement, and keyboard-toggled debug views. See the M3C section of [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves/cache, ECS, gameplay, physics, networking, multiple workers, origin rebasing, render graph, generalized batching, and biomes remain excluded.

@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A and M3B complete and merged; M3C — Initial LOD + Streaming Debug Visualization is proposed and not yet implemented**
+Status: **M3A and M3B complete and merged; M3C0 (edge-generic grid and mesher) implemented on the feature branch; the rest of M3C is planned, not implemented**
 Planning branch: `feat/m3c-lod-debug`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -408,20 +408,24 @@ Normal logs report transitions in aggregates, not one line per chunk per frame. 
 
 ## Milestone: M3C — Initial LOD + Streaming Debug Visualization
 
-Status: **Proposed; planning only, no implementation**.
+Status: **M3C0 implemented; LOD selection, streaming integration, and debug rendering remain planned**.
 Planning branch: `feat/m3c-lod-debug`
 
 M3C answers one question with evidence: does a second, coarser level of chunk detail buy visible distance for less CPU/GPU/upload cost than simply widening the full-resolution render radius? It must do so without drawing a knowingly incorrect seam, without ever treating an unloaded chunk as AIR, and while keeping every M3B contract (tokens, generations, stamps, budgets, negative coordinates) intact. It also adds the debug visualization needed to see what the streaming runtime is doing.
 
-### Prerequisite primitive: M3C0 — edge-generic dense grid and mesher
+### M3C0 — edge-generic dense grid and mesher (implemented)
 
-`Chunk` is fixed at `CHUNK_EDGE = 32`, and `mesh_with_sampler` iterates that edge. A coarse level needs a dense grid of a different edge meshed by the same exposed-face loop. Rather than filling a 32³ chunk with duplicated 2×2×2 blocks (four times the copy cost for no information), M3C0 introduces a small primitive before any LOD logic:
+`Chunk` was fixed at `CHUNK_EDGE = 32` and the mesher iterated that edge. A coarse level needs a dense grid of a different edge meshed by the same exposed-face loop, so M3C0 generalizes the primitive on stable Rust without generic const expressions:
 
-- `DenseGrid<const EDGE: usize>` (name provisional) owning `EDGE³` `VoxelId` cells with the same checked local access as `Chunk`; `Chunk` becomes `DenseGrid<32>` or wraps it, keeping every M2/M3A/M3B contract, fingerprint, and test unchanged.
-- The mesher loop, `FaceSlab`, `OwnedMeshingSnapshot`, and the neighbor samplers take the edge from the grid. The 32-edge path must stay byte-for-byte identical in topology (locked by the existing fingerprint and topology tests).
-- `FaceSlab::downsample(factor)` and `DenseGrid::downsample(factor) -> DenseGrid<EDGE / factor>` with the occupancy and material rules below.
+- `DenseGrid<const EDGE: usize>` owns `EDGE³` `VoxelId` cells in a heap slice (`vec![AIR; EDGE * EDGE * EDGE]`), so no `[T; EDGE * EDGE * EDGE]` type is needed. It exposes `VOLUME`, `BYTES`, `empty`, `read`, `write`, `read_local`, `write_local`, `solid_count`.
+- `GridCoord<const EDGE: usize>` is the validated local coordinate; `LocalCoord = GridCoord<32>`. `ChunkBoundsError` gained a public `edge` field so its message names the violated grid.
+- `Chunk = DenseGrid<32>` and `CoarseGrid = DenseGrid<16>` (`COARSE_EDGE = 16`) are type aliases, so every M2–M3B call site (`Chunk::empty()`, `LocalCoord::new`, `CHUNK_BYTES`, fixtures, streaming, client) compiles unchanged.
+- `ChunkNeighborhood<'a, const EDGE = CHUNK_EDGE>`, `FaceSlab<const EDGE = CHUNK_EDGE>`, `OwnedMeshingSnapshot<const EDGE = CHUNK_EDGE>`, and `MeshBoundaryError<const EDGE = CHUNK_EDGE>` use const-parameter defaults, so existing names without a parameter still mean the 32-edge types. `mesh_exposed_faces`, `mesh_exposed_faces_with_neighbors`, and `mesh_exposed_faces_from_snapshot` are generic over the edge and share one `mesh_with_sampler` loop; positions are cell units of the meshed grid, so a coarse mesh is scaled at presentation time.
+- The only conversion is explicit and deterministic: `Chunk::downsample_2x(&self) -> CoarseGrid`. A coarse cell is solid if any of its 2×2×2 voxels is solid; its material is the most frequent solid `VoxelId`, ties resolved by the lowest ID. It reads local content only, so chunk coordinates (including negative ones) never influence the result. There is no runtime `factor` and no generic `downsample`.
 
-M3C0 is a refactor with zero behavior change at edge 32 and is the first commit of M3C. If it cannot be done without touching the locked M3A topology, stop and reassess; do not fork a second mesher.
+Locked 32-edge evidence is unchanged after the refactor: diagnostic fingerprint `0xa465ff82790404b9` with 132/528/792, multichunk fingerprint `0xe65ae5533c4db16a` with 202/808/1,212, winding, six-direction seams, both boundary policies, and borrowed/owned snapshot equivalence; the release `streaming-probe` still reports 27/81/125, 63 residents, 27 meshes, and 2,064,384 snapshot bytes. New evidence: the coarse grid of the diagnostic fixture has 16 solids and meshes to 82 quads / 328 vertices / 492 indices (8,192 grid bytes, 11,152 mesh bytes), locked by test and printed by `voxel-probe`; a coarse snapshot is 8,192 bytes plus 512 per known slab.
+
+M3C0 tests (ten new): coarse constants, 16-edge bounds/read/write/strides, empty/full downsample, one-voxel floor and isolated voxel surviving, majority material with lowest-ID tie, determinism on the negative-coordinate fixture chunk with exhaustive occupancy comparison, 16-edge meshing (single voxel, full grid), coarse slabs/seams in all six directions with borrowed/owned equality, and a missing coarse neighbor rejected rather than treated as AIR, and the locked coarse diagnostic topology. No streaming, renderer, or client code changed.
 
 ### Levels and representation
 
@@ -451,17 +455,34 @@ Downsample rules (deterministic, order-independent):
 
 ### Selection by distance and hysteresis
 
-Selection uses Chebyshev chunk distance `d` from the camera chunk, recomputed only when the camera chunk changes (as M3B already does). Configuration adds `lod1_radius` with the M3B fields:
+Selection uses Chebyshev chunk distance `d` from the camera chunk, recomputed only when the camera chunk changes (as M3B already does). The visible set is the cube of radius `visible_radius`; inside it a spatial transition band decides the level:
 
 ```text
-lod0_radius   = 1   (today's render_radius; render set for Lod0)
-lod1_radius   = 2   (Lod1 ring: lod0_radius < d <= lod1_radius)
+d <= 1                    Lod0 mandatory
+d == 2                    transition band: keep the chunk's previous level
+3 <= d <= visible_radius  Lod1 mandatory
+visible_radius  = 3       (Lod1 radius; the render set is the radius-3 cube)
 dependency_halo = 1
-retention_radius >= lod1_radius + dependency_halo   (validate; 3)
-hard_resident_cap raised only with the measured need  (343 retention chunks = 21 MiB raw)
+retention_radius >= visible_radius + dependency_halo   (validated; 4)
 ```
 
-Hysteresis is asymmetric in chunk units: a chunk is promoted to `Lod0` when `d <= lod0_radius` and demoted to `Lod1` only when `d >= lod0_radius + 1 + lod_hysteresis` with `lod_hysteresis = 1` by default. Because `d` changes only on chunk crossings, one chunk of hysteresis is enough to stop oscillation at a boundary; a boundary-oscillation test (as in M3B) asserts zero LOD swaps while the camera crosses the same boundary repeatedly.
+A chunk that enters the visible set through its edge (`d == 3`) starts at `Lod1`; a chunk that first appears inside the band with no previous level (teleport) also starts at `Lod1`, and only `d <= 1` forces `Lod0`. Because `d` changes only on chunk crossings and the band is one chunk wide, a camera oscillating across one boundary never swaps a level; a boundary-oscillation test asserts zero swaps.
+
+Deterministic counts for these defaults, computed from the set definitions:
+
+| Set | Definition | Chunks | Raw payload at 65,536 B |
+|---|---|---:|---:|
+| `Lod0` mandatory | `d <= 1` | 27 | 1,769,472 |
+| transition band | `d == 2` | 98 | 6,422,528 |
+| `Lod1` mandatory | `d == 3` | 218 | 14,286,848 |
+| render (visible) | radius-3 cube | 343 | 22,478,848 |
+| dependency | render plus one axial halo (`343 + 6 × 49`) | 637 | 41,746,432 |
+| retention | radius-4 cube | 729 | 47,775,744 |
+| single-step transient | old retention ∪ new dependency (one chunk of travel) | 810 | 53,084,160 |
+
+The hard resident cap must cover the single-step transient, so the M3C default is `hard_resident_cap = 810` (about 50.6 MiB of raw dense payload before record overhead); the M3B default of 160 is insufficient for either configuration. Teleports are throttled through the cap as in M3B: retired payloads keep counting until the bounded eviction releases them. In the diagnostic corridor most tracked chunks outside `y ∈ [-1, 1]` are `KnownAbsent` and hold no payload, so observed usage will be far below the worst case; the worst case is still the number that sizes the cap. The eviction budget of 8 per update is re-measured against the larger churn.
+
+The performance baseline is `Lod0` only to the same visible distance (`render_radius = 3`, identical dependency, retention, and cap). Debug visualization stays off during every measurement and its box uploads never share or alter the mesh upload budget.
 
 ### Jobs, stamps, residency, and stale rejection
 
@@ -494,7 +515,7 @@ M3C keeps the M3B policy: a presented mesh whose stamp is no longer current stop
 - No new resident CPU data: `Lod1` grids live only inside a mesh job (16 KiB grid plus six 16×16 slabs of 512 bytes) and are dropped with the result. Snapshot bytes per `Lod1` job are the same 76 KiB copy plus the derived 19 KiB.
 - Expected `Lod1` mesh payload is about one quarter of `Lod0` for the same content (half the linear resolution); the diagnostic floor gives an exact expected quad count to lock in tests.
 - The upload budget (2 per frame, 4 MiB soft, oversized alone) is unchanged; uploads carry their level so bytes are reported per level. GPU residency reports `lod0`/`lod1` chunk counts and bytes separately.
-- Raising `lod1_radius` to 2 with the default halo makes retention 343 chunks (21 MiB raw) and dependency about 275 (17 MiB); the hard cap must be raised to at least that with the reasoning recorded, or the radii reduced. The eviction budget of 8 per update is re-measured against the larger churn.
+- With `visible_radius = 3` the sets are 343 render / 637 dependency / 729 retention chunks and the single-step transient is 810 (50.6 MiB raw); the cap default becomes 810 with that reasoning recorded. The eviction budget of 8 per update is re-measured against the larger churn.
 
 ### Negative coordinates and the origin
 
@@ -526,7 +547,7 @@ The decision rule is recorded before measuring: LOD stays enabled by default onl
 
 ### Headless testing
 
-- M3C0: locked 32-edge fingerprint/topology unchanged; `DenseGrid<16>` access and bounds; downsample determinism, occupancy-conservative rule, material tie-breaking, empty/full/checkerboard cases, negative-chunk fixtures.
+- M3C0 (done): locked 32-edge fingerprint/topology unchanged; `CoarseGrid` access and bounds; downsample determinism, occupancy-conservative rule, material tie-breaking, empty/full cases, negative-chunk fixture; coarse meshing, slabs, and seams.
 - Seams: all six directions × four occupancy cases × two orientations (fine/coarse), exact seam face counts, no coplanar duplicates, source-absent neighbor at each level, unavailable neighbor blocks at each level.
 - Selection: ring membership for several radii, hysteresis band, boundary oscillation with zero swaps, teleport producing the expected swap set.
 - Stamps: an old-level result is rejected after a swap; a neighbor's level change dirties the seam pair; tokens and generations unchanged by swaps.
@@ -548,8 +569,8 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 ### M3C risks
 
 - The occupancy-conservative downsample visibly thickens thin features at the ring; acceptable for a diagnostic, but a real terrain will need a material-aware rule and this must be recorded as debt, not hidden.
-- Retention at radius 3 multiplies resident memory and eviction churn; the hard cap and eviction budget need new evidence, not a silent bump.
+- Retention at radius 4 (729 chunks) and a cap of 810 multiply resident memory and eviction churn; the eviction budget needs new evidence, not a silent bump.
 - Blink on LOD swap is more frequent than on neighbor arrival; if measured gaps are long, the fix is scheduling, never drawing a stale mesh.
 - The seam rule is proven only for axial neighbors at a 2× ratio; a third level or diagonal dependence would need a new proof.
 - Debug boxes add up to one draw per tracked coordinate; keep the mode off by default and count the draws.
-- If M3C0 cannot keep the 32-edge topology byte-identical, M3C stops at M3C0 and reports.
+- M3C0 kept the 32-edge topology byte-identical; the remaining risk is that later LOD work re-introduces edge-specific assumptions instead of using `EDGE`.

@@ -1,8 +1,6 @@
 use std::{fmt, mem::size_of_val};
 
-use crate::{CHUNK_BYTES, CHUNK_EDGE, Chunk, LocalCoord, VoxelId};
-
-const FACE_SLAB_CELLS: usize = CHUNK_EDGE * CHUNK_EDGE;
+use crate::{CHUNK_EDGE, DenseGrid, GridCoord, VoxelId};
 
 /// The six outward faces in right-handed, Y-up local chunk space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,16 +69,18 @@ pub enum NeighborSample {
     Missing,
 }
 
-/// Allocation-free borrowed view of one chunk and its six axial neighbors.
+/// Allocation-free borrowed view of one grid and its six axial neighbors.
+///
+/// `EDGE` defaults to the chunk edge so M2–M3B call sites are unchanged.
 #[derive(Clone, Copy, Debug)]
-pub struct ChunkNeighborhood<'a> {
-    center: &'a Chunk,
-    neighbors: [Option<&'a Chunk>; 6],
+pub struct ChunkNeighborhood<'a, const EDGE: usize = CHUNK_EDGE> {
+    center: &'a DenseGrid<EDGE>,
+    neighbors: [Option<&'a DenseGrid<EDGE>>; 6],
 }
 
-impl<'a> ChunkNeighborhood<'a> {
+impl<'a, const EDGE: usize> ChunkNeighborhood<'a, EDGE> {
     #[must_use]
-    pub const fn new(center: &'a Chunk) -> Self {
+    pub const fn new(center: &'a DenseGrid<EDGE>) -> Self {
         Self {
             center,
             neighbors: [None; 6],
@@ -88,45 +88,33 @@ impl<'a> ChunkNeighborhood<'a> {
     }
 
     #[must_use]
-    pub fn with_neighbor(mut self, face: Face, chunk: &'a Chunk) -> Self {
+    pub fn with_neighbor(mut self, face: Face, chunk: &'a DenseGrid<EDGE>) -> Self {
         self.neighbors[face.index()] = Some(chunk);
         self
     }
 
     #[must_use]
-    pub const fn center(self) -> &'a Chunk {
+    pub const fn center(self) -> &'a DenseGrid<EDGE> {
         self.center
     }
 
     /// Samples one face-adjacent cell without interpreting a missing chunk as air.
     #[must_use]
-    pub fn sample_adjacent(self, coord: LocalCoord, face: Face) -> NeighborSample {
-        let (x, y, z) = (coord.x(), coord.y(), coord.z());
-        let local_neighbor = match face {
-            Face::NegativeX => x.checked_sub(1).map(|next| (next, y, z)),
-            Face::PositiveX => (x + 1 < CHUNK_EDGE).then_some((x + 1, y, z)),
-            Face::NegativeY => y.checked_sub(1).map(|next| (x, next, z)),
-            Face::PositiveY => (y + 1 < CHUNK_EDGE).then_some((x, y + 1, z)),
-            Face::NegativeZ => z.checked_sub(1).map(|next| (x, y, next)),
-            Face::PositiveZ => (z + 1 < CHUNK_EDGE).then_some((x, y, z + 1)),
-        };
-
-        if let Some((next_x, next_y, next_z)) = local_neighbor {
-            return NeighborSample::Known(
-                self.center
-                    .read_local(local_coord_from_meshing(next_x, next_y, next_z)),
-            );
+    pub fn sample_adjacent(self, coord: GridCoord<EDGE>, face: Face) -> NeighborSample {
+        if let Some(local) = local_neighbor(coord, face) {
+            return NeighborSample::Known(self.center.read_local(local));
         }
 
         let Some(neighbor) = self.neighbors[face.index()] else {
             return NeighborSample::Missing;
         };
+        let (x, y, z) = (coord.x(), coord.y(), coord.z());
         let boundary = match face {
-            Face::NegativeX => (CHUNK_EDGE - 1, y, z),
+            Face::NegativeX => (EDGE - 1, y, z),
             Face::PositiveX => (0, y, z),
-            Face::NegativeY => (x, CHUNK_EDGE - 1, z),
+            Face::NegativeY => (x, EDGE - 1, z),
             Face::PositiveY => (x, 0, z),
-            Face::NegativeZ => (x, y, CHUNK_EDGE - 1),
+            Face::NegativeZ => (x, y, EDGE - 1),
             Face::PositiveZ => (x, y, 0),
         };
         NeighborSample::Known(
@@ -137,12 +125,12 @@ impl<'a> ChunkNeighborhood<'a> {
 
 /// A solid boundary face required neighbor data that was not provided.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MeshBoundaryError {
+pub struct MeshBoundaryError<const EDGE: usize = CHUNK_EDGE> {
     pub face: Face,
-    pub local: LocalCoord,
+    pub local: GridCoord<EDGE>,
 }
 
-impl fmt::Display for MeshBoundaryError {
+impl<const EDGE: usize> fmt::Display for MeshBoundaryError<EDGE> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -155,15 +143,15 @@ impl fmt::Display for MeshBoundaryError {
     }
 }
 
-impl std::error::Error for MeshBoundaryError {}
+impl<const EDGE: usize> std::error::Error for MeshBoundaryError<EDGE> {}
 
 /// One owned, one-cell-thick boundary required by an asynchronous mesh job.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FaceSlab {
+pub struct FaceSlab<const EDGE: usize = CHUNK_EDGE> {
     cells: Option<Box<[VoxelId]>>,
 }
 
-impl FaceSlab {
+impl<const EDGE: usize> FaceSlab<EDGE> {
     #[must_use]
     pub const fn known_air() -> Self {
         Self { cells: None }
@@ -171,11 +159,11 @@ impl FaceSlab {
 
     /// Copies only the face of `neighbor` that touches `center` in `face`.
     #[must_use]
-    pub fn from_neighbor(face: Face, neighbor: &Chunk) -> Self {
-        let mut cells = Vec::with_capacity(FACE_SLAB_CELLS);
-        for secondary in 0..CHUNK_EDGE {
-            for primary in 0..CHUNK_EDGE {
-                let (x, y, z) = slab_neighbor_coord(face, primary, secondary);
+    pub fn from_neighbor(face: Face, neighbor: &DenseGrid<EDGE>) -> Self {
+        let mut cells = Vec::with_capacity(EDGE * EDGE);
+        for secondary in 0..EDGE {
+            for primary in 0..EDGE {
+                let (x, y, z) = slab_neighbor_coord::<EDGE>(face, primary, secondary);
                 cells.push(neighbor.read_local(local_coord_from_meshing(x, y, z)));
             }
         }
@@ -189,7 +177,7 @@ impl FaceSlab {
         self.cells.as_deref().map_or(0, size_of_val)
     }
 
-    fn sample(&self, face: Face, coord: LocalCoord) -> VoxelId {
+    fn sample(&self, face: Face, coord: GridCoord<EDGE>) -> VoxelId {
         self.cells
             .as_ref()
             .map_or(VoxelId::AIR, |cells| cells[slab_index(face, coord)])
@@ -198,25 +186,25 @@ impl FaceSlab {
 
 /// Self-contained input for detached exposed-face meshing.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OwnedMeshingSnapshot {
-    center: Chunk,
-    faces: [FaceSlab; 6],
+pub struct OwnedMeshingSnapshot<const EDGE: usize = CHUNK_EDGE> {
+    center: DenseGrid<EDGE>,
+    faces: [FaceSlab<EDGE>; 6],
 }
 
-impl OwnedMeshingSnapshot {
+impl<const EDGE: usize> OwnedMeshingSnapshot<EDGE> {
     #[must_use]
-    pub const fn new(center: Chunk, faces: [FaceSlab; 6]) -> Self {
+    pub const fn new(center: DenseGrid<EDGE>, faces: [FaceSlab<EDGE>; 6]) -> Self {
         Self { center, faces }
     }
 
     #[must_use]
-    pub const fn center(&self) -> &Chunk {
+    pub const fn center(&self) -> &DenseGrid<EDGE> {
         &self.center
     }
 
     #[must_use]
     pub fn payload_bytes(&self) -> usize {
-        CHUNK_BYTES
+        DenseGrid::<EDGE>::BYTES
             + self
                 .faces
                 .iter()
@@ -224,7 +212,7 @@ impl OwnedMeshingSnapshot {
                 .sum::<usize>()
     }
 
-    fn sample_adjacent(&self, coord: LocalCoord, face: Face) -> NeighborSample {
+    fn sample_adjacent(&self, coord: GridCoord<EDGE>, face: Face) -> NeighborSample {
         if let Some(local) = local_neighbor(coord, face) {
             return NeighborSample::Known(self.center.read_local(local));
         }
@@ -275,7 +263,7 @@ impl Mesh {
 /// neighbor. Use [`mesh_exposed_faces_with_neighbors`] when seams matter.
 /// Vertices for each quad are counter-clockwise when viewed from outside.
 #[must_use]
-pub fn mesh_exposed_faces(chunk: &Chunk) -> Mesh {
+pub fn mesh_exposed_faces<const EDGE: usize>(chunk: &DenseGrid<EDGE>) -> Mesh {
     match mesh_exposed_faces_with_neighbors(ChunkNeighborhood::new(chunk), BoundaryPolicy::Expose) {
         Ok(mesh) => mesh,
         Err(error) => unreachable!("Expose boundary policy unexpectedly failed: {error}"),
@@ -283,10 +271,10 @@ pub fn mesh_exposed_faces(chunk: &Chunk) -> Mesh {
 }
 
 /// Builds an exposed-face mesh from an explicit local neighborhood.
-pub fn mesh_exposed_faces_with_neighbors(
-    neighborhood: ChunkNeighborhood<'_>,
+pub fn mesh_exposed_faces_with_neighbors<const EDGE: usize>(
+    neighborhood: ChunkNeighborhood<'_, EDGE>,
     boundary_policy: BoundaryPolicy,
-) -> Result<Mesh, MeshBoundaryError> {
+) -> Result<Mesh, MeshBoundaryError<EDGE>> {
     mesh_with_sampler(neighborhood.center(), boundary_policy, |coord, face| {
         neighborhood.sample_adjacent(coord, face)
     })
@@ -294,7 +282,9 @@ pub fn mesh_exposed_faces_with_neighbors(
 
 /// Meshes a self-contained center-and-six-slabs snapshot.
 #[must_use]
-pub fn mesh_exposed_faces_from_snapshot(snapshot: &OwnedMeshingSnapshot) -> Mesh {
+pub fn mesh_exposed_faces_from_snapshot<const EDGE: usize>(
+    snapshot: &OwnedMeshingSnapshot<EDGE>,
+) -> Mesh {
     match mesh_with_sampler(
         snapshot.center(),
         BoundaryPolicy::RequireKnown,
@@ -305,16 +295,18 @@ pub fn mesh_exposed_faces_from_snapshot(snapshot: &OwnedMeshingSnapshot) -> Mesh
     }
 }
 
-fn mesh_with_sampler(
-    center: &Chunk,
+/// The single exposed-face loop shared by every edge; positions are cell
+/// units of the meshed grid, so a coarse grid scales at presentation time.
+fn mesh_with_sampler<const EDGE: usize>(
+    center: &DenseGrid<EDGE>,
     boundary_policy: BoundaryPolicy,
-    mut sample_adjacent: impl FnMut(LocalCoord, Face) -> NeighborSample,
-) -> Result<Mesh, MeshBoundaryError> {
+    mut sample_adjacent: impl FnMut(GridCoord<EDGE>, Face) -> NeighborSample,
+) -> Result<Mesh, MeshBoundaryError<EDGE>> {
     let mut mesh = Mesh::default();
 
-    for z in 0..CHUNK_EDGE {
-        for y in 0..CHUNK_EDGE {
-            for x in 0..CHUNK_EDGE {
+    for z in 0..EDGE {
+        for y in 0..EDGE {
+            for x in 0..EDGE {
                 let coord = local_coord_from_meshing(x, y, z);
                 let voxel = center.read_local(coord);
                 if voxel.is_air() {
@@ -342,40 +334,47 @@ fn mesh_with_sampler(
     Ok(mesh)
 }
 
-fn local_neighbor(coord: LocalCoord, face: Face) -> Option<LocalCoord> {
+fn local_neighbor<const EDGE: usize>(
+    coord: GridCoord<EDGE>,
+    face: Face,
+) -> Option<GridCoord<EDGE>> {
     let (x, y, z) = (coord.x(), coord.y(), coord.z());
     let value = match face {
         Face::NegativeX => x.checked_sub(1).map(|next| (next, y, z)),
-        Face::PositiveX => (x + 1 < CHUNK_EDGE).then_some((x + 1, y, z)),
+        Face::PositiveX => (x + 1 < EDGE).then_some((x + 1, y, z)),
         Face::NegativeY => y.checked_sub(1).map(|next| (x, next, z)),
-        Face::PositiveY => (y + 1 < CHUNK_EDGE).then_some((x, y + 1, z)),
+        Face::PositiveY => (y + 1 < EDGE).then_some((x, y + 1, z)),
         Face::NegativeZ => z.checked_sub(1).map(|next| (x, y, next)),
-        Face::PositiveZ => (z + 1 < CHUNK_EDGE).then_some((x, y, z + 1)),
+        Face::PositiveZ => (z + 1 < EDGE).then_some((x, y, z + 1)),
     }?;
     Some(local_coord_from_meshing(value.0, value.1, value.2))
 }
 
-fn slab_neighbor_coord(face: Face, primary: usize, secondary: usize) -> (usize, usize, usize) {
+fn slab_neighbor_coord<const EDGE: usize>(
+    face: Face,
+    primary: usize,
+    secondary: usize,
+) -> (usize, usize, usize) {
     match face {
-        Face::NegativeX => (CHUNK_EDGE - 1, primary, secondary),
+        Face::NegativeX => (EDGE - 1, primary, secondary),
         Face::PositiveX => (0, primary, secondary),
-        Face::NegativeY => (primary, CHUNK_EDGE - 1, secondary),
+        Face::NegativeY => (primary, EDGE - 1, secondary),
         Face::PositiveY => (primary, 0, secondary),
-        Face::NegativeZ => (primary, secondary, CHUNK_EDGE - 1),
+        Face::NegativeZ => (primary, secondary, EDGE - 1),
         Face::PositiveZ => (primary, secondary, 0),
     }
 }
 
-fn slab_index(face: Face, coord: LocalCoord) -> usize {
+fn slab_index<const EDGE: usize>(face: Face, coord: GridCoord<EDGE>) -> usize {
     match face {
-        Face::NegativeX | Face::PositiveX => coord.y() + CHUNK_EDGE * coord.z(),
-        Face::NegativeY | Face::PositiveY => coord.x() + CHUNK_EDGE * coord.z(),
-        Face::NegativeZ | Face::PositiveZ => coord.x() + CHUNK_EDGE * coord.y(),
+        Face::NegativeX | Face::PositiveX => coord.y() + EDGE * coord.z(),
+        Face::NegativeY | Face::PositiveY => coord.x() + EDGE * coord.z(),
+        Face::NegativeZ | Face::PositiveZ => coord.x() + EDGE * coord.y(),
     }
 }
 
-fn local_coord_from_meshing(x: usize, y: usize, z: usize) -> LocalCoord {
-    match LocalCoord::new(x, y, z) {
+fn local_coord_from_meshing<const EDGE: usize>(x: usize, y: usize, z: usize) -> GridCoord<EDGE> {
+    match GridCoord::new(x, y, z) {
         Ok(coord) => coord,
         Err(error) => unreachable!("mesher loop generated invalid coordinate: {error}"),
     }
@@ -411,7 +410,7 @@ fn emit_quad(mesh: &mut Mesh, x: usize, y: usize, z: usize, face: Face, voxel: V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ChunkBoundsError;
+    use crate::{COARSE_EDGE, Chunk, ChunkBoundsError, CoarseGrid, LocalCoord};
 
     fn chunk_with(cells: &[(usize, usize, usize, VoxelId)]) -> Result<Chunk, ChunkBoundsError> {
         let mut chunk = Chunk::empty();
@@ -651,13 +650,95 @@ mod tests {
         let snapshot = OwnedMeshingSnapshot::new(center, slabs);
         let owned_mesh = mesh_exposed_faces_from_snapshot(&snapshot);
 
-        assert_eq!(snapshot.payload_bytes(), CHUNK_BYTES + 6 * 2_048);
+        assert_eq!(snapshot.payload_bytes(), crate::CHUNK_BYTES + 6 * 2_048);
         assert_eq!(owned_mesh, borrowed_mesh);
         Ok(())
     }
 
+    #[test]
+    fn coarse_grid_meshes_with_the_same_loop() -> Result<(), ChunkBoundsError> {
+        let mut grid = CoarseGrid::empty();
+        grid.write(4, 5, 6, VoxelId(3))?;
+        let mesh = mesh_exposed_faces(&grid);
+        assert_eq!(mesh.quad_count(), 6);
+        assert!(mesh.vertices().iter().all(|vertex| {
+            vertex
+                .position
+                .iter()
+                .all(|axis| (0.0..=16.0).contains(axis))
+        }));
+        let mut full = CoarseGrid::empty();
+        for z in 0..COARSE_EDGE {
+            for y in 0..COARSE_EDGE {
+                for x in 0..COARSE_EDGE {
+                    full.write(x, y, z, VoxelId(1))?;
+                }
+            }
+        }
+        assert_eq!(mesh_exposed_faces(&full).quad_count(), 6 * 16 * 16);
+        Ok(())
+    }
+
+    #[test]
+    fn coarse_slabs_and_seams_work_in_all_six_directions() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for face in Face::ALL {
+            let center_local = boundary_coord_of::<COARSE_EDGE>(face)?;
+            let neighbor_local = boundary_coord_of::<COARSE_EDGE>(face.opposite())?;
+            let mut center = CoarseGrid::empty();
+            assert_eq!(center.write_local(center_local, VoxelId(3)), VoxelId::AIR);
+            let mut neighbor = CoarseGrid::empty();
+            assert_eq!(
+                neighbor.write_local(neighbor_local, VoxelId(9)),
+                VoxelId::AIR
+            );
+
+            let borrowed = mesh_exposed_faces_with_neighbors(
+                ChunkNeighborhood::new(&center).with_neighbor(face, &neighbor),
+                BoundaryPolicy::RequireKnown,
+            )?;
+            let faces: [FaceSlab<COARSE_EDGE>; 6] = std::array::from_fn(|index| {
+                let candidate = Face::ALL[index];
+                if candidate == face {
+                    FaceSlab::from_neighbor(candidate, &neighbor)
+                } else {
+                    FaceSlab::known_air()
+                }
+            });
+            let snapshot = OwnedMeshingSnapshot::new(center, faces);
+            assert_eq!(snapshot.payload_bytes(), 8_192 + 512);
+            let owned = mesh_exposed_faces_from_snapshot(&snapshot);
+
+            assert_eq!(borrowed.quad_count(), 5, "coarse seam at {face:?}");
+            assert_eq!(owned, borrowed);
+            assert!(!owned.vertices().iter().any(|vertex| vertex.face == face));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_coarse_neighbor_is_never_air() -> Result<(), Box<dyn std::error::Error>> {
+        let mut center = CoarseGrid::empty();
+        center.write(15, 3, 4, VoxelId(2))?;
+        let neighborhood = ChunkNeighborhood::new(&center);
+        assert_eq!(
+            mesh_exposed_faces_with_neighbors(neighborhood, BoundaryPolicy::RequireKnown),
+            Err(MeshBoundaryError {
+                face: Face::PositiveX,
+                local: GridCoord::<COARSE_EDGE>::new(15, 3, 4)?,
+            })
+        );
+        Ok(())
+    }
+
     fn boundary_coord(face: Face) -> Result<LocalCoord, ChunkBoundsError> {
-        let last = CHUNK_EDGE - 1;
+        boundary_coord_of::<CHUNK_EDGE>(face)
+    }
+
+    fn boundary_coord_of<const EDGE: usize>(
+        face: Face,
+    ) -> Result<GridCoord<EDGE>, ChunkBoundsError> {
+        let last = EDGE - 1;
         let (x, y, z) = match face {
             Face::NegativeX => (0, 10, 11),
             Face::PositiveX => (last, 10, 11),
@@ -666,7 +747,7 @@ mod tests {
             Face::NegativeZ => (10, 11, 0),
             Face::PositiveZ => (10, 11, last),
         };
-        LocalCoord::new(x, y, z)
+        GridCoord::new(x, y, z)
     }
 
     fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
