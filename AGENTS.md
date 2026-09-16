@@ -2,6 +2,8 @@
 
 Read this file, `docs/PROJECT_STATE.md`, `docs/INDEX.md`, the relevant subsystem documents, relevant ADRs, and `docs/agents/HANDOFF.md` before changing the repository.
 
+This file binds every agent runtime. Codex CLI loads it directly; Claude Code loads `CLAUDE.md`, which points here and holds only runtime-specific notes. Repository law lives here and is never duplicated or forked between the two. See `docs/agents/SKILLS.md`.
+
 ## DOCUMENTATION IS PART OF THE IMPLEMENTATION
 
 A task is not complete merely because code works. It is complete only when the next agent can understand the resulting behavior, decisions, limitations, evidence, and remaining work without rediscovering them.
