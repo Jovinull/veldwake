@@ -7,7 +7,7 @@ The renderer should present stylized high-quality voxel fantasy while remaining 
 ## Capability progression
 
 1. Window/device/surface/frame/input/camera and adapter diagnostics. **Complete in M1** with a disposable code-generated cube and no game-content claim.
-2. One chunk and an explicit meshing baseline.
+2. One chunk and an explicit meshing baseline. **Complete on the M2 feature branch:** dependency-free exposed-face CPU mesh, one-time immutable `u32` GPU upload, depth/back-face culling, and diagnostic ID colors.
 3. Streaming, prioritized async generation/meshing, residency, and initial LOD.
 4. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.
 5. Later evidence-driven culling/batching/GPU-driven techniques.

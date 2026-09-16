@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    mem::size_of,
+    mem::{size_of, size_of_val},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -10,6 +10,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
+use veldwake_voxel::{CHUNK_EDGE, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
@@ -51,40 +52,11 @@ impl CameraUniform {
     }
 }
 
-const VERTICES: [Vertex; 24] = [
-    face_vertex([-1.0, -1.0, 1.0], [0.92, 0.28, 0.26]),
-    face_vertex([1.0, -1.0, 1.0], [0.92, 0.28, 0.26]),
-    face_vertex([1.0, 1.0, 1.0], [0.92, 0.28, 0.26]),
-    face_vertex([-1.0, 1.0, 1.0], [0.92, 0.28, 0.26]),
-    face_vertex([-1.0, 1.0, -1.0], [0.22, 0.58, 0.94]),
-    face_vertex([1.0, 1.0, -1.0], [0.22, 0.58, 0.94]),
-    face_vertex([1.0, -1.0, -1.0], [0.22, 0.58, 0.94]),
-    face_vertex([-1.0, -1.0, -1.0], [0.22, 0.58, 0.94]),
-    face_vertex([1.0, -1.0, -1.0], [0.94, 0.68, 0.20]),
-    face_vertex([1.0, 1.0, -1.0], [0.94, 0.68, 0.20]),
-    face_vertex([1.0, 1.0, 1.0], [0.94, 0.68, 0.20]),
-    face_vertex([1.0, -1.0, 1.0], [0.94, 0.68, 0.20]),
-    face_vertex([-1.0, -1.0, 1.0], [0.34, 0.82, 0.50]),
-    face_vertex([-1.0, 1.0, 1.0], [0.34, 0.82, 0.50]),
-    face_vertex([-1.0, 1.0, -1.0], [0.34, 0.82, 0.50]),
-    face_vertex([-1.0, -1.0, -1.0], [0.34, 0.82, 0.50]),
-    face_vertex([1.0, 1.0, -1.0], [0.72, 0.36, 0.90]),
-    face_vertex([-1.0, 1.0, -1.0], [0.72, 0.36, 0.90]),
-    face_vertex([-1.0, 1.0, 1.0], [0.72, 0.36, 0.90]),
-    face_vertex([1.0, 1.0, 1.0], [0.72, 0.36, 0.90]),
-    face_vertex([1.0, -1.0, 1.0], [0.18, 0.78, 0.80]),
-    face_vertex([-1.0, -1.0, 1.0], [0.18, 0.78, 0.80]),
-    face_vertex([-1.0, -1.0, -1.0], [0.18, 0.78, 0.80]),
-    face_vertex([1.0, -1.0, -1.0], [0.18, 0.78, 0.80]),
-];
-
-const INDICES: [u16; 36] = [
-    0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 8, 9, 10, 10, 11, 8, 12, 13, 14, 14, 15, 12, 16, 17, 18,
-    18, 19, 16, 20, 21, 22, 22, 23, 20,
-];
-
-const fn face_vertex(position: [f32; 3], color: [f32; 3]) -> Vertex {
-    Vertex { position, color }
+#[derive(Clone, Copy, Debug)]
+pub struct VoxelMeshDiagnostics {
+    pub solid_count: usize,
+    pub fingerprint: u64,
+    pub mesh_cpu_time: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -95,6 +67,7 @@ pub enum RendererInitError {
     MissingSurfaceFormat,
     MissingPresentMode,
     MissingAlphaMode,
+    MeshTooLarge(usize),
 }
 
 impl Display for RendererInitError {
@@ -106,6 +79,12 @@ impl Display for RendererInitError {
             Self::MissingSurfaceFormat => write!(formatter, "surface exposes no texture format"),
             Self::MissingPresentMode => write!(formatter, "surface exposes no present mode"),
             Self::MissingAlphaMode => write!(formatter, "surface exposes no alpha mode"),
+            Self::MeshTooLarge(index_count) => {
+                write!(
+                    formatter,
+                    "voxel mesh has {index_count} indices; exceeds u32 draw range"
+                )
+            }
         }
     }
 }
@@ -134,6 +113,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    index_count: u32,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
@@ -145,6 +125,8 @@ impl Renderer {
         display: OwnedDisplayHandle,
         window: Arc<Window>,
         camera: &Camera,
+        voxel_mesh: &Mesh,
+        mesh_diagnostics: VoxelMeshDiagnostics,
     ) -> Result<Self, RendererInitError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display),
@@ -163,7 +145,7 @@ impl Renderer {
             .map_err(RendererInitError::Adapter)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Veldwake M1 device"),
+                label: Some("Veldwake M2 device"),
                 required_features: wgpu::Features::empty(),
                 ..Default::default()
             })
@@ -196,12 +178,12 @@ impl Renderer {
 
         let camera_uniform = CameraUniform::from_camera(camera);
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("M1 camera uniform"),
+            label: Some("diagnostic camera uniform"),
             contents: bytemuck::bytes_of(&camera_uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("M1 camera bind group layout"),
+            label: Some("diagnostic camera bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -214,7 +196,7 @@ impl Renderer {
             }],
         });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("M1 camera bind group"),
+            label: Some("diagnostic camera bind group"),
             layout: &camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -223,12 +205,12 @@ impl Renderer {
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("diagnostic.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("M1 diagnostic pipeline layout"),
+            label: Some("M2 diagnostic pipeline layout"),
             bind_group_layouts: &[Some(&camera_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("M1 diagnostic cube pipeline"),
+            label: Some("M2 diagnostic voxel pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -262,16 +244,41 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let vertices = voxel_mesh
+            .vertices()
+            .iter()
+            .map(|vertex| Vertex {
+                position: vertex.position,
+                color: diagnostic_color(vertex.voxel),
+            })
+            .collect::<Vec<_>>();
+        let index_count = u32::try_from(voxel_mesh.indices().len())
+            .map_err(|_| RendererInitError::MeshTooLarge(voxel_mesh.indices().len()))?;
+        let vertex_buffer_bytes = size_of_val(vertices.as_slice());
+        let index_buffer_bytes = size_of_val(voxel_mesh.indices());
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("M1 diagnostic cube vertices"),
-            contents: bytemuck::cast_slice(&VERTICES),
+            label: Some("M2 diagnostic voxel vertices"),
+            contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("M1 diagnostic cube indices"),
-            contents: bytemuck::cast_slice(&INDICES),
+            label: Some("M2 diagnostic voxel indices"),
+            contents: bytemuck::cast_slice(voxel_mesh.indices()),
             usage: wgpu::BufferUsages::INDEX,
         });
+        info!(
+            chunk_edge = CHUNK_EDGE,
+            solids = mesh_diagnostics.solid_count,
+            fingerprint = %format_args!("{:#018x}", mesh_diagnostics.fingerprint),
+            quads = voxel_mesh.quad_count(),
+            vertices = vertices.len(),
+            indices = voxel_mesh.indices().len(),
+            mesh_cpu_time_us = mesh_diagnostics.mesh_cpu_time.as_micros(),
+            vertex_buffer_bytes,
+            index_buffer_bytes,
+            total_upload_bytes = vertex_buffer_bytes + index_buffer_bytes,
+            "M2 diagnostic voxel mesh uploaded once"
+        );
         let depth_view = create_depth_view(&device, config.width, config.height);
 
         let mut renderer = Self {
@@ -287,6 +294,7 @@ impl Renderer {
             pipeline,
             vertex_buffer,
             index_buffer,
+            index_count,
             camera_buffer,
             camera_bind_group,
             depth_view,
@@ -367,18 +375,18 @@ impl Renderer {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("M1 surface view"),
+                label: Some("diagnostic surface view"),
                 format: Some(self.config.format),
                 ..Default::default()
             });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("M1 diagnostic frame encoder"),
+                label: Some("M2 diagnostic frame encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("M1 diagnostic cube pass"),
+                label: Some("M2 diagnostic voxel pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -408,8 +416,8 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.window.pre_present_notify();
@@ -478,6 +486,25 @@ impl Renderer {
     }
 }
 
+fn diagnostic_color(voxel: VoxelId) -> [f32; 3] {
+    const PALETTE: [[f32; 3]; 8] = [
+        [0.30, 0.76, 0.42],
+        [0.95, 0.55, 0.20],
+        [0.28, 0.60, 0.95],
+        [0.82, 0.36, 0.86],
+        [0.18, 0.78, 0.80],
+        [0.92, 0.30, 0.32],
+        [0.88, 0.82, 0.24],
+        [0.62, 0.48, 0.92],
+    ];
+
+    if voxel.is_air() {
+        return [0.0; 3];
+    }
+
+    PALETTE[usize::from(voxel.0 - 1) % PALETTE.len()]
+}
+
 fn install_error_handlers(device: &wgpu::Device, fatal: &Arc<AtomicBool>) {
     let device_lost = Arc::clone(fatal);
     device.set_device_lost_callback(move |reason, message| {
@@ -511,7 +538,7 @@ fn install_error_handlers(device: &wgpu::Device, fatal: &Arc<AtomicBool>) {
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("M1 depth texture"),
+            label: Some("diagnostic depth texture"),
             size: wgpu::Extent3d {
                 width: width.max(1),
                 height: height.max(1),
@@ -552,7 +579,16 @@ fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::Composi
 
 #[cfg(test)]
 mod tests {
-    use super::{select_alpha_mode, select_present_mode, select_surface_format};
+    use super::{diagnostic_color, select_alpha_mode, select_present_mode, select_surface_format};
+    use veldwake_voxel::VoxelId;
+
+    #[test]
+    fn diagnostic_voxel_colors_are_stable_and_distinct() {
+        assert_eq!(diagnostic_color(VoxelId::AIR), [0.0; 3]);
+        assert_eq!(diagnostic_color(VoxelId(1)), [0.30, 0.76, 0.42]);
+        assert_eq!(diagnostic_color(VoxelId(2)), [0.95, 0.55, 0.20]);
+        assert_eq!(diagnostic_color(VoxelId(7)), [0.88, 0.82, 0.24]);
+    }
 
     #[test]
     fn surface_format_prefers_srgb_and_has_a_fallback() {

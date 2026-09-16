@@ -1,6 +1,6 @@
 # M2 — Voxel Prototype
 
-Status: **Active; CPU/headless slice implemented, GPU integration pending**
+Status: **Implementation and local validation complete; pending PR validation and merge**
 Branch: `feat/m2-voxel-prototype`
 
 ## Purpose
@@ -47,19 +47,23 @@ Command: `cargo run --release -p veldwake-voxel --bin voxel-probe`. One run on t
 
 | Fixture | Solids | Quads | Vertices | Indices | Chunk bytes | Mesh bytes | Mesh CPU |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| empty | 0 | 0 | 0 | 0 | 65,536 | 0 | 12 µs |
+| empty | 0 | 0 | 0 | 0 | 65,536 | 0 | 11 µs |
 | single | 1 | 6 | 24 | 36 | 65,536 | 816 | 17 µs |
-| solid | 32,768 | 6,144 | 24,576 | 36,864 | 65,536 | 835,584 | 1,086 µs |
-| diagnostic | 31 | 132 | 528 | 792 | 65,536 | 17,952 | 34 µs |
+| solid | 32,768 | 6,144 | 24,576 | 36,864 | 65,536 | 835,584 | 639 µs |
+| diagnostic | 31 | 132 | 528 | 792 | 65,536 | 17,952 | 36 µs |
 
 The maximum exposed-face checkerboard at edge 32 contains 16,384 solids, 98,304 quads, 393,216 vertices, and 589,824 indices. This proves mathematically that `u16` cannot address the reference mesh; a deliberately huge unit test would add cost without new evidence.
 
 ### Rendering integration
 
-- Replace or sit alongside the disposable cube through the smallest explicit adapter from CPU mesh data to renderer-owned GPU buffers.
-- Upload only when the single fixture mesh is created or changed; do not regenerate or upload it every frame.
-- The renderer consumes mesh output but does not own or mutate canonical chunk cells.
-- Preserve the existing camera, depth, lifecycle, diagnostics, and D3D12 smoke path. A render graph, asset system, streaming queue, and generalized resource framework are outside M2.
+- The M1 cube is replaced by the fixture through a client-local adapter. Startup constructs the chunk and CPU mesh once, passes the mesh immutably to the renderer, converts position plus `VoxelId` to a GPU position/color vertex, and creates buffers with only `VERTEX` or `INDEX` usage.
+- The 528 GPU vertices occupy 12,672 bytes; 792 `u32` indices occupy 3,168 bytes; total one-time upload payload is 15,840 bytes. The mesh is not regenerated or uploaded in the frame loop.
+- The renderer owns only disposable GPU buffers. The CPU chunk remains authoritative for this fixture during construction and is dropped after initialization; colors are a deterministic diagnostic palette in the client, not voxel/material state.
+- The existing depth buffer, counter-clockwise front face, back-face culling, camera/input, resize, occlusion/minimize restore, focus reset, and clean shutdown paths are preserved. No render graph, asset system, streaming queue, or generalized resource framework was added.
+
+### Windows host validation
+
+On 2026-09-16 the client selected Intel Iris Xe through D3D12 (`Bgra8UnormSrgb`, `Fifo`, `Opaque`). The complete fixture was visible in the initial frame; its asymmetric stairs and IDs 1/2/7 were distinguishable through green/orange/yellow diagnostic colors. Movement and mouse look viewed exterior faces from another angle without an apparent winding/culling error. Repeated resize plus minimize/restore and focus loss resumed rendering, and Escape exited with code 0. No uncaptured validation or device errors were logged. This is one-host manual evidence, not automated visual regression or cross-adapter coverage.
 
 ## Acceptance criteria
 
@@ -86,9 +90,9 @@ The maximum exposed-face checkerboard at edge 32 contains 16,384 solids, 98,304 
 1. **Complete:** explicit dense representation, fixture, and CPU mesh contract.
 2. **Complete:** headless tests for indexing, bounds, mutation, fixture determinism, six directions, winding, and exact topology.
 3. **Complete:** release probe for named fixtures; its timing remains diagnostic only.
-4. **Pending:** integrate the immutable CPU mesh through a narrow client-owned upload adapter and inspect the rendered fixture/window lifecycle.
-5. **Pending at M2 exit:** final dependency, allocation, error-handling, documentation, and scope review.
+4. **Complete:** immutable client-owned upload adapter and Windows/D3D12 fixture/lifecycle inspection.
+5. **Complete locally:** dependency direction, allocations, error handling, documentation, and scope reviewed; remote PR validation and merge remain.
 
-## Remaining decision for M2 evidence
+## M2 boundary carried forward
 
-- Define only the narrow client-side GPU vertex conversion/upload boundary required to render this CPU mesh. The CPU crate must remain independent of `wgpu`, `winit`, and client types.
+- The CPU crate remains independent of `wgpu`, `winit`, `bytemuck`, and client types. Future work must not bypass this boundary when adding chunk orchestration or asynchronous meshing.

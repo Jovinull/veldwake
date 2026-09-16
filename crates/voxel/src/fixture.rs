@@ -79,6 +79,7 @@ pub fn fingerprint(chunk: &Chunk) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_exposed_faces;
 
     #[test]
     fn diagnostic_fixture_has_locked_content_and_all_boundaries() {
@@ -97,5 +98,13 @@ mod tests {
         for (x, y, z) in boundary_occupancy {
             assert_ne!(fixture.read(x, y, z), Ok(VoxelId::AIR));
         }
+    }
+
+    #[test]
+    fn diagnostic_fixture_has_locked_reference_topology() {
+        let mesh = mesh_exposed_faces(&diagnostic_fixture());
+        assert_eq!(mesh.quad_count(), 132);
+        assert_eq!(mesh.vertices().len(), 528);
+        assert_eq!(mesh.indices().len(), 792);
     }
 }
