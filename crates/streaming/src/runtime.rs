@@ -186,6 +186,8 @@ struct ChunkRecord {
     mesh: MeshState,
     /// Desired level; kept as history while the record is retained.
     lod: LodLevel,
+    /// Why the last invalidation happened, for gap attribution.
+    last_invalidation: Option<InvalidationCause>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -229,6 +231,21 @@ const fn choose_dispatch(mesh: Option<LodLevel>, load_ready: bool, consecutive: 
 enum InFlight {
     Load,
     Mesh,
+}
+
+/// Why a record's current mesh stopped being valid. Recorded per record so
+/// presentation can attribute a gap to its cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InvalidationCause {
+    /// The record's own desired level changed.
+    LodChange,
+    /// A neighbor's presentation (level or render membership) changed.
+    NeighborPresentation,
+    /// The record entered or left the render set.
+    Membership,
+    /// Content arrived or changed, or a neighbor was loaded, evicted, or
+    /// replaced: the old geometry is genuinely wrong.
+    Data,
 }
 
 /// Single-worker, headless owner of diagnostic CPU chunk residency.
@@ -309,7 +326,7 @@ impl StreamingRuntime {
             } else {
                 self.records.remove(&coord);
             }
-            self.invalidate_neighbors(coord)?;
+            self.invalidate_neighbors(coord, InvalidationCause::Data)?;
         }
 
         self.create_dependency_records()?;
@@ -325,8 +342,8 @@ impl StreamingRuntime {
                     record.lod = next;
                 }
                 self.metrics.lod_swaps += 1;
-                self.invalidate_mesh(coord)?;
-                self.invalidate_neighbors(coord)?;
+                self.invalidate_mesh(coord, InvalidationCause::LodChange)?;
+                self.invalidate_neighbors(coord, InvalidationCause::NeighborPresentation)?;
             }
         }
 
@@ -338,7 +355,7 @@ impl StreamingRuntime {
                 Some(MeshState::NotRequired)
             );
             if should_render != currently_required {
-                self.invalidate_mesh(coord)?;
+                self.invalidate_mesh(coord, InvalidationCause::Membership)?;
             }
         }
         self.rebuild_queued_priorities();
@@ -587,6 +604,7 @@ impl StreamingRuntime {
                     mesh_generation: 0,
                     mesh: MeshState::NotRequired,
                     lod,
+                    last_invalidation: None,
                 },
             );
             self.load_queue.push(LoadQueueEntry {
@@ -595,7 +613,7 @@ impl StreamingRuntime {
                 token,
             });
             if self.demand.render.contains(&coord) {
-                self.invalidate_mesh(coord)?;
+                self.invalidate_mesh(coord, InvalidationCause::Membership)?;
             }
         }
         Ok(())
@@ -658,19 +676,36 @@ impl StreamingRuntime {
         }
     }
 
-    fn invalidate_neighbors(&mut self, coord: ChunkCoord) -> Result<(), RuntimeError> {
+    fn invalidate_neighbors(
+        &mut self,
+        coord: ChunkCoord,
+        cause: InvalidationCause,
+    ) -> Result<(), RuntimeError> {
         for face in Face::ALL {
             if let Some(neighbor) = coord.neighbor(face) {
-                self.invalidate_mesh(neighbor)?;
+                self.invalidate_mesh(neighbor, cause)?;
             }
         }
         Ok(())
     }
 
-    fn invalidate_mesh(&mut self, coord: ChunkCoord) -> Result<(), RuntimeError> {
+    /// Cause of the last invalidation of `coord`, if any.
+    #[must_use]
+    pub fn last_invalidation(&self, coord: ChunkCoord) -> Option<InvalidationCause> {
+        self.records
+            .get(&coord)
+            .and_then(|record| record.last_invalidation)
+    }
+
+    fn invalidate_mesh(
+        &mut self,
+        coord: ChunkCoord,
+        cause: InvalidationCause,
+    ) -> Result<(), RuntimeError> {
         let Some(record) = self.records.get_mut(&coord) else {
             return Ok(());
         };
+        record.last_invalidation = Some(cause);
         record.mesh_generation =
             record
                 .mesh_generation
@@ -918,8 +953,8 @@ impl StreamingRuntime {
             SourceChunk::KnownAbsent => ResidencyState::KnownAbsent,
         };
         self.metrics.accepted_load_results += 1;
-        self.invalidate_mesh(coord)?;
-        self.invalidate_neighbors(coord)
+        self.invalidate_mesh(coord, InvalidationCause::Data)?;
+        self.invalidate_neighbors(coord, InvalidationCause::Data)
     }
 
     fn integrate_mesh(&mut self, stamp: MeshStamp, mesh: Mesh) -> Result<(), RuntimeError> {
@@ -1349,7 +1384,7 @@ mod tests {
             return Err(RuntimeError::WorkerDisconnected);
         };
         *content_generation += 1;
-        runtime.invalidate_neighbors(neighbor)?;
+        runtime.invalidate_neighbors(neighbor, InvalidationCause::Data)?;
         let replacement = runtime
             .current_mesh_stamp(center)
             .ok_or(RuntimeError::WorkerDisconnected)?;
@@ -1371,7 +1406,7 @@ mod tests {
             .get_mut(&center)
             .ok_or(RuntimeError::WorkerDisconnected)?
             .mesh = MeshState::Meshing(stale);
-        runtime.invalidate_mesh(center)?;
+        runtime.invalidate_mesh(center, InvalidationCause::Data)?;
         runtime.integrate_mesh(stale, Mesh::default())?;
         assert_eq!(runtime.metrics.stale_mesh_results, 1);
         Ok(())

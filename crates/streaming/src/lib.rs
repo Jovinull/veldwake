@@ -17,8 +17,8 @@ pub use demand::{
     StreamingConfig,
 };
 pub use runtime::{
-    MeshStatus, ResidencyStatus, ResidencySummary, RuntimeError, RuntimeMetrics, StreamingRuntime,
-    TimingStat,
+    InvalidationCause, MeshStatus, ResidencyStatus, ResidencySummary, RuntimeError, RuntimeMetrics,
+    StreamingRuntime, TimingStat,
 };
 pub use source::{DiagnosticChunkSource, SourceChunk};
 pub use types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken};

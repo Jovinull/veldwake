@@ -447,6 +447,7 @@ impl FrameStats {
         let summary = runtime.summary();
         let metrics = runtime.metrics();
         let totals = streaming.totals();
+        let gaps = streaming.gaps();
         let gpu = renderer.residency();
         info!(
             frames = self.frames,
@@ -521,6 +522,17 @@ impl FrameStats {
             total_upload_bytes_lod1 = totals.upload_bytes_lod1,
             lod_swaps = metrics.lod_swaps,
             stale_lod = metrics.stale_lod_results,
+            gaps_closed = gaps.closed_gaps(),
+            gaps_lod = gaps.lod_gaps,
+            gaps_neighbor = gaps.neighbor_presentation_gaps,
+            gaps_membership = gaps.membership_gaps,
+            gaps_data = gaps.data_gaps,
+            gaps_unattributed = gaps.unattributed_gaps,
+            gap_frames_total = gaps.gap_frames_total,
+            gap_frames_max = gaps.max_gap_frames,
+            gap_max_simultaneous = gaps.max_simultaneous_missing,
+            gap_current_missing = gaps.current_missing,
+            gap_frames_with_missing = gaps.frames_with_missing,
             snapshot_build_total_us = metrics.snapshot_build.total_us,
             snapshot_build_max_us = metrics.snapshot_build.max_us,
             lod1_derivation_total_us = metrics.lod1_derivation.total_us,

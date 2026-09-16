@@ -14,7 +14,9 @@ use std::{
 
 use glam::Vec3;
 use tracing::warn;
-use veldwake_streaming::{LodLevel, MeshStamp, RuntimeError, StreamingConfig, StreamingRuntime};
+use veldwake_streaming::{
+    InvalidationCause, LodLevel, MeshStamp, RuntimeError, StreamingConfig, StreamingRuntime,
+};
 use veldwake_voxel::{ChunkCoord, Mesh, WorldCoordinateRangeError, WorldVoxelCoord};
 
 const MEBIBYTE: usize = 1_024 * 1_024;
@@ -248,6 +250,43 @@ pub struct BridgeTotals {
     pub removal_budget_hits: u64,
 }
 
+/// Presentation gaps: render-demand chunks that were drawn, stopped being
+/// drawn while still in render demand, and had not returned yet.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GapStats {
+    /// Gaps opened by a level change of the chunk itself.
+    pub lod_gaps: u64,
+    /// Gaps opened by a neighbor's presentation change.
+    pub neighbor_presentation_gaps: u64,
+    /// Gaps opened by render-membership churn.
+    pub membership_gaps: u64,
+    /// Gaps opened by data: loads, evictions, content changes.
+    pub data_gaps: u64,
+    /// Gaps with no recorded cause.
+    pub unattributed_gaps: u64,
+    /// Sum over closed gaps of their length in update frames.
+    pub gap_frames_total: u64,
+    /// Longest closed gap in update frames.
+    pub max_gap_frames: u64,
+    /// Highest number of simultaneously missing chunks observed in one update.
+    pub max_simultaneous_missing: usize,
+    /// Chunks missing right now.
+    pub current_missing: usize,
+    /// Update frames in which at least one chunk was missing.
+    pub frames_with_missing: u64,
+}
+
+impl GapStats {
+    #[must_use]
+    pub const fn closed_gaps(&self) -> u64 {
+        self.lod_gaps
+            + self.neighbor_presentation_gaps
+            + self.membership_gaps
+            + self.data_gaps
+            + self.unattributed_gaps
+    }
+}
+
 /// What one `update` did.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrameStreamingReport {
@@ -270,6 +309,11 @@ pub struct StreamingBridge {
     budget: UploadBudget,
     totals: BridgeTotals,
     anchor_rejected: bool,
+    /// Update counter for gap attribution.
+    frame: u64,
+    /// Chunks that stopped drawing while still in render demand: when and why.
+    missing_since: BTreeMap<ChunkCoord, (u64, Option<InvalidationCause>)>,
+    gaps: GapStats,
 }
 
 impl StreamingBridge {
@@ -288,7 +332,15 @@ impl StreamingBridge {
             budget,
             totals: BridgeTotals::default(),
             anchor_rejected: false,
+            frame: 0,
+            missing_since: BTreeMap::new(),
+            gaps: GapStats::default(),
         })
+    }
+
+    #[must_use]
+    pub const fn gaps(&self) -> &GapStats {
+        &self.gaps
     }
 
     /// Records the chunk the camera occupies. A rejected position keeps the
@@ -324,6 +376,7 @@ impl StreamingBridge {
         presentation: &mut P,
     ) -> Result<FrameStreamingReport, RuntimeError> {
         let mut report = FrameStreamingReport::default();
+        self.frame += 1;
 
         if self.desired_center != self.runtime.center() {
             self.runtime.set_demand_center(self.desired_center)?;
@@ -338,7 +391,47 @@ impl StreamingBridge {
         report.upload_bytes = upload_bytes;
         report.deferred_uploads = deferred;
         report.removals = self.release_pending(presentation);
+        self.account_gaps();
         Ok(report)
+    }
+
+    /// Closes gaps for chunks that draw again, forgets chunks that left render
+    /// demand, and samples the number still missing this frame.
+    fn account_gaps(&mut self) {
+        let render = &self.runtime.demand().render;
+        let frame = self.frame;
+        let mut closed = Vec::new();
+        self.missing_since.retain(|coord, (since, cause)| {
+            if !render.contains(coord) {
+                return false;
+            }
+            if self.presented.contains_key(coord) {
+                closed.push((frame - *since, *cause));
+                return false;
+            }
+            true
+        });
+        for (length, cause) in closed {
+            match cause {
+                Some(InvalidationCause::LodChange) => self.gaps.lod_gaps += 1,
+                Some(InvalidationCause::NeighborPresentation) => {
+                    self.gaps.neighbor_presentation_gaps += 1;
+                }
+                Some(InvalidationCause::Membership) => self.gaps.membership_gaps += 1,
+                Some(InvalidationCause::Data) => self.gaps.data_gaps += 1,
+                None => self.gaps.unattributed_gaps += 1,
+            }
+            self.gaps.gap_frames_total += length;
+            self.gaps.max_gap_frames = self.gaps.max_gap_frames.max(length);
+        }
+        self.gaps.current_missing = self.missing_since.len();
+        self.gaps.max_simultaneous_missing = self
+            .gaps
+            .max_simultaneous_missing
+            .max(self.gaps.current_missing);
+        if self.gaps.current_missing > 0 {
+            self.gaps.frames_with_missing += 1;
+        }
     }
 
     /// Any presented mesh whose stamp is no longer the current render-demand
@@ -359,6 +452,12 @@ impl StreamingBridge {
             .collect();
         for coord in &stale {
             self.presented.remove(coord);
+            if render.contains(coord) {
+                let cause = self.runtime.last_invalidation(*coord);
+                self.missing_since
+                    .entry(*coord)
+                    .or_insert((self.frame, cause));
+            }
             // An empty mesh was presented without buffers; only a chunk that
             // actually held GPU state needs a budgeted release.
             if presentation.deactivate_chunk(*coord) {
