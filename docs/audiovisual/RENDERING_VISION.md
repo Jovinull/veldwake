@@ -8,10 +8,10 @@ The renderer should present stylized high-quality voxel fantasy while remaining 
 
 1. Window/device/surface/frame/input/camera and adapter diagnostics. **Complete in M1** with a disposable code-generated cube and no game-content claim.
 2. One chunk and an explicit meshing baseline. **Complete and merged in M2:** dependency-free exposed-face CPU mesh, one-time immutable `u32` GPU upload, depth/back-face culling, and diagnostic ID colors.
-3. Multi-chunk correctness. **Implemented locally in M3A, pending review/merge:** neighbor-aware local meshes and a static signed-coordinate fixture rendered with one presentation translation per chunk. This is not streaming or final batching.
-3. Streaming, prioritized async generation/meshing, residency, and initial LOD.
-4. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.
-5. Later evidence-driven culling/batching/GPU-driven techniques.
+3. Multi-chunk correctness. **Complete and merged in M3A:** neighbor-aware local meshes and a static signed-coordinate fixture rendered with one presentation translation per chunk. This is not streaming or final batching.
+4. Streaming, prioritized async generation/meshing, residency, and initial LOD.
+5. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.
+6. Later evidence-driven culling/batching/GPU-driven techniques.
 
 Potential techniques include greedy meshing or a selected alternative, frustum culling, occlusion culling, asynchronous meshing, hierarchical terrain LOD, indirect rendering, meshlets, compute culling, GPU particles/vegetation, atmospheric scattering, fog, shadows, water, cloud shadows, and color grading. Listing a technique does not authorize implementation.
 

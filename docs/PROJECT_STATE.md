@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is implemented locally** on `feat/m3-multichunk-foundation`, pending review/PR and merge. M2 was merged into `main` through [PR #2](https://github.com/Jovinull/veldwake/pull/2) at merge commit `b7f7461911e2f5c832dd9dae475ebb375dda870e`. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is complete and merged. M3B — Streaming Runtime is in planning only** on `feat/m3b-streaming-runtime`; no M3B code exists. M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -69,4 +69,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3A — Multi-chunk Correctness:** implementation and local validation are complete; review/PR and merge are next. This is a correctness submilestone, not streaming. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). Do not begin M3B without a separately reviewed scope; threads, jobs, world generation, LOD, persistence, ECS, and gameplay remain excluded.
+**M3B — Streaming Runtime planning:** define bounded camera-driven demand/residency, authoritative CPU chunk ownership, immutable meshing snapshots, minimal background work, generation-stamped stale-result rejection, frame integration/upload budgets, safe unload, deterministic diagnostic content, and observability. Implementation has not started. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.

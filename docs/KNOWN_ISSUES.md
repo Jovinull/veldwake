@@ -11,3 +11,4 @@ Last updated: 2026-09-16
 | KI-005 | Open | No project license is selected. | Owner decision required before public distribution/contributions. |
 | KI-006 | Open | M1 through M3A have one-host visual validation but no automated visual regression or multi-adapter coverage. | Add stable capture fixtures and broader hardware coverage when rendered game content begins to change. |
 | KI-007 | Accepted | `cargo-deny` reports transitive duplicate pairs for `hashbrown` and `syn` in the current `wgpu` graph. | Keep duplicate visibility as a warning; reassess on dependency upgrades rather than forcing transitive versions. |
+| KI-008 | Open | The audited Windows host has intermittently produced linker `LNK1104` for test executables when `cargo nextest` follows another Cargo gate, even sequentially. | Verify no project/Cargo process is holding the named executable, then rerun `cargo nextest` alone. Do not clean artifacts or change code unless the isolated retry also fails. |
