@@ -1,7 +1,7 @@
 [package]
 name = "veldwake-client"
 version = "0.0.0"
-description = "Veldwake presentation client and M2 diagnostic voxel renderer"
+description = "Veldwake presentation client and M3A diagnostic multi-chunk renderer"
 publish = false
 edition.workspace = true
 rust-version.workspace = true

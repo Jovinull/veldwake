@@ -1,11 +1,20 @@
 # M3 — Streaming World
 
-Status: **M3A planning only; implementation not started**  
+Status: **M3A implemented locally; pending review/PR and merge**
 Branch: `feat/m3-multichunk-foundation`
 
 ## Current submilestone: M3A — Multi-chunk Correctness
 
 M3A proves coordinate and seam correctness for a small static set of chunks. Despite the parent milestone name, it does not implement loading, residency, scheduling, generation, persistence, or LOD. Those capabilities require later scope backed by M3A evidence.
+
+## Implementation result
+
+- `veldwake-voxel` now owns `ChunkCoord(i32)`, `WorldVoxelCoord(i64)`, checked Euclidean conversion, and checked axial neighbors. These remain experimental runtime coordinates, not persisted formats.
+- `ChunkNeighborhood` is a borrowed, allocation-free center-plus-six-neighbors view. Sampling returns `Known(VoxelId)` or `Missing`; callers must select `BoundaryPolicy::Expose` or `BoundaryPolicy::RequireKnown` explicitly.
+- The M2 `mesh_exposed_faces(&Chunk)` entry point remains as an `Expose` compatibility wrapper. Neighbor-aware meshing removes a shared face for any solid ID pair and reports `MeshBoundaryError` when `RequireKnown` needs absent data.
+- The canonical fixture is an ordered `Vec` at `(-1, 0, 0)`, `(0, 0, 0)`, `(0, 0, 1)`. It contains 51 solids, has fingerprint `0xe65ae5533c4db16a`, and produces 202 quads, 808 vertices, and 1,212 indices after seam removal.
+- The client builds all three meshes once, keeps their vertices chunk-local, and supplies one immutable model uniform/bind group per chunk. Aggregate upload is 24,288 bytes: 19,392 vertex bytes, 4,848 index bytes, and 48 model-uniform bytes.
+- The final release probe observed 76 microseconds for the three-chunk mesh on the audited host. This is one diagnostic observation, not a budget or benchmark.
 
 ## Scope and acceptance criteria
 
@@ -20,7 +29,7 @@ M3A proves coordinate and seam correctness for a small static set of chunks. Des
 - Mesh vertices remain chunk-local; the client applies one transform/offset per chunk rather than baking duplicated world coordinates into CPU meshes.
 - Existing M2 single-chunk topology, fingerprint, winding, and headless behavior remain valid.
 
-## Proposed coordinate contract
+## Coordinate contract
 
 ### Types and axes
 
@@ -67,13 +76,13 @@ Pass a closure that receives an out-of-bounds local coordinate and returns a vox
 - Costs: hides which neighbors are required, introduces a call at every boundary sample, complicates lifetimes/generics or dynamic dispatch, and can accidentally let world lookup policy leak into a correctness-reference mesher.
 - Decision: not preferred for M3A. It remains a possible later adapter above the local neighborhood boundary.
 
-### Explicit neighborhood view — proposed
+### Explicit neighborhood view — selected
 
 Pass a borrowed view containing the center chunk plus up to six axial neighbors, addressed by the existing six `Face` directions. Sampling accepts coordinates in the center chunk's local frame and maps only one-cell axial overflow (`-1` or `CHUNK_EDGE`) to the matching neighbor edge.
 
 - Strengths: exactly matches exposed-face meshing needs; dependencies and missing neighbors are visible; no allocation, world map, callback dispatch, or renderer knowledge; easy to construct in tests.
 - Costs: specialized to face-adjacent sampling; algorithms needing diagonals or wider stencils will require a different view later.
-- Decision: proposed for M3A because the specialization is honest and sufficient. Do not generalize for hypothetical generation/lighting algorithms.
+- Decision: selected for M3A because the specialization is honest and sufficient. Do not generalize for hypothetical generation/lighting algorithms.
 
 The view should preserve a distinction such as `Known(VoxelId)` versus `Missing`; it must not make public chunk reads reinterpret out-of-bounds as AIR. For M3A's finite static set, the meshing call explicitly selects an “expose missing boundary” policy so absent outer neighbors produce faces. A future streaming layer must decide whether unavailable data should defer/remesh work rather than silently treating unloaded chunks as empty.
 
@@ -93,7 +102,7 @@ Give the mesher a chunk map or world interface.
 - Costs: couples a local geometry algorithm to storage, availability, coordinate, locking, and lifecycle policy; makes headless unit fixtures heavier.
 - Decision: rejected for M3A.
 
-## Proposed meshing behavior
+## Meshing behavior
 
 - Retain the M2 face-culling algorithm and chunk-local vertex positions.
 - Add a neighbor-aware entry point consuming the explicit neighborhood view. The current isolated entry point may remain as a compatibility wrapper with an explicit expose-missing policy.
@@ -103,23 +112,23 @@ Give the mesher a chunk map or world interface.
 
 ## Deterministic fixture and seam tests
 
-The fixture should use a small keyed collection assembled in test/tool code, not a new world/ECS abstraction. Include at least:
+The fixture uses a canonically ordered `Vec<(ChunkCoord, Chunk)>`, not a new world/ECS abstraction. It includes:
 
-- chunks at `(0, 0, 0)` and `(-1, 0, 0)` to exercise the negative X/world boundary;
-- asymmetric cells spanning their shared face with at least two voxel IDs;
-- additional compact pairs or table-driven rotations covering positive/negative X, Y, and Z;
+- chunks at `(-1, 0, 0)`, `(0, 0, 0)`, and `(0, 0, 1)`, exercising negative X and positive Z seams;
+- asymmetric cells spanning shared faces with differing voxel IDs;
+- table-driven two-chunk unit fixtures covering positive/negative X, Y, and Z exactly;
 - exterior cells proving that a missing outer neighbor remains visible under the explicit M3A boundary policy.
 
-For each of the six directions, tests must assert exact seam-face removal, not only a visually plausible total. Also test air-versus-solid, solid-versus-solid with different IDs, missing neighbor, coordinate round trips, neighbor-coordinate overflow, and unchanged M2 isolated topology.
+For each of the six directions, tests assert exact seam-face removal, not only a visually plausible total. Coverage also includes AIR-versus-solid, solid-versus-solid with different IDs, missing neighbors, coordinate round trips, neighbor-coordinate overflow, and unchanged M2 isolated topology.
 
-## Static rendering plan
+## Static rendering implementation
 
-- Build and mesh a small fixed collection only once during client startup.
-- Preserve each CPU mesh's `0..CHUNK_EDGE` local positions.
-- Create renderer-owned buffers per diagnostic chunk using the existing presentation adapter.
-- Apply `ChunkCoord * CHUNK_EDGE` as a per-chunk model translation in client-owned presentation state, preferably one small static uniform/bind group per chunk for this limited proof. Do not bake world positions into every vertex or add instancing/general batching without evidence.
-- Convert integer origins to `f32` only at the presentation boundary. The small fixture avoids precision concerns; origin rebasing is a later large-world decision.
-- Log chunk count and aggregate solids/quads/vertices/indices/upload bytes once. Preserve existing camera, depth, culling, lifecycle, and error handling.
+- A small fixed collection is built and meshed only once during client startup.
+- Each CPU mesh preserves its `0..CHUNK_EDGE` local positions.
+- Renderer-owned immutable buffers are created per diagnostic chunk using the existing presentation adapter.
+- `ChunkCoord * CHUNK_EDGE` is applied as one client-owned model uniform/bind group per chunk. World positions are not baked into CPU vertices; instancing/general batching remains out of scope.
+- Integer origins become `f32` only at the presentation boundary. The small fixture avoids precision concerns; origin rebasing is a later large-world decision.
+- Startup logs chunk count and aggregate solids/quads/vertices/indices/upload bytes once. Existing camera, depth, culling, lifecycle, and error handling are preserved.
 
 ## Validation plan
 
@@ -129,6 +138,8 @@ For each of the six directions, tests must assert exact seam-face removal, not o
 4. Extend the client adapter to render only that small static set using per-chunk translations.
 5. Run all repository gates and the release probe; manually inspect seams, placement, negative-coordinate chunk placement, camera traversal, resize/minimize/restore, and clean shutdown on D3D12.
 
+All five steps were exercised on 2026-09-16. Headless coverage includes exact Euclidean boundaries, extrema/range errors, checked neighbor overflow, all six seam directions, different-ID seams, known AIR, both missing-neighbor policies, locked M2 topology, and locked aggregate M3A topology. The Windows smoke used Intel Iris Xe through D3D12 (`Bgra8UnormSrgb`, `Fifo`, observed `Opaque`): negative and positive chunk placement, external faces, seam geometry, multiple colors, camera traversal, repeated resize, minimize/restore, focus reset, and Escape shutdown were visually exercised without observed validation errors.
+
 ## Non-goals
 
 - Threads, Rayon, async runtime, job system, queues, prioritization, cancellation, residency, or actual streaming.
@@ -137,10 +148,9 @@ For each of the six directions, tests must assert exact seam-face removal, not o
 - ECS, gameplay, physics, collision, networking, server orchestration, or world simulation.
 - Diagonal-neighbor/corner sampling, lighting propagation, or a general-purpose world query API.
 
-## Open questions and risks
+## Remaining risks
 
-- Confirm during implementation whether checked `ChunkCoord` neighbor overflow should return `Option` or a typed error; do not wrap at `i32` limits.
-- Decide the smallest explicit type for `Known` versus `Missing` sampling without building a generic query framework.
-- Exact multi-chunk fixture topology/fingerprint must come from implementation evidence, not be invented in planning.
 - Treating missing neighbors as exposed is valid only for the finite M3A boundary. Carrying that behavior into asynchronous streaming would cause transient holes or duplicate seam faces.
 - One uniform/bind group per diagnostic chunk is intentionally unscalable; M3A must not present it as the final renderer batching strategy.
+- The fixture lookup in the client and probe is linear over three chunks. It is diagnostic assembly code, not a residency/world-storage design.
+- Large-world float precision and origin rebasing remain deliberately unresolved; integer coordinates convert to `f32` only for this small presentation fixture.

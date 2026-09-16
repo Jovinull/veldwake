@@ -22,13 +22,13 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            position: Vec3::new(62.0, 50.0, 72.0),
-            yaw: -0.68,
-            pitch: -0.44,
+            position: Vec3::new(42.0, 32.0, 58.0),
+            yaw: -0.79,
+            pitch: -0.40,
             aspect: DEFAULT_ASPECT,
             vertical_fov_radians: 55.0_f32.to_radians(),
             near_plane: 0.1,
-            far_plane: 160.0,
+            far_plane: 200.0,
         }
     }
 }
