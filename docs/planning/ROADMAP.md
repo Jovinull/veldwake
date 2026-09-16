@@ -18,11 +18,13 @@ Window, adapter/device/surface, D3D12-first backend reporting, resize/lifecycle,
 
 Explicit voxel/chunk representation, one deterministic fixture chunk, edit/read API, selected baseline meshing technique, upload/render path, bounds/correctness tests, and CPU/mesh metrics.
 
-**Implementation and local validation complete on `feat/m2-voxel-prototype`; pending PR validation and merge:** the CPU/headless chunk, deterministic fixture, exposed-face reference mesher, one-time GPU upload/render path, tests, metrics, and Windows/D3D12 smoke evidence are present. See [`M2_VOXEL_PROTOTYPE.md`](M2_VOXEL_PROTOTYPE.md). M3 has not started.
+**Complete and merged through PR #2:** the CPU/headless chunk, deterministic fixture, exposed-face reference mesher, one-time GPU upload/render path, tests, metrics, and Windows/D3D12 smoke evidence are present. See [`M2_VOXEL_PROTOTYPE.md`](M2_VOXEL_PROTOTYPE.md).
 
 ## M3 — Streaming World
 
 Chunk coordinates, prioritized/cancellable generation and meshing jobs, residency/streaming budgets, initial LOD strategy, cache/persistence experiment, and debug visualization. No full civilization simulation.
+
+**M3A — Multi-chunk Correctness is active in planning:** establish signed chunk/world coordinate conversion, neighbor-aware seam meshing, deterministic adjacent-chunk fixtures, six-direction seam tests, and a small static rendered chunk set. It deliberately excludes actual streaming, threads/jobs, world generation, persistence, and LOD. See [`M3_STREAMING_WORLD.md`](M3_STREAMING_WORLD.md). Later M3 capabilities will be scoped only after M3A evidence exists.
 
 ## M4 — Beautiful Terrain Vertical Slice
 

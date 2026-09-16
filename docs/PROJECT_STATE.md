@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M2 — Voxel Prototype implementation is complete** on `feat/m2-voxel-prototype`, pending remote PR validation and merge into `main`. Its CPU/headless representation, deterministic fixture, reference mesher, immutable GPU upload, tests, metrics, and Windows/D3D12 smoke validation are implemented. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is active in planning** on `feat/m3-multichunk-foundation`; no M3A code exists yet. M2 was merged into `main` through [PR #2](https://github.com/Jovinull/veldwake/pull/2) at merge commit `b7f7461911e2f5c832dd9dae475ebb375dda870e`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -13,7 +13,7 @@ Last updated: 2026-09-16
 - Rust stable `1.98.1` with `rustfmt` and Clippy is available on the audited Windows host.
 - A dependency-free Rust 2024 foundation crate compiles and validates the workspace.
 - `veldwake-client` uses current `winit 0.30` lifecycle APIs and `wgpu 30` to render the deterministic M2 voxel fixture with depth, back-face culling, and a perspective camera.
-- Input and camera behavior are GPU-independent and covered by 12 headless tests; focus loss clears held input and presentation delta is bounded.
+- Input, camera, surface selection, and diagnostic color behavior are GPU-independent and covered by 13 client tests; focus loss clears held input and presentation delta is bounded.
 - Startup diagnostics report the actual adapter/backend/surface configuration; lightweight presentation timing is reported every five seconds at `info`.
 - `cargo-deny` and `cargo-audit` are part of the dependency gates now that runtime dependencies exist.
 - `veldwake-voxel` provides a dependency-free dense `32³` chunk, checked local access, a stable diagnostic fixture, and a CPU exposed-face reference mesher with headless correctness tests.
@@ -21,7 +21,7 @@ Last updated: 2026-09-16
 
 ## What does not exist yet
 
-No multi-chunk model, neighbor/seam handling, streaming, world generation, LOD, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The diagnostic client is not a game.
+No multi-chunk model, signed chunk/world coordinate contract, neighbor/seam handling, streaming, world generation, LOD, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The diagnostic client is not a game.
 
 ## Current decisions
 
@@ -66,4 +66,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M2 — Voxel Prototype:** implementation and local validation are complete on the feature branch; remote PR validation and merge remain. See [`planning/M2_VOXEL_PROTOTYPE.md`](planning/M2_VOXEL_PROTOTYPE.md). M3 has not started; streaming, world generation, LOD, persistence, ECS, gameplay, and multiple chunks remain excluded.
+**M3A — Multi-chunk Correctness:** define signed chunk/world coordinates, negative-coordinate conversion, explicit neighbor sampling, seam-correct reference meshing, deterministic adjacent-chunk fixtures, and static diagnostic rendering of a few chunks. This is a correctness submilestone, not streaming. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). Threads, jobs, world generation, LOD, persistence, ECS, and gameplay remain excluded.
