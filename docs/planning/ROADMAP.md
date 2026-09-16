@@ -24,7 +24,9 @@ Explicit voxel/chunk representation, one deterministic fixture chunk, edit/read 
 
 Chunk coordinates, prioritized/cancellable generation and meshing jobs, residency/streaming budgets, initial LOD strategy, cache/persistence experiment, and debug visualization. No full civilization simulation.
 
-**M3A — Multi-chunk Correctness is implemented and locally validated, pending review/merge:** signed chunk/world conversion, explicit neighbor-aware seam meshing, deterministic adjacent-chunk fixtures, six-direction seam tests, and a small static rendered chunk set are present. It deliberately excludes actual streaming, threads/jobs, world generation, persistence, and LOD. See [`M3_STREAMING_WORLD.md`](M3_STREAMING_WORLD.md). Later M3 capabilities will be scoped only after M3A is reviewed.
+**M3A — Multi-chunk Correctness is complete and merged through PR #3:** signed chunk/world conversion, explicit neighbor-aware seam meshing, deterministic adjacent-chunk fixtures, six-direction seam tests, and a small static rendered chunk set are present.
+
+**M3B — Streaming Runtime is implemented on its feature branch and awaiting review:** M3B1 provides deterministic bounded demand/residency, validated configuration, bounded eviction, immutable center-plus-slab meshing snapshots, request-token and generation-stamped stale-result rejection, one bounded standard-library worker, a finite diagnostic chunk source, and headless metrics/tests. M3B2 drives demand from the camera with floor-based anchoring, reconciles the GPU draw set every frame before budgeted uploads and releases, and reports aggregate diagnostics. Gates and the driven Windows/D3D12 smoke passed; the pull request to `main` is open. M3B deliberately excludes product world generation, saves, LOD, ECS, gameplay, physics, networking, and biomes; LOD, the cache/persistence experiment, and debug visualization remain later M3 scope. See [`M3_STREAMING_WORLD.md`](M3_STREAMING_WORLD.md).
 
 ## M4 — Beautiful Terrain Vertical Slice
 

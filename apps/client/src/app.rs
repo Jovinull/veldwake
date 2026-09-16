@@ -6,10 +6,7 @@ use std::{
 };
 
 use tracing::{debug, info};
-use veldwake_voxel::{
-    BoundaryPolicy, Chunk, ChunkCoord, ChunkNeighborhood, Face, Mesh,
-    mesh_exposed_faces_with_neighbors,
-};
+use veldwake_streaming::StreamingConfig;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -22,7 +19,8 @@ use winit::{
 use crate::{
     camera::{Camera, CameraController},
     input::{CameraAction, InputState},
-    renderer::{DiagnosticChunkMesh, RenderOutcome, Renderer},
+    renderer::{RenderOutcome, Renderer},
+    streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
 };
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
@@ -56,6 +54,7 @@ impl Error for AppRunError {}
 
 struct App {
     renderer: Option<Renderer>,
+    streaming: Option<StreamingBridge>,
     camera: Camera,
     controller: CameraController,
     input: InputState,
@@ -69,6 +68,7 @@ impl Default for App {
     fn default() -> Self {
         Self {
             renderer: None,
+            streaming: None,
             camera: Camera::default(),
             controller: CameraController::default(),
             input: InputState::default(),
@@ -83,7 +83,7 @@ impl Default for App {
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), AppRunError> {
         let attributes = Window::default_attributes()
-            .with_title("Veldwake - M3A Multi-chunk Correctness")
+            .with_title("Veldwake - M3B Streaming Runtime")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_visible(false);
         let window = Arc::new(
@@ -95,38 +95,36 @@ impl App {
         self.camera
             .set_aspect_from_size(initial_size.width, initial_size.height);
 
-        let chunks = veldwake_voxel::multichunk_diagnostic_fixture();
-        let mesh_started = Instant::now();
-        let meshes = mesh_fixture_chunks(&chunks)?;
-        let mesh_cpu_time = mesh_started.elapsed();
-        let mesh_diagnostics = crate::renderer::VoxelMeshDiagnostics {
-            chunk_count: chunks.len(),
-            solid_count: chunks.iter().map(|(_, chunk)| chunk.solid_count()).sum(),
-            fingerprint: veldwake_voxel::multichunk_fingerprint(&chunks),
-            mesh_cpu_time,
-        };
-        let diagnostic_meshes = meshes
-            .iter()
-            .map(|(coord, mesh)| DiagnosticChunkMesh {
-                coord: *coord,
-                mesh,
-            })
-            .collect::<Vec<_>>();
+        let config = StreamingConfig::default();
+        let budget = UploadBudget::default();
+        let streaming = StreamingBridge::new(config, budget, self.camera.position())
+            .map_err(|error| AppRunError(error.to_string()))?;
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),
             &self.camera,
-            &diagnostic_meshes,
-            mesh_diagnostics,
         ))
         .map_err(|error| AppRunError(error.to_string()))?;
 
+        info!(
+            camera_chunk = ?streaming.desired_center(),
+            render_radius = config.render_radius,
+            dependency_halo = config.dependency_halo,
+            retention_radius = config.retention_radius,
+            hard_resident_cap = config.hard_resident_cap,
+            max_cpu_evictions_per_update = config.max_cpu_evictions_per_update,
+            max_uploads_per_frame = budget.max_uploads_per_frame,
+            soft_upload_bytes_per_frame = budget.soft_bytes_per_frame,
+            max_removals_per_frame = budget.max_removals_per_frame,
+            "M3B streaming bridge started"
+        );
         self.last_frame = Instant::now();
         self.renderer = Some(renderer);
+        self.streaming = Some(streaming);
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M3A diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
+            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
         );
         Ok(())
     }
@@ -166,13 +164,26 @@ impl App {
         self.controller
             .update(&mut self.camera, &mut self.input, elapsed);
 
-        let Some(renderer) = self.renderer.as_mut() else {
+        let (Some(renderer), Some(streaming)) = (self.renderer.as_mut(), self.streaming.as_mut())
+        else {
             return;
+        };
+        // A rejected anchor keeps the previous demand center; the bridge logs
+        // the transition and counts every rejected frame, so no outcome needs
+        // handling here.
+        streaming.track_camera(self.camera.position());
+        let report = match streaming.update(renderer) {
+            Ok(report) => report,
+            Err(error) => {
+                self.fail_and_exit(event_loop, format!("streaming runtime failed: {error}"));
+                return;
+            }
         };
         renderer.update_camera(&self.camera);
         let request_next_redraw = match renderer.render() {
             RenderOutcome::Rendered => {
-                self.frame_stats.record(now, elapsed);
+                self.frame_stats.record(now, elapsed, report);
+                self.frame_stats.report_if_due(now, streaming, renderer);
                 true
             }
             RenderOutcome::Retry => true,
@@ -191,42 +202,6 @@ impl App {
             renderer.window().request_redraw();
         }
     }
-}
-
-fn mesh_fixture_chunks(
-    chunks: &[(ChunkCoord, Chunk)],
-) -> Result<Vec<(ChunkCoord, Mesh)>, AppRunError> {
-    chunks
-        .iter()
-        .map(|(coord, chunk)| {
-            mesh_exposed_faces_with_neighbors(
-                neighborhood_for(*coord, chunk, chunks),
-                BoundaryPolicy::Expose,
-            )
-            .map(|mesh| (*coord, mesh))
-            .map_err(|error| AppRunError(format!("failed to mesh M3A fixture: {error}")))
-        })
-        .collect()
-}
-
-fn neighborhood_for<'a>(
-    coord: ChunkCoord,
-    center: &'a Chunk,
-    chunks: &'a [(ChunkCoord, Chunk)],
-) -> ChunkNeighborhood<'a> {
-    let mut neighborhood = ChunkNeighborhood::new(center);
-    for face in Face::ALL {
-        let Some(neighbor_coord) = coord.neighbor(face) else {
-            continue;
-        };
-        if let Some((_, neighbor)) = chunks
-            .iter()
-            .find(|(candidate, _)| *candidate == neighbor_coord)
-        {
-            neighborhood = neighborhood.with_neighbor(face, neighbor);
-        }
-    }
-    neighborhood
 }
 
 impl ApplicationHandler for App {
@@ -334,6 +309,12 @@ struct FrameStats {
     report_started: Instant,
     frames: u64,
     accumulated_frame_time: Duration,
+    uploads: u64,
+    upload_bytes: u64,
+    deactivations: u64,
+    removals: u64,
+    deferred_uploads: u64,
+    demand_changes: u64,
 }
 
 impl FrameStats {
@@ -342,12 +323,28 @@ impl FrameStats {
             report_started: Instant::now(),
             frames: 0,
             accumulated_frame_time: Duration::ZERO,
+            uploads: 0,
+            upload_bytes: 0,
+            deactivations: 0,
+            removals: 0,
+            deferred_uploads: 0,
+            demand_changes: 0,
         }
     }
 
-    fn record(&mut self, now: Instant, frame_time: Duration) {
+    fn record(&mut self, _now: Instant, frame_time: Duration, report: FrameStreamingReport) {
         self.frames += 1;
         self.accumulated_frame_time += frame_time;
+        self.uploads += report.uploads as u64;
+        self.upload_bytes += report.upload_bytes as u64;
+        self.deactivations += report.deactivations as u64;
+        self.removals += report.removals as u64;
+        self.deferred_uploads += report.deferred_uploads as u64;
+        self.demand_changes += u64::from(report.demand_changed);
+    }
+
+    /// One aggregate line per interval; never one line per chunk per frame.
+    fn report_if_due(&mut self, now: Instant, streaming: &StreamingBridge, renderer: &Renderer) {
         let report_span = now.saturating_duration_since(self.report_started);
         if report_span < FRAME_REPORT_INTERVAL || self.frames == 0 {
             return;
@@ -355,16 +352,77 @@ impl FrameStats {
 
         let average_ms = self.accumulated_frame_time.as_secs_f64() * 1000.0 / self.frames as f64;
         let observed_fps = self.frames as f64 / report_span.as_secs_f64();
+        let runtime = streaming.runtime();
+        let demand = runtime.demand();
+        let summary = runtime.summary();
+        let metrics = runtime.metrics();
+        let totals = streaming.totals();
+        let gpu = renderer.residency();
         info!(
             frames = self.frames,
             report_seconds = report_span.as_secs_f64(),
             average_wall_frame_ms = average_ms,
             observed_fps,
-            "presentation timing sample"
+            camera_chunk = ?runtime.center(),
+            demand_changes = self.demand_changes,
+            render = demand.render.len(),
+            dependency = demand.dependency.len(),
+            retention = demand.retention.len(),
+            tracked = summary.tracked,
+            cpu_resident = summary.cpu_resident,
+            known_absent = summary.known_absent,
+            evict_pending = summary.evict_pending,
+            load_queued = summary.load_queued,
+            loading = summary.loading,
+            mesh_waiting = summary.mesh_waiting,
+            mesh_dirty = summary.mesh_dirty,
+            mesh_meshing = summary.mesh_meshing,
+            mesh_ready = summary.mesh_ready,
+            queued_loads = summary.queued_loads,
+            queued_meshes = summary.queued_meshes,
+            jobs_in_flight = summary.jobs_in_flight,
+            presented = streaming.presented_count(),
+            gpu_resident = gpu.resident,
+            gpu_active = gpu.active,
+            pending_gpu_removal = streaming.pending_removal_count(),
+            "M3B streaming state"
+        );
+        info!(
+            loads_dispatched = metrics.load_jobs_dispatched,
+            meshes_dispatched = metrics.mesh_jobs_dispatched,
+            stale_loads = metrics.stale_load_results,
+            stale_meshes = metrics.stale_mesh_results,
+            fairness_loads = metrics.fairness_load_dispatches,
+            hard_cap_blocks = metrics.hard_cap_blocks,
+            cpu_evictions = metrics.cpu_evictions_finalized,
+            eviction_budget_hits = metrics.eviction_budget_hits,
+            interval_uploads = self.uploads,
+            interval_upload_bytes = self.upload_bytes,
+            interval_deactivations = self.deactivations,
+            interval_removals = self.removals,
+            interval_deferred_uploads = self.deferred_uploads,
+            total_uploads = totals.uploads,
+            total_upload_bytes = totals.upload_bytes,
+            empty_meshes = totals.empty_meshes_presented,
+            oversized_uploads = totals.oversized_uploads,
+            upload_failures = totals.upload_failures,
+            removal_budget_hits = totals.removal_budget_hits,
+            anchor_rejections = totals.anchor_rejections,
+            snapshot_bytes_dispatched = metrics.snapshot_bytes_dispatched,
+            resident_payload_bytes = summary.resident_payload_bytes,
+            cpu_mesh_bytes = summary.cpu_mesh_bytes,
+            gpu_bytes = gpu.bytes,
+            "M3B streaming work and budgets"
         );
         self.report_started = now;
         self.frames = 0;
         self.accumulated_frame_time = Duration::ZERO;
+        self.uploads = 0;
+        self.upload_bytes = 0;
+        self.deactivations = 0;
+        self.removals = 0;
+        self.deferred_uploads = 0;
+        self.demand_changes = 0;
     }
 }
 

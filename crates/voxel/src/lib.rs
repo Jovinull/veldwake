@@ -16,7 +16,8 @@ pub use fixture::{
     multichunk_fingerprint,
 };
 pub use mesh::{
-    BoundaryPolicy, ChunkNeighborhood, Face, Mesh, MeshBoundaryError, NeighborSample, Vertex,
-    mesh_exposed_faces, mesh_exposed_faces_with_neighbors,
+    BoundaryPolicy, ChunkNeighborhood, Face, FaceSlab, Mesh, MeshBoundaryError, NeighborSample,
+    OwnedMeshingSnapshot, Vertex, mesh_exposed_faces, mesh_exposed_faces_from_snapshot,
+    mesh_exposed_faces_with_neighbors,
 };
 pub use spatial::{ChunkCoord, WorldCoordinateRangeError, WorldVoxelCoord};

@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is implemented locally** on `feat/m3-multichunk-foundation`, pending review/PR and merge. M2 was merged into `main` through [PR #2](https://github.com/Jovinull/veldwake/pull/2) at merge commit `b7f7461911e2f5c832dd9dae475ebb375dda870e`. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is merged. M3B — Streaming Runtime (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime`, validated by headless gates and a driven Windows/D3D12 smoke, and submitted for review.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -21,10 +21,16 @@ Last updated: 2026-09-16
 - Signed `ChunkCoord(i32)` and `WorldVoxelCoord(i64)` conversions use checked Euclidean semantics; borrowed neighborhoods distinguish known voxel data from missing chunks.
 - Neighbor-aware CPU meshing removes solid seams in all six directions. The deterministic three-chunk fixture has 51 solids, fingerprint `0xe65ae5533c4db16a`, and exact topology 202 quads / 808 vertices / 1,212 indices.
 - The client renders the static chunks at signed offsets using immutable per-chunk model uniforms. CPU meshes remain local and the renderer still owns no authoritative world state.
+- `veldwake-streaming` is a headless std-only orchestration crate over `veldwake-voxel`: deterministic demand/retention sets, globally unique request tokens, bounded CPU residency, one bounded worker, lazy priority queues, owned center-plus-face-slab mesh snapshots, and generation-stamped stale-result rejection.
+- The finite diagnostic source reports `Present(Chunk)` or `KnownAbsent`; unavailable neighbors delay meshing. Only render-demand chunks request meshes, while dependency/retention records can remain CPU-only.
+- `StreamingConfig` rejects `retention_radius < render_radius + dependency_halo` with typed errors and checked arithmetic; CPU eviction finalization is bounded (default 8 per update) while retired payloads keep counting against the hard cap.
+- The client streams: camera position → `floor` → `WorldVoxelCoord::split` → demand center, updated only on chunk change; `StreamingBridge` polls the runtime once per frame, deactivates any GPU mesh whose stamp is no longer current before uploading, uploads under a 2-per-frame / 4 MiB soft budget with oversized accounting, and releases buffers at most 8 per frame.
+- The renderer keeps `BTreeMap<ChunkCoord, GpuChunkMesh>` with an `active` flag and draws only active entries; it knows no streaming stamps. Twenty-three GPU-independent client tests use an in-memory presentation double.
+- Five-second aggregate diagnostics report demand, residency, mesh states, queues, GPU residency, uploads/bytes, removals, budget hits, stale drops, and byte totals.
 
 ## What does not exist yet
 
-No streaming/residency/jobs, world generation, LOD, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The static fixture collection is not a world model, and the diagnostic client is not a game.
+No product world generation, disk cache/saves, LOD, greedy meshing, generalized batching/instancing, origin rebasing, multiple workers, authoritative simulation, gameplay, physics, audio, networking, mod runtime, UI framework, or internal editor exists. The finite diagnostic source is not a world generator, and the M3A static fixture is no longer rendered by the client (its voxel-crate tests remain).
 
 ## Current decisions
 
@@ -51,6 +57,7 @@ cargo deny check
 cargo audit
 cargo run -p veldwake-client
 cargo run --release -p veldwake-voxel --bin voxel-probe
+cargo run --release -p veldwake-streaming --bin streaming-probe
 ```
 
 The runnable binary is diagnostic presentation content only. See [`environment/SETUP.md`](environment/SETUP.md).
@@ -69,4 +76,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3A — Multi-chunk Correctness:** implementation and local validation are complete; review/PR and merge are next. This is a correctness submilestone, not streaming. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). Do not begin M3B without a separately reviewed scope; threads, jobs, world generation, LOD, persistence, ECS, and gameplay remain excluded.
+**M3B — Streaming Runtime:** M3B1 and M3B2 are implemented on the feature branch; all gates and the driven Windows/D3D12 smoke passed; the pull request to `main` is open for review. Do not begin any M3C scope (LOD, cache/persistence experiment, debug visualization, more workers) before acceptance. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.

@@ -1,0 +1,17 @@
+[package]
+name = "veldwake-streaming"
+version = "0.0.0"
+description = "Headless bounded chunk residency and meshing runtime for Veldwake"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veldwake-voxel = { path = "../voxel", version = "=0.0.0" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "streaming-probe"
+path = "src/bin/streaming-probe.rs"

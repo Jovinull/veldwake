@@ -1,6 +1,8 @@
 use std::{fmt, mem::size_of_val};
 
-use crate::{CHUNK_EDGE, Chunk, LocalCoord, VoxelId};
+use crate::{CHUNK_BYTES, CHUNK_EDGE, Chunk, LocalCoord, VoxelId};
+
+const FACE_SLAB_CELLS: usize = CHUNK_EDGE * CHUNK_EDGE;
 
 /// The six outward faces in right-handed, Y-up local chunk space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,6 +157,81 @@ impl fmt::Display for MeshBoundaryError {
 
 impl std::error::Error for MeshBoundaryError {}
 
+/// One owned, one-cell-thick boundary required by an asynchronous mesh job.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FaceSlab {
+    cells: Option<Box<[VoxelId]>>,
+}
+
+impl FaceSlab {
+    #[must_use]
+    pub const fn known_air() -> Self {
+        Self { cells: None }
+    }
+
+    /// Copies only the face of `neighbor` that touches `center` in `face`.
+    #[must_use]
+    pub fn from_neighbor(face: Face, neighbor: &Chunk) -> Self {
+        let mut cells = Vec::with_capacity(FACE_SLAB_CELLS);
+        for secondary in 0..CHUNK_EDGE {
+            for primary in 0..CHUNK_EDGE {
+                let (x, y, z) = slab_neighbor_coord(face, primary, secondary);
+                cells.push(neighbor.read_local(local_coord_from_meshing(x, y, z)));
+            }
+        }
+        Self {
+            cells: Some(cells.into_boxed_slice()),
+        }
+    }
+
+    #[must_use]
+    pub fn payload_bytes(&self) -> usize {
+        self.cells.as_deref().map_or(0, size_of_val)
+    }
+
+    fn sample(&self, face: Face, coord: LocalCoord) -> VoxelId {
+        self.cells
+            .as_ref()
+            .map_or(VoxelId::AIR, |cells| cells[slab_index(face, coord)])
+    }
+}
+
+/// Self-contained input for detached exposed-face meshing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedMeshingSnapshot {
+    center: Chunk,
+    faces: [FaceSlab; 6],
+}
+
+impl OwnedMeshingSnapshot {
+    #[must_use]
+    pub const fn new(center: Chunk, faces: [FaceSlab; 6]) -> Self {
+        Self { center, faces }
+    }
+
+    #[must_use]
+    pub const fn center(&self) -> &Chunk {
+        &self.center
+    }
+
+    #[must_use]
+    pub fn payload_bytes(&self) -> usize {
+        CHUNK_BYTES
+            + self
+                .faces
+                .iter()
+                .map(FaceSlab::payload_bytes)
+                .sum::<usize>()
+    }
+
+    fn sample_adjacent(&self, coord: LocalCoord, face: Face) -> NeighborSample {
+        if let Some(local) = local_neighbor(coord, face) {
+            return NeighborSample::Known(self.center.read_local(local));
+        }
+        NeighborSample::Known(self.faces[face.index()].sample(face, coord))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
@@ -210,19 +287,42 @@ pub fn mesh_exposed_faces_with_neighbors(
     neighborhood: ChunkNeighborhood<'_>,
     boundary_policy: BoundaryPolicy,
 ) -> Result<Mesh, MeshBoundaryError> {
+    mesh_with_sampler(neighborhood.center(), boundary_policy, |coord, face| {
+        neighborhood.sample_adjacent(coord, face)
+    })
+}
+
+/// Meshes a self-contained center-and-six-slabs snapshot.
+#[must_use]
+pub fn mesh_exposed_faces_from_snapshot(snapshot: &OwnedMeshingSnapshot) -> Mesh {
+    match mesh_with_sampler(
+        snapshot.center(),
+        BoundaryPolicy::RequireKnown,
+        |coord, face| snapshot.sample_adjacent(coord, face),
+    ) {
+        Ok(mesh) => mesh,
+        Err(error) => unreachable!("owned snapshot unexpectedly lacked a face: {error}"),
+    }
+}
+
+fn mesh_with_sampler(
+    center: &Chunk,
+    boundary_policy: BoundaryPolicy,
+    mut sample_adjacent: impl FnMut(LocalCoord, Face) -> NeighborSample,
+) -> Result<Mesh, MeshBoundaryError> {
     let mut mesh = Mesh::default();
 
     for z in 0..CHUNK_EDGE {
         for y in 0..CHUNK_EDGE {
             for x in 0..CHUNK_EDGE {
                 let coord = local_coord_from_meshing(x, y, z);
-                let voxel = neighborhood.center().read_local(coord);
+                let voxel = center.read_local(coord);
                 if voxel.is_air() {
                     continue;
                 }
 
                 for face in Face::ALL {
-                    match neighborhood.sample_adjacent(coord, face) {
+                    match sample_adjacent(coord, face) {
                         NeighborSample::Known(neighbor) if neighbor.is_air() => {
                             emit_quad(&mut mesh, x, y, z, face, voxel);
                         }
@@ -240,6 +340,38 @@ pub fn mesh_exposed_faces_with_neighbors(
     }
 
     Ok(mesh)
+}
+
+fn local_neighbor(coord: LocalCoord, face: Face) -> Option<LocalCoord> {
+    let (x, y, z) = (coord.x(), coord.y(), coord.z());
+    let value = match face {
+        Face::NegativeX => x.checked_sub(1).map(|next| (next, y, z)),
+        Face::PositiveX => (x + 1 < CHUNK_EDGE).then_some((x + 1, y, z)),
+        Face::NegativeY => y.checked_sub(1).map(|next| (x, next, z)),
+        Face::PositiveY => (y + 1 < CHUNK_EDGE).then_some((x, y + 1, z)),
+        Face::NegativeZ => z.checked_sub(1).map(|next| (x, y, next)),
+        Face::PositiveZ => (z + 1 < CHUNK_EDGE).then_some((x, y, z + 1)),
+    }?;
+    Some(local_coord_from_meshing(value.0, value.1, value.2))
+}
+
+fn slab_neighbor_coord(face: Face, primary: usize, secondary: usize) -> (usize, usize, usize) {
+    match face {
+        Face::NegativeX => (CHUNK_EDGE - 1, primary, secondary),
+        Face::PositiveX => (0, primary, secondary),
+        Face::NegativeY => (primary, CHUNK_EDGE - 1, secondary),
+        Face::PositiveY => (primary, 0, secondary),
+        Face::NegativeZ => (primary, secondary, CHUNK_EDGE - 1),
+        Face::PositiveZ => (primary, secondary, 0),
+    }
+}
+
+fn slab_index(face: Face, coord: LocalCoord) -> usize {
+    match face {
+        Face::NegativeX | Face::PositiveX => coord.y() + CHUNK_EDGE * coord.z(),
+        Face::NegativeY | Face::PositiveY => coord.x() + CHUNK_EDGE * coord.z(),
+        Face::NegativeZ | Face::PositiveZ => coord.x() + CHUNK_EDGE * coord.y(),
+    }
 }
 
 fn local_coord_from_meshing(x: usize, y: usize, z: usize) -> LocalCoord {
@@ -457,6 +589,70 @@ mod tests {
                 local,
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn owned_face_slabs_sample_the_touching_cell_in_all_directions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for face in Face::ALL {
+            let center_local = boundary_coord(face)?;
+            let neighbor_local = boundary_coord(face.opposite())?;
+            let center = chunk_with(&[(
+                center_local.x(),
+                center_local.y(),
+                center_local.z(),
+                VoxelId(3),
+            )])?;
+            let neighbor = chunk_with(&[(
+                neighbor_local.x(),
+                neighbor_local.y(),
+                neighbor_local.z(),
+                VoxelId(9),
+            )])?;
+            let faces = std::array::from_fn(|index| {
+                let candidate = Face::ALL[index];
+                if candidate == face {
+                    FaceSlab::from_neighbor(candidate, &neighbor)
+                } else {
+                    FaceSlab::known_air()
+                }
+            });
+            let mesh = mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(center, faces));
+
+            assert_eq!(mesh.quad_count(), 5, "owned slab at {face:?}");
+            assert!(!mesh.vertices().iter().any(|vertex| vertex.face == face));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_neighborhood_and_owned_snapshot_have_identical_topology()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let center = crate::diagnostic_fixture();
+        let mut neighbors: [Chunk; 6] = std::array::from_fn(|_| Chunk::empty());
+        for (index, face) in Face::ALL.into_iter().enumerate() {
+            let local = boundary_coord(face.opposite())?;
+            assert_eq!(
+                neighbors[index].write_local(local, VoxelId((index + 11) as u16)),
+                VoxelId::AIR
+            );
+        }
+
+        let mut borrowed = ChunkNeighborhood::new(&center);
+        for (index, face) in Face::ALL.into_iter().enumerate() {
+            borrowed = borrowed.with_neighbor(face, &neighbors[index]);
+        }
+        let borrowed_mesh =
+            mesh_exposed_faces_with_neighbors(borrowed, BoundaryPolicy::RequireKnown)?;
+        let slabs = std::array::from_fn(|index| {
+            FaceSlab::from_neighbor(Face::ALL[index], &neighbors[index])
+        });
+        let snapshot = OwnedMeshingSnapshot::new(center, slabs);
+        let owned_mesh = mesh_exposed_faces_from_snapshot(&snapshot);
+
+        assert_eq!(snapshot.payload_bytes(), CHUNK_BYTES + 6 * 2_048);
+        assert_eq!(owned_mesh, borrowed_mesh);
         Ok(())
     }
 
