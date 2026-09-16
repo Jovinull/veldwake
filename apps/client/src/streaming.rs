@@ -181,6 +181,15 @@ impl UploadBudget {
     }
 }
 
+/// Outcome of anchoring one camera position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CameraAnchor {
+    Unchanged,
+    Moved(ChunkCoord),
+    /// Already logged and counted; the previous center stays in force.
+    Rejected(CameraAnchorError),
+}
+
 /// Cumulative bridge counters since startup.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BridgeTotals {
@@ -242,16 +251,18 @@ impl StreamingBridge {
 
     /// Records the chunk the camera occupies. A rejected position keeps the
     /// previous center and is counted; it never saturates into a fake chunk.
-    pub fn track_camera(&mut self, position: Vec3) -> Result<bool, CameraAnchorError> {
+    pub fn track_camera(&mut self, position: Vec3) -> CameraAnchor {
         match camera_chunk(position) {
             Ok(chunk) => {
                 if self.anchor_rejected {
                     self.anchor_rejected = false;
                     warn!(?chunk, "camera anchor is valid again");
                 }
-                let changed = chunk != self.desired_center;
+                if chunk == self.desired_center {
+                    return CameraAnchor::Unchanged;
+                }
                 self.desired_center = chunk;
-                Ok(changed)
+                CameraAnchor::Moved(chunk)
             }
             Err(error) => {
                 self.totals.anchor_rejections += 1;
@@ -259,7 +270,7 @@ impl StreamingBridge {
                     self.anchor_rejected = true;
                     warn!(%error, "camera anchor rejected; keeping previous demand center");
                 }
-                Err(error)
+                CameraAnchor::Rejected(error)
             }
         }
     }
@@ -305,9 +316,12 @@ impl StreamingBridge {
             .map(|(coord, _)| *coord)
             .collect();
         for coord in &stale {
-            presentation.deactivate_chunk(*coord);
             self.presented.remove(coord);
-            self.pending_removal.insert(*coord);
+            // An empty mesh was presented without buffers; only a chunk that
+            // actually held GPU state needs a budgeted release.
+            if presentation.deactivate_chunk(*coord) {
+                self.pending_removal.insert(*coord);
+            }
         }
         self.totals.deactivations += stale.len() as u64;
         stale.len()
@@ -458,8 +472,8 @@ mod tests {
     use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, WorldVoxelCoord};
 
     use super::{
-        CameraAnchorError, ChunkPresentation, ChunkUploadError, GpuResidency, StreamingBridge,
-        UploadAdmission, UploadBudget, camera_chunk, camera_world_voxel,
+        CameraAnchor, CameraAnchorError, ChunkPresentation, ChunkUploadError, GpuResidency,
+        StreamingBridge, UploadAdmission, UploadBudget, camera_chunk, camera_world_voxel,
     };
 
     #[derive(Default)]
@@ -631,14 +645,26 @@ mod tests {
     fn camera_tracking_only_changes_center_across_chunk_boundaries() {
         let mut bridge = bridge_at(Vec3::new(5.0, 5.0, 5.0), UploadBudget::default());
         assert_eq!(bridge.desired_center(), ChunkCoord::new(0, 0, 0));
-        assert_eq!(bridge.track_camera(Vec3::new(31.9, 5.0, 5.0)), Ok(false));
-        assert_eq!(bridge.track_camera(Vec3::new(32.0, 5.0, 5.0)), Ok(true));
+        assert_eq!(
+            bridge.track_camera(Vec3::new(31.9, 5.0, 5.0)),
+            CameraAnchor::Unchanged
+        );
+        assert_eq!(
+            bridge.track_camera(Vec3::new(32.0, 5.0, 5.0)),
+            CameraAnchor::Moved(ChunkCoord::new(1, 0, 0))
+        );
         assert_eq!(bridge.desired_center(), ChunkCoord::new(1, 0, 0));
-        assert_eq!(bridge.track_camera(Vec3::new(-0.001, 5.0, 5.0)), Ok(true));
+        assert_eq!(
+            bridge.track_camera(Vec3::new(-0.001, 5.0, 5.0)),
+            CameraAnchor::Moved(ChunkCoord::new(-1, 0, 0))
+        );
         assert_eq!(bridge.desired_center(), ChunkCoord::new(-1, 0, 0));
 
         let rejected = bridge.track_camera(Vec3::new(f32::NAN, 5.0, 5.0));
-        assert!(matches!(rejected, Err(CameraAnchorError::NonFinite { .. })));
+        assert!(matches!(
+            rejected,
+            CameraAnchor::Rejected(CameraAnchorError::NonFinite { .. })
+        ));
         assert_eq!(bridge.desired_center(), ChunkCoord::new(-1, 0, 0));
         assert_eq!(bridge.totals().anchor_rejections, 1);
     }
@@ -700,7 +726,16 @@ mod tests {
             "need a backlog larger than one release batch"
         );
 
-        assert_eq!(bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)), Ok(true));
+        let empty_presented = bridge.presented_count() - held_before;
+        assert!(
+            empty_presented > 0,
+            "the corridor's air layer yields empty meshes"
+        );
+
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)),
+            CameraAnchor::Moved(_)
+        ));
         let report = match bridge.update(&mut fake) {
             Ok(report) => report,
             Err(error) => panic!("update failed: {error}"),
@@ -718,6 +753,12 @@ mod tests {
             "release is budgeted, not immediate"
         );
         assert_eq!(bridge.totals().removal_budget_hits, 1);
+        // Only chunks that held buffers queue for release; empty ones never did.
+        assert_eq!(
+            bridge.pending_removal_count() + report.removals,
+            held_before,
+            "empty presented meshes must not consume release budget"
+        );
 
         settle(&mut bridge, &mut fake);
         assert_eq!(fake.residency().resident, 0);
@@ -734,11 +775,17 @@ mod tests {
             .presented_stamp(origin)
             .unwrap_or_else(|| panic!("origin not presented"));
 
-        assert_eq!(bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)), Ok(true));
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)),
+            CameraAnchor::Moved(_)
+        ));
         settle(&mut bridge, &mut fake);
         assert_eq!(bridge.presented_stamp(origin), None);
 
-        assert_eq!(bridge.track_camera(Vec3::new(5.0, 5.0, 5.0)), Ok(true));
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(5.0, 5.0, 5.0)),
+            CameraAnchor::Moved(_)
+        ));
         settle(&mut bridge, &mut fake);
         let second = *bridge
             .presented_stamp(origin)

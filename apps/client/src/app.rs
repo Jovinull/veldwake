@@ -169,8 +169,9 @@ impl App {
             return;
         };
         // A rejected anchor keeps the previous demand center; the bridge logs
-        // the transition and counts every rejected frame.
-        let _anchor = streaming.track_camera(self.camera.position());
+        // the transition and counts every rejected frame, so no outcome needs
+        // handling here.
+        streaming.track_camera(self.camera.position());
         let report = match streaming.update(renderer) {
             Ok(report) => report,
             Err(error) => {

@@ -4,11 +4,11 @@ Last updated: 2026-09-16
 
 ## Current position
 
-M1, M2, and M3A are merged into `main`; M3A landed through PR #3 at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. M3B (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime` and awaits the owner's interactive smoke and review. `veldwake-voxel` owns CPU chunk/coordinate/neighborhood/snapshot/mesh contracts; `veldwake-streaming` owns headless residency, worker orchestration, and per-frame observability; the client's `streaming` module bridges camera demand to a `ChunkPresentation` implemented by the renderer, which owns only disposable GPU state keyed by `ChunkCoord`.
+M1, M2, and M3A are merged into `main`; M3A landed through PR #3 at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. M3B (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime`, passed all gates and the driven Windows/D3D12 smoke recorded in the milestone document, and is submitted as a pull request to `main`. `veldwake-voxel` owns CPU chunk/coordinate/neighborhood/snapshot/mesh contracts; `veldwake-streaming` owns headless residency, worker orchestration, and per-frame observability; the client's `streaming` module bridges camera demand to a `ChunkPresentation` implemented by the renderer, which owns only disposable GPU state keyed by `ChunkCoord`.
 
 ## Continue here
 
-Perform the interactive Windows smoke listed under "M3B2 observed evidence" in [`planning/M3_STREAMING_WORLD.md`](../planning/M3_STREAMING_WORLD.md): traverse several positive and negative chunk boundaries, watch chunks appear/disappear without persistent seams or speculative AIR, confirm the camera never stalls, re-enter a left area, teleport far, and exercise resize/minimize/restore/focus loss/Escape while reading the five-second `M3B streaming state` / `M3B streaming work and budgets` lines. Then open the M3B pull request. Do not start M3C (LOD, cache/persistence experiment, debug visualization, worker scaling) or introduce product world generation, saves, ECS, gameplay, physics, networking, or biomes before M3B is accepted.
+Review and merge the M3B pull request. After merge, plan M3C from [`planning/M3_STREAMING_WORLD.md`](../planning/M3_STREAMING_WORLD.md) and the remaining M3 roadmap items (initial LOD strategy, cache/persistence experiment, debug visualization) with the same evidence discipline. Do not start M3C before merge (LOD, cache/persistence experiment, debug visualization, worker scaling) or introduce product world generation, saves, ECS, gameplay, physics, networking, or biomes before M3B is accepted.
 
 ## Read before continuing
 

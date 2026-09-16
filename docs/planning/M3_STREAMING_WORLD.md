@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A complete and merged; M3B (headless runtime plus camera-driven GPU integration) implemented on the feature branch and awaiting review**
+Status: **M3A complete and merged; M3B (headless runtime plus camera-driven GPU integration) implemented, validated on the audited host, and submitted for review**
 Planning branch: `feat/m3b-streaming-runtime`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -159,7 +159,7 @@ All five steps were exercised on 2026-09-16. Headless coverage includes exact Eu
 
 ## Milestone: M3B — Streaming Runtime
 
-Status: **M3B1 and M3B2 implemented on the feature branch; headless gates pass; the owner's interactive Windows smoke is still pending**.
+Status: **M3B1 and M3B2 implemented on the feature branch; headless gates pass; the driven Windows/D3D12 smoke below passed**.
 
 ### M3B1 implementation result
 
@@ -192,13 +192,26 @@ Finding recorded while testing the backlog: with one worker and finalization run
 - The renderer replaces the static `Vec<GpuChunkMesh>` with `BTreeMap<ChunkCoord, GpuChunkMesh>` and implements `ChunkPresentation`: `upsert_chunk`, `deactivate_chunk`, `remove_chunk`, `gpu_payload_bytes`, `residency`. Only `active` entries are drawn. The renderer stores no stamps or generations; the bridge keeps `ChunkCoord -> MeshStamp` for what is presented.
 - Upload budget defaults: at most `2` uploads per frame, soft `4 MiB` per frame, one mesh larger than the soft limit may be the frame's only upload and is counted as `oversized_uploads`. Sizes are exact GPU bytes (`24`-byte vertices, `u32` indices, `16`-byte model uniform) computed before upload. A stamp already presented is never re-uploaded. Empty meshes reach no buffers and bypass the budget; presenting one only clears stale buffers.
 - Every five seconds the client emits two aggregate lines: camera chunk, demand counts, tracked/CPU-resident/`KnownAbsent`/evict-pending, waiting/dirty/meshing/ready, queues and in-flight jobs, presented/GPU-resident/GPU-active/pending removal; then dispatches, stale drops, fairness, cap blocks, evictions, interval and total uploads/bytes, deactivations, removals, deferrals, oversized events, anchor rejections, and snapshot/resident/CPU-mesh/GPU byte totals. No per-chunk-per-frame logging.
+- Final review fixes: a chunk presented with an empty mesh never held buffers, so leaving render demand no longer queues it for a budgeted release (empty air layers do not consume release slots); `StreamingBridge::track_camera` returns a `CameraAnchor` enum instead of a `Result`, so the frame loop has no ignored error value.
 - Twenty-three client tests are GPU-independent. An in-memory `ChunkPresentation` double proves: the settled draw set equals the render-demand ready set, dependency/retention chunks are never drawn, identical stamps are not re-uploaded, leaving render demand deactivates every stale mesh in one update while releases drain under budget, re-entry rebuilds with new request tokens, oversized meshes upload alone and defer the rest, camera anchoring at `0`, `31.999`, `32`, `-0.001`, `-1`, `-32`, and `-32.001`, and explicit rejection of `NaN`, `±inf`, and out-of-range positions.
 
 ### M3B2 observed evidence
 
 Release client on the audited Intel Iris Xe / D3D12 host (`Bgra8UnormSrgb`, `Fifo`, `Opaque`, 1600×900), default camera in chunk `(1, 1, 1)`, first five-second interval: 291 frames at ≈58 FPS (vsync), demand 27/81/125, tracked 81, 51 CPU-resident, 30 `KnownAbsent`, 18 ready meshes (9 non-empty floor chunks plus 9 empty), 9 render chunks `KnownAbsent` at `y = 2`, `mesh_waiting` 0, 9 GPU uploads totalling 2,214,144 bytes, 9 GPU-active, 0 stale results, 0 cap blocks, 0 deferrals. Resident payload 3,342,336 bytes, CPU mesh 2,509,200 bytes, GPU 2,214,144 bytes, snapshot bytes dispatched 1,382,400. A second run in which input moved the camera to chunk `(2, 1, 2)` recorded 2 demand changes, 14 bounded CPU evictions, 12 immediate deactivations, 12 budgeted removals, 0 stale results, 0 anchor rejections, and 0 cap blocks. The release `streaming-probe` reached idle in 7,660 µs with unchanged counts. These are one-host observations, not targets.
 
-Interactive verification still owed by the owner before merge: continuous traversal across several positive and negative boundaries with chunks appearing and disappearing, no persistent incorrect seam, no speculative AIR for unloaded chunks, camera responsiveness during load/mesh, re-entry reconstruction, a distant teleport staying under the cap, and resize/minimize/restore/focus loss/Escape. Log evidence covers residency, budgets, and stale rejection; it does not replace looking at the screen.
+### M3B driven smoke (2026-09-16, release client, Intel Iris Xe / D3D12)
+
+Two scripted runs drove the final build through Win32 input injection (`keybd_event`, `mouse_event` with the right button held), window operations (`MoveWindow`, `ShowWindow`), and `Graphics.CopyFromScreen` captures that were inspected image by image. Verified:
+
+- Traversal crossed positive and negative chunk boundaries on every axis: camera chunks spanned `x = -6..4`, `z = -2..4` in the second run and `y = -1..1` in the first, including leaving the finite corridor and coming back. Screenshots during and after each leg show the 8-voxel checkerboard continuing across chunk borders with no seam line, no wrongly exposed side face, and no hole; two captures one second apart at rest are identical.
+- Outside the corridor the client draws nothing (`presented = 0`, `gpu_active = 0`, `known_absent = 85`); no speculative AIR or partial geometry appeared for unloaded chunks.
+- Re-entry to the start area rebuilt the original state exactly: 18 presented, 9 GPU-active, 51 CPU-resident, identical checkerboard and landmark.
+- Every five-second traversal interval held 60.0 FPS under `Fifo` vsync (16.66–16.67 ms average wall frame) while loads, meshes, uploads, and evictions ran; no stall was measurable at this granularity.
+- Mouse look changed pitch and yaw as captured; WASD movement produced the expected demand changes; a key held across a focus loss was released by the input reset and caused no movement after restore.
+- Resize to 900×500 and 1500×850 logical (1107×578 and 1857×1016 physical) reconfigured the surface and rendered correctly; minimize suspended the surface at zero size and reset input; restore reconfigured and resumed rendering; Escape logged a clean shutdown and the process exited with code 0.
+- Final counters of the second run: 853 loads, 212 meshes, 1 stale load, 0 stale meshes, 0 hard-cap blocks, 319 bounded CPU evictions with 24 budget hits, 106 uploads totalling 26,156,896 GPU bytes, 106 empty meshes, 0 oversized uploads, 0 upload failures, 0 release-budget hits, 0 anchor rejections, 16,179,200 snapshot bytes dispatched; peak resident payload 3,997,696 bytes (61 chunks); peak GPU residency 2,223,504 bytes. `gpu_active <= gpu_resident <= presented <= render` held in every interval.
+
+Not captured: the transient blink when a neighbor arrival invalidates a presented mesh is evidenced by paired `interval_deactivations` and re-uploads in the log, not by a frame-exact capture. This remains one integrated-GPU host.
 
 Accepted visible behavior: when a neighbor arrives or changes, the center mesh is invalidated, its GPU mesh stops drawing immediately, and the chunk reappears after the replacement is meshed and uploaded. The brief gap is deliberate; M3B never keeps a knowingly stale mesh on screen.
 

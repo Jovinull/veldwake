@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is merged. M3B — Streaming Runtime (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime` and awaiting review; the owner's interactive Windows smoke is still pending.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is merged. M3B — Streaming Runtime (M3B1 headless runtime plus M3B2 camera-driven GPU integration) is implemented on `feat/m3b-streaming-runtime`, validated by headless gates and a driven Windows/D3D12 smoke, and submitted for review.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -76,4 +76,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3B — Streaming Runtime:** M3B1 and M3B2 are implemented on the feature branch with all headless gates passing; the owner's interactive Windows smoke and review are next. Do not begin any M3C scope (LOD, cache/persistence experiment, debug visualization, more workers) before acceptance. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.
+**M3B — Streaming Runtime:** M3B1 and M3B2 are implemented on the feature branch; all gates and the driven Windows/D3D12 smoke passed; the pull request to `main` is open for review. Do not begin any M3C scope (LOD, cache/persistence experiment, debug visualization, more workers) before acceptance. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.
