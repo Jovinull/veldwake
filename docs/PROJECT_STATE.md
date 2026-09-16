@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M3A — Multi-chunk Correctness is complete and merged. M3B — Streaming Runtime is in planning only** on `feat/m3b-streaming-runtime`; no M3B code exists. M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
+**M3A — Multi-chunk Correctness is merged. M3B1 — Headless Streaming Runtime is implemented on `feat/m3b-streaming-runtime` and awaiting review; M3B2 presentation integration has not started.** M3A merged through [PR #3](https://github.com/Jovinull/veldwake/pull/3) at merge commit `af1cabc913a9500eefbcd647a56c881d2c1288c0`. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -21,10 +21,12 @@ Last updated: 2026-09-16
 - Signed `ChunkCoord(i32)` and `WorldVoxelCoord(i64)` conversions use checked Euclidean semantics; borrowed neighborhoods distinguish known voxel data from missing chunks.
 - Neighbor-aware CPU meshing removes solid seams in all six directions. The deterministic three-chunk fixture has 51 solids, fingerprint `0xe65ae5533c4db16a`, and exact topology 202 quads / 808 vertices / 1,212 indices.
 - The client renders the static chunks at signed offsets using immutable per-chunk model uniforms. CPU meshes remain local and the renderer still owns no authoritative world state.
+- `veldwake-streaming` is a headless std-only orchestration crate over `veldwake-voxel`: deterministic demand/retention sets, globally unique request tokens, bounded CPU residency, one bounded worker, lazy priority queues, owned center-plus-face-slab mesh snapshots, and generation-stamped stale-result rejection.
+- The finite diagnostic source reports `Present(Chunk)` or `KnownAbsent`; unavailable neighbors delay meshing. Only render-demand chunks request meshes, while dependency/retention records can remain CPU-only.
 
 ## What does not exist yet
 
-No streaming/residency/jobs, world generation, LOD, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The static fixture collection is not a world model, and the diagnostic client is not a game.
+No camera/renderer integration for streaming, product world generation, disk cache/saves, LOD, authoritative simulation, gameplay, audio, networking, mod runtime, UI framework, or internal editor exists. M3B1 is headless and its finite diagnostic source is not a world generator.
 
 ## Current decisions
 
@@ -51,6 +53,7 @@ cargo deny check
 cargo audit
 cargo run -p veldwake-client
 cargo run --release -p veldwake-voxel --bin voxel-probe
+cargo run --release -p veldwake-streaming --bin streaming-probe
 ```
 
 The runnable binary is diagnostic presentation content only. See [`environment/SETUP.md`](environment/SETUP.md).
@@ -69,4 +72,4 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**M3B — Streaming Runtime planning:** define bounded camera-driven demand/residency, authoritative CPU chunk ownership, immutable meshing snapshots, minimal background work, generation-stamped stale-result rejection, frame integration/upload budgets, safe unload, deterministic diagnostic content, and observability. Implementation has not started. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.
+**M3B1 — Headless Streaming Runtime:** implementation and local validation are complete on the feature branch; external review is next. After acceptance, the next implementation scope is M3B2 camera-driven demand and bounded GPU integration; do not begin it as part of M3B1. See [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md). World generation, saves, LOD, ECS, gameplay, physics, networking, and biomes remain excluded.

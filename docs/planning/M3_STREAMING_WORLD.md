@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A complete and merged; M3B planning only**
+Status: **M3A complete and merged; M3B1 headless runtime implemented on feature branch; M3B2 not started**
 Planning branch: `feat/m3b-streaming-runtime`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -157,9 +157,22 @@ All five steps were exercised on 2026-09-16. Headless coverage includes exact Eu
 - The fixture lookup in the client and probe is linear over three chunks. It is diagnostic assembly code, not a residency/world-storage design.
 - Large-world float precision and origin rebasing remain deliberately unresolved; integer coordinates convert to `f32` only for this small presentation fixture.
 
-## Proposed submilestone: M3B — Streaming Runtime
+## Milestone: M3B — Streaming Runtime
 
-Status: **Proposed; implementation not started**.
+Status: **M3B1 implemented on the feature branch; presentation integration remains deferred to M3B2**.
+
+### M3B1 implementation result
+
+- `veldwake-streaming` is a real headless crate depending only on `veldwake-voxel` and `std`. It owns deterministic demand sets, CPU residency records, request tokens, priority queues, the bounded worker, and result validation.
+- Each coordinate incarnation receives a runtime-global, monotonically increasing, non-zero `RequestToken(u64)`. Load and mesh results carry it; exhaustion is fatal and tested; eviction/re-entry cannot accept an ABA result.
+- Residency and mesh states are independent. Only the render set requires a mesh; dependency and retention data can remain CPU-only. Any center or neighbor stamp change immediately removes the current mesh state and queues a replacement only when all six faces are known.
+- The worker uses one standard-library thread, a capacity-one job channel, a capacity-one result channel, owned inputs, non-blocking orchestration calls, lazy stale-descriptor validation, and a clean channel-close/join shutdown. Four mesh dispatches force a ready load next.
+- Detached meshing copies a 64 KiB center and six `32 × 32` face slabs of 2 KiB each, or marks a source-confirmed absent face `KnownAir`. Maximum logical snapshot payload is 77,824 bytes (76 KiB); snapshot construction is refused while any face is unavailable.
+- The finite diagnostic source covers positive and negative coordinates with continuous solid seams and returns only `Present(Chunk)` or `KnownAbsent`. It has no seed, noise, biome, persistence, or disk access.
+- The final release `streaming-probe` at center `(0,0,0)` observed 27 render / 81 dependency / 125 retention coordinates, 81 loads, 63 resident chunk payloads (4,128,768 bytes), 18 known absences, 27 ready meshes, 2,064,384 cumulative snapshot bytes, zero stale results on the nominal path, and 5,163 microseconds to idle on the audited host. This is diagnostic timing, not a performance target.
+- Headless tests cover demand counts/movement/oscillation, cap-safe teleport, request-token ABA and overflow, stale load/center/neighbor results, known absence versus unavailability, neighbor arrival, unload during work, fairness, slab correctness, borrowed/owned topology equivalence, and worker shutdown.
+
+M3B1 deliberately does not connect demand to the camera and does not upload, retire, or render streaming meshes. Those presentation concerns remain M3B2.
 
 M3B should prove bounded movement-driven residency, asynchronous CPU work, stale-result rejection, incremental GPU integration, and safe unload using deterministic diagnostic content. It is not product world generation and does not establish save, networking, gameplay, or long-term content formats.
 
@@ -175,11 +188,11 @@ M3B should prove bounded movement-driven residency, asynchronous CPU work, stale
 
 ### Ownership boundary
 
-The proposed CPU streaming runtime is the sole owner of authoritative resident `Chunk` values in a `BTreeMap<ChunkCoord, ChunkRecord>`. The renderer owns only disposable GPU mesh handles keyed by chunk coordinate and accepted mesh generation. Workers receive owned immutable job inputs and return owned results; they never borrow the resident map or mutate chunks.
+The CPU streaming runtime is the sole owner of authoritative resident `Chunk` values in a `BTreeMap<ChunkCoord, ChunkRecord>`. The renderer will own only disposable GPU mesh handles keyed by chunk coordinate and accepted mesh generation. Workers receive owned immutable job inputs and return owned results; they never borrow the resident map or mutate chunks.
 
 For the M3B diagnostic executable, “authoritative” means authoritative for the loaded diagnostic chunk data in that process. It does not move gameplay authority into presentation and does not replace the future local/remote server boundary. The streaming runtime must remain free of `wgpu` and `winit`; the client adapter supplies camera-derived demand and forwards accepted upload/removal commands to the renderer.
 
-A dedicated physical crate may become justified when M3B is implemented because residency ownership and headless testing are real boundaries. Decide that at implementation review; do not create an empty `world` or streaming crate during planning.
+M3B1 establishes `veldwake-streaming` as a real CPU/headless boundary. It depends only on `veldwake-voxel` and the standard library. Presentation remains in the client; no empty `world` crate is introduced.
 
 ### Demand and residency sets
 
@@ -194,7 +207,7 @@ The initial diagnostic policy is deliberately small:
 
 Sets are built as `BTreeSet<ChunkCoord>` and priority ties use `ChunkCoord` ordering. Desired CPU residency is the dependency set. The actual resident set may temporarily include retained chunks and in-flight results, but must remain within the hard cap. When the camera crosses a chunk boundary: add newly desired coordinates, retain still-near chunks, mark coordinates outside retention for eviction, invalidate work that is no longer useful, and rebuild deterministic queue priorities.
 
-These radii and limits are diagnostic defaults, not target-world budgets. M3B must make them configuration values and report their observed counts.
+These radii and limits are diagnostic defaults, not target-world budgets. M3B1 exposes them as configuration values and reports their observed counts.
 
 ### Residency state machine
 
@@ -204,15 +217,16 @@ Residency state:
 
 ```text
 Untracked
-  -> LoadQueued(request_generation)
-  -> Loading(request_generation)
-  -> CpuResident(content_generation) | KnownAbsent(request_generation)
+  -> LoadQueued(request_token)
+  -> Loading(request_token)
+  -> CpuResident(content_generation) | KnownAbsent(request_token)
   -> EvictPending
   -> Untracked
 ```
 
 - `Untracked` normally means no map entry; a short-lived tombstone is allowed only while an obsolete result can still arrive.
-- Leaving demand before dispatch removes queued work. Leaving demand during a running job increments/invalidate its request generation and marks the record for eviction.
+- A runtime-global, monotonically increasing, non-zero `RequestToken(u64)` identifies each coordinate incarnation. Re-entry always receives a new token; tokens are never reused, and exhaustion is a fatal runtime error rather than wrapping.
+- Leaving demand before dispatch removes queued work. Leaving demand during a running job invalidates the record/token and marks the record for eviction; any late result remains identifiable as stale.
 - `CpuResident` owns the only mutable authoritative `Chunk`. A replacement or future edit increments `content_generation`; zero is reserved as invalid and overflow is a reported fatal invariant violation, never wrapping.
 - `KnownAbsent` is bounded source knowledge for a coordinate in the dependency/retention region. It owns no `Chunk` or GPU resource, satisfies neighbor availability as known AIR, and is versioned by the request that produced it.
 - `EvictPending` stops new mesh work, requests renderer removal, and becomes untracked after CPU job inputs/results and the presentation handle are no longer current.
@@ -231,17 +245,19 @@ WaitingForNeighbors
 
 Neighbor arrival, departure, or content replacement dirties the center and every resident axial neighbor. An old render mesh may remain visible while a replacement is in flight only if its dependencies are still resident and it cannot expose an incorrect seam; otherwise remove it until a valid replacement exists.
 
+Only coordinates in the render-demand set require a mesh. Dependency-halo and retention-only coordinates may remain CPU-resident without mesh or GPU state. Any change to the center content stamp or one of the six neighbor stamps invalidates the current mesh immediately; M3B1 does not retain a knowingly stale mesh while rebuilding.
+
 ### Version and job stamps
 
-Each coordinate has a monotonically increasing `request_generation`. Each accepted/replaced CPU chunk has a monotonically increasing `content_generation`; each requested mesh has a `mesh_generation`. A mesh job stamp contains:
+Each coordinate incarnation receives a runtime-global `RequestToken`; it is not a reusable per-coordinate generation. Each accepted/replaced CPU chunk has a monotonically increasing `content_generation`; each requested mesh has a `mesh_generation`. Both load and mesh jobs/results carry the request token. A mesh job stamp contains:
 
 - coordinate;
-- request and mesh generation;
+- request token and mesh generation;
 - center content generation;
 - for each of six faces, neighbor coordinate plus content generation, or `KnownAbsent` from the diagnostic source;
 - demand epoch for diagnostics, not as the sole correctness check.
 
-A load result is accepted only when its coordinate is still desired/retained and its request generation matches. A mesh result is accepted only when the record still exists, request/mesh generations match, the center generation matches, and all six neighbor stamps still describe current resident data or the same source-confirmed absence. Every other result is counted and discarded without side effects.
+A load result is accepted only when its coordinate is still desired/retained and its request token matches. A mesh result is accepted only when the record still exists, request token/mesh generation match, the center generation matches, and all six neighbor stamps still describe current resident data or the same source-confirmed absence. Every other result is counted and discarded without side effects.
 
 ### Meshing snapshot alternatives
 
@@ -254,7 +270,7 @@ The dense M3A `Chunk` payload is 64 KiB. One face slab contains `32 × 32 × 2 =
 | Share immutable chunks with `Arc<Chunk>` | Pointer clones are small; up to 448 KiB of existing chunk payload can remain pinned per job | Avoids voxel copying and overlapping jobs can share allocations. | Makes authoritative edits replacement/COW operations, can retain evicted chunks unexpectedly, and requires careful generation/lifetime accounting. It also exposes full neighbors when only faces are needed. |
 | `Arc` center plus copied slabs | About 12 KiB copied plus one pinned 64 KiB center | Reduces copying while keeping neighbor inputs narrow. | Combines two lifetime/ownership models before measurements show center copying matters. |
 
-**Recommendation for M3B:** owned center plus six owned slabs/halos. Construct the snapshot only when dispatching, not while queued, so queue entries remain small descriptors. Represent each face as `Cells(2 KiB)` or `KnownAir`; do not dispatch while any required face is `Unavailable`. The job then has at most 76 KiB of voxel payload, is deterministic and `Send` without borrowed `&Chunk`, and can use `RequireKnown` semantics. This choice is proposed for M3B and does not redefine persisted chunk layout.
+**Selected for M3B1:** owned center plus six owned slabs/halos. Construct the snapshot only when dispatching, not while queued, so queue entries remain small descriptors. Represent each face as `Cells(2 KiB)` or `KnownAir`; do not dispatch while any required face is `Unavailable`. The job then has at most 76 KiB of voxel payload, is deterministic and `Send` without borrowed `&Chunk`, and uses the same internal geometry path as `RequireKnown` borrowed meshing. This choice does not redefine persisted chunk layout.
 
 ### Neighbor availability
 
@@ -268,7 +284,7 @@ The CPU dependency halo should make `Unavailable` temporary for render-demand ch
 
 ### Minimal worker and queue model
 
-Start with one dedicated standard-library worker thread and bounded channels; do not add Tokio, Rayon, an ECS, or a general job framework. The orchestration thread owns two deterministic priority heaps (`load` and `mesh`) and dispatches at most one owned job at a time. A single worker makes completion order understandable while still proving that source and meshing work leave the frame path. The result channel is bounded to eight entries to apply backpressure.
+M3B1 uses one dedicated standard-library worker thread and bounded capacity-one job/result channels; do not add Tokio, Rayon, an ECS, or a general job framework. The orchestration thread owns two deterministic priority heaps (`load` and `mesh`) and dispatches at most one owned job at a time. A single worker makes completion order understandable while still proving that source and meshing work leave the orchestration path. Capacity one is sufficient because only one job can be in flight; orchestration uses only non-blocking channel operations.
 
 Priorities are recomputed lazily from the latest camera chunk:
 
@@ -291,21 +307,23 @@ Initial conservative diagnostic limits:
 - soft upload-byte budget of 4 MiB per frame;
 - if one mesh alone exceeds 4 MiB, upload at most that one mesh in the frame and emit an over-budget metric rather than starving it forever;
 - retire at most 8 chunk presentation handles and 8 CPU records per frame;
-- keep at most one worker job in flight and eight completed results buffered for M3B.
+- keep at most one worker job in flight and one completed result buffered in M3B1. Revisit buffering only when M3B2 measures frame integration.
 
 Measure actual integration and upload times separately. These are starting safety rails, not performance targets; changing them requires captured evidence. No disk/network work or snapshot construction occurs in the render callback. Snapshot construction and queue scheduling belong to the orchestration update before rendering and are themselves measured/bounded.
 
 ### Safe unload
 
-When a coordinate leaves retention, increment its request generation, remove pending descriptors lazily, stop accepting results, and request removal of its renderer handle. The renderer removes the handle at a frame boundary before encoding subsequent draws. Dropping `wgpu` handles is allowed only after no current render list references them; `wgpu` retains underlying resources as required for submitted GPU work. CPU chunk storage may then be dropped unless an already-dispatched owned snapshot contains copies, which are independent and will be discarded on return.
+When a coordinate leaves retention, retire its request token, remove pending descriptors lazily, stop accepting results, and request removal of its renderer handle. The renderer removes the handle at a frame boundary before encoding subsequent draws. Dropping `wgpu` handles is allowed only after no current render list references them; `wgpu` retains underlying resources as required for submitted GPU work. CPU chunk storage may then be dropped unless an already-dispatched owned snapshot contains copies, which are independent and will be discarded on return.
 
-If the coordinate becomes desired again before eviction completes, issue a new request generation. Never revive an old result or render handle by coordinate alone.
+If the coordinate becomes desired again before eviction completes, issue a new request token. Never revive an old result or render handle by coordinate alone.
+
+Before dispatching a load that may return `Present`, reserve one hard-cap slot. At every transition, `resident payloads + payload-bearing EvictPending records + reserved load slots <= hard resident cap`. A `KnownAbsent` result releases its reservation; a stale `Present` result is discarded and also releases its reservation. Loads do not dispatch when no slot can first be reserved.
 
 ### Deterministic diagnostic source
 
 Use a finite `DiagnosticChunkSource`, not product world generation. It exposes a bounded coordinate corridor large enough for camera traversal and returns one of `Present(Chunk)` or `KnownAbsent`. Present chunks are constructed from a small code-defined catalog/pattern keyed solely by `ChunkCoord`, including continuous seam features, asymmetric markers, AIR chunks, and positive/negative coordinates. It has no seed, biome, noise, persistence, disk I/O, or claim of terrain generation.
 
-Source requests should optionally support a deterministic test-only completion permutation so stale/out-of-order results can be exercised even with one worker. Fingerprints for selected coordinates and a scripted camera path form golden fixtures.
+State-machine tests inject typed results directly to exercise stale/out-of-order completion deterministically without adding timing controls to the production source. Scripted demand paths cover positive/negative movement, boundary oscillation, teleport, eviction, and re-entry.
 
 ### Observability
 

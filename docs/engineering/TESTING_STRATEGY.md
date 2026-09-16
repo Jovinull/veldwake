@@ -34,3 +34,7 @@ Eleven dependency-free voxel tests cover chunk strides and index uniqueness, bou
 ## Current M3A applicability
 
 Twenty dependency-free voxel tests now additionally lock Euclidean world/chunk/local conversion (including negatives and range extremes), checked axial-neighbor overflow, explicit known-versus-missing sampling, both boundary policies, solid/solid and solid/AIR seams in all six directions, canonical fixture order/fingerprint, and aggregate 202/808/1,212 topology. Existing M2 tests remain unchanged in meaning. The Windows smoke separately covers signed placement, visible external boundaries, seam appearance/culling, camera traversal, resize, minimize/restore, focus loss, and clean Escape shutdown.
+
+## Current M3B1 applicability
+
+Twenty-two voxel tests include owned slab sampling in every face direction and exact topology equivalence between the borrowed M3A neighborhood and the owned snapshot mesher. Twenty streaming tests cover deterministic demand sets, signed movement and oscillation, CPU-only dependency retention, cap reservation and cap-safe teleport, request-token ABA/overflow, stale load and mesh stamps, source absence versus temporary unavailability, neighbor arrival, unload during work, load/mesh fairness, the finite diagnostic source, the real worker path, and clean shutdown. These are headless; M3B1 adds no camera, window, or GPU test requirement. The release `streaming-probe` is diagnostic evidence, not a benchmark threshold.

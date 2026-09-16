@@ -26,7 +26,7 @@ Chunk coordinates, prioritized/cancellable generation and meshing jobs, residenc
 
 **M3A — Multi-chunk Correctness is complete and merged through PR #3:** signed chunk/world conversion, explicit neighbor-aware seam meshing, deterministic adjacent-chunk fixtures, six-direction seam tests, and a small static rendered chunk set are present.
 
-**M3B — Streaming Runtime is in planning:** bounded camera-driven residency, immutable meshing job snapshots, stale-result rejection, minimal background work, incremental GPU integration/unload, a deterministic diagnostic chunk source, and streaming observability. It deliberately excludes product world generation, saves, LOD, ECS, gameplay, physics, networking, and biomes. See [`M3_STREAMING_WORLD.md`](M3_STREAMING_WORLD.md).
+**M3B1 — Headless Streaming Runtime is implemented on its feature branch:** deterministic bounded demand/residency, immutable center-plus-slab meshing snapshots, request-token and generation-stamped stale-result rejection, one bounded standard-library worker, a finite diagnostic chunk source, and headless metrics/tests are present. M3B2 camera-driven demand and incremental GPU integration/unload has not started. M3B deliberately excludes product world generation, saves, LOD, ECS, gameplay, physics, networking, and biomes. See [`M3_STREAMING_WORLD.md`](M3_STREAMING_WORLD.md).
 
 ## M4 — Beautiful Terrain Vertical Slice
 

@@ -1457,6 +1457,13 @@ name = "veldwake-foundation"
 version = "0.0.0"
 
 [[package]]
+name = "veldwake-streaming"
+version = "0.0.0"
+dependencies = [
+ "veldwake-voxel",
+]
+
+[[package]]
 name = "veldwake-voxel"
 version = "0.0.0"
 
