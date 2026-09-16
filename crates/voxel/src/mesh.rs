@@ -1,6 +1,6 @@
 use std::{fmt, mem::size_of_val};
 
-use crate::{CHUNK_EDGE, DenseGrid, GridCoord, VoxelId};
+use crate::{CHUNK_EDGE, COARSE_EDGE, Chunk, DenseGrid, GridCoord, VoxelId};
 
 /// The six outward faces in right-handed, Y-up local chunk space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,11 +177,97 @@ impl<const EDGE: usize> FaceSlab<EDGE> {
         self.cells.as_deref().map_or(0, size_of_val)
     }
 
+    #[must_use]
+    pub const fn is_known_air(&self) -> bool {
+        self.cells.is_none()
+    }
+
     fn sample(&self, face: Face, coord: GridCoord<EDGE>) -> VoxelId {
         self.cells
             .as_ref()
             .map_or(VoxelId::AIR, |cells| cells[slab_index(face, coord)])
     }
+}
+
+impl FaceSlab<COARSE_EDGE> {
+    /// The coarse face of a full-resolution neighbor, derived from the two
+    /// voxel layers touching `face` with the `downsample_2x` rules. Equal to
+    /// `FaceSlab::from_neighbor(face, &neighbor.downsample_2x())` without
+    /// deriving the whole grid.
+    #[must_use]
+    pub fn downsampled_from(face: Face, neighbor: &Chunk) -> Self {
+        let mut cells = Vec::with_capacity(COARSE_EDGE * COARSE_EDGE);
+        for secondary in 0..COARSE_EDGE {
+            for primary in 0..COARSE_EDGE {
+                cells.push(coarse_face_material(face, neighbor, primary, secondary));
+            }
+        }
+        Self {
+            cells: Some(cells.into_boxed_slice()),
+        }
+    }
+}
+
+impl FaceSlab<CHUNK_EDGE> {
+    /// The occupancy a fine chunk sees across a seam to a neighbor presented
+    /// at coarse resolution: every fine seam cell samples the coarse block
+    /// covering it, so a fine face is emitted only where that block is AIR.
+    #[must_use]
+    pub fn coarse_occupancy_of(face: Face, neighbor: &Chunk) -> Self {
+        let mut coarse = Vec::with_capacity(COARSE_EDGE * COARSE_EDGE);
+        for secondary in 0..COARSE_EDGE {
+            for primary in 0..COARSE_EDGE {
+                coarse.push(coarse_face_material(face, neighbor, primary, secondary));
+            }
+        }
+        let mut cells = Vec::with_capacity(CHUNK_EDGE * CHUNK_EDGE);
+        for secondary in 0..CHUNK_EDGE {
+            for primary in 0..CHUNK_EDGE {
+                cells.push(coarse[primary / 2 + COARSE_EDGE * (secondary / 2)]);
+            }
+        }
+        Self {
+            cells: Some(cells.into_boxed_slice()),
+        }
+    }
+}
+
+/// Material of the coarse cell `(primary, secondary)` on `face` of `neighbor`,
+/// computed from its 2×2×2 fine block with the `downsample_2x` rules.
+fn coarse_face_material(face: Face, neighbor: &Chunk, primary: usize, secondary: usize) -> VoxelId {
+    let mut solids: [(VoxelId, u8); 8] = [(VoxelId::AIR, 0); 8];
+    let mut distinct = 0;
+    for depth in 0..2 {
+        for ds in 0..2 {
+            for dp in 0..2 {
+                let (p, sec) = (2 * primary + dp, 2 * secondary + ds);
+                let (x, y, z) = match face {
+                    Face::NegativeX => (CHUNK_EDGE - 1 - depth, p, sec),
+                    Face::PositiveX => (depth, p, sec),
+                    Face::NegativeY => (p, CHUNK_EDGE - 1 - depth, sec),
+                    Face::PositiveY => (p, depth, sec),
+                    Face::NegativeZ => (p, sec, CHUNK_EDGE - 1 - depth),
+                    Face::PositiveZ => (p, sec, depth),
+                };
+                let fine = neighbor.read_local(local_coord_from_meshing(x, y, z));
+                if fine.is_air() {
+                    continue;
+                }
+                match solids[..distinct].iter_mut().find(|(id, _)| *id == fine) {
+                    Some((_, count)) => *count += 1,
+                    None => {
+                        solids[distinct] = (fine, 1);
+                        distinct += 1;
+                    }
+                }
+            }
+        }
+    }
+    solids[..distinct]
+        .iter()
+        .copied()
+        .min_by_key(|&(id, count)| (std::cmp::Reverse(count), id.0))
+        .map_or(VoxelId::AIR, |(id, _)| id)
 }
 
 /// Self-contained input for detached exposed-face meshing.
@@ -727,6 +813,210 @@ mod tests {
                 face: Face::PositiveX,
                 local: GridCoord::<COARSE_EDGE>::new(15, 3, 4)?,
             })
+        );
+        Ok(())
+    }
+
+    /// Seam-plane oracle for one fine chunk next to a coarse-presented chunk.
+    /// Returns (fine faces expected, coarse faces expected).
+    fn mixed_seam_expectation(face: Face, fine: &Chunk, coarse_source: &Chunk) -> (usize, usize) {
+        let mut fine_faces = 0;
+        let mut coarse_faces = 0;
+        let last = CHUNK_EDGE - 1;
+        for secondary in 0..CHUNK_EDGE {
+            for primary in 0..CHUNK_EDGE {
+                let (x, y, z) = match face {
+                    Face::NegativeX => (0, primary, secondary),
+                    Face::PositiveX => (last, primary, secondary),
+                    Face::NegativeY => (primary, 0, secondary),
+                    Face::PositiveY => (primary, last, secondary),
+                    Face::NegativeZ => (primary, secondary, 0),
+                    Face::PositiveZ => (primary, secondary, last),
+                };
+                let fine_solid = !fine.read(x, y, z).is_ok_and(|voxel| voxel.is_air());
+                // `coarse_face_material` already selects the neighbor layers
+                // that touch the center in `face`, exactly like `from_neighbor`.
+                let block_solid =
+                    !coarse_face_material(face, coarse_source, primary / 2, secondary / 2).is_air();
+                if fine_solid && !block_solid {
+                    fine_faces += 1;
+                }
+                if block_solid && primary % 2 == 0 && secondary % 2 == 0 {
+                    coarse_faces += 1;
+                }
+            }
+        }
+        (fine_faces, coarse_faces)
+    }
+
+    fn mixed_seam_meshes(face: Face, fine: &Chunk, coarse_source: &Chunk) -> (Mesh, Mesh) {
+        // Fine side: only the seam toward the coarse neighbor is known; the
+        // other five faces are exposed by policy so the seam count is isolated.
+        let fine_faces: [FaceSlab<CHUNK_EDGE>; 6] = std::array::from_fn(|index| {
+            if Face::ALL[index] == face {
+                FaceSlab::coarse_occupancy_of(face, coarse_source)
+            } else {
+                FaceSlab::known_air()
+            }
+        });
+        let fine_mesh =
+            mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(fine.clone(), fine_faces));
+        // Coarse side: toward a fine neighbor the seam is always emitted.
+        let coarse_faces: [FaceSlab<COARSE_EDGE>; 6] =
+            std::array::from_fn(|_| FaceSlab::known_air());
+        let coarse_mesh = mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(
+            coarse_source.downsample_2x(),
+            coarse_faces,
+        ));
+        (fine_mesh, coarse_mesh)
+    }
+
+    fn seam_face_count(mesh: &Mesh, face: Face, plane: f32, axis: usize) -> usize {
+        mesh.vertices()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|quad| quad[0].face == face && quad.iter().all(|v| v.position[axis] == plane))
+            .count()
+    }
+
+    fn seam_axis_and_planes(face: Face) -> (usize, f32, f32) {
+        // (axis, fine seam plane, coarse seam plane) in each grid's own cell units.
+        match face {
+            Face::NegativeX => (0, 0.0, 16.0),
+            Face::PositiveX => (0, 32.0, 0.0),
+            Face::NegativeY => (1, 0.0, 16.0),
+            Face::PositiveY => (1, 32.0, 0.0),
+            Face::NegativeZ => (2, 0.0, 16.0),
+            Face::PositiveZ => (2, 32.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn derived_coarse_slabs_match_the_full_downsample() -> Result<(), ChunkBoundsError> {
+        let chunk = crate::diagnostic_fixture();
+        let coarse = chunk.downsample_2x();
+        for face in Face::ALL {
+            assert_eq!(
+                FaceSlab::<COARSE_EDGE>::downsampled_from(face, &chunk),
+                FaceSlab::from_neighbor(face, &coarse),
+                "coarse slab at {face:?}"
+            );
+            let occupancy = FaceSlab::<CHUNK_EDGE>::coarse_occupancy_of(face, &chunk);
+            let expanded = FaceSlab::from_neighbor(face, &coarse);
+            for secondary in 0..CHUNK_EDGE {
+                for primary in 0..CHUNK_EDGE {
+                    let (fx, fy, fz) = match face {
+                        Face::NegativeX | Face::PositiveX => (0, primary, secondary),
+                        Face::NegativeY | Face::PositiveY => (primary, 0, secondary),
+                        Face::NegativeZ | Face::PositiveZ => (primary, secondary, 0),
+                    };
+                    let (cx, cy, cz) = (fx / 2, fy / 2, fz / 2);
+                    assert_eq!(
+                        occupancy.sample(face, LocalCoord::new(fx, fy, fz)?),
+                        expanded.sample(face, GridCoord::<COARSE_EDGE>::new(cx, cy, cz)?),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_resolution_seams_leave_no_gap_and_no_duplicate_face()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for face in Face::ALL {
+            let fine_local = boundary_coord(face)?;
+            let touching = boundary_coord(face.opposite())?;
+            // A second fine cell in the same coarse block but not touching the seam cell.
+            let (tx, ty, tz) = (touching.x(), touching.y(), touching.z());
+            let sibling = match face {
+                Face::NegativeX | Face::PositiveX => LocalCoord::new(tx, ty ^ 1, tz)?,
+                Face::NegativeY | Face::PositiveY => LocalCoord::new(tx ^ 1, ty, tz)?,
+                Face::NegativeZ | Face::PositiveZ => LocalCoord::new(tx ^ 1, ty, tz)?,
+            };
+            let cases: [(bool, Option<LocalCoord>); 4] = [
+                (true, None),            // fine solid, coarse block air
+                (false, Some(touching)), // fine air, coarse block solid
+                (true, Some(sibling)),   // both solid (block solid via a sibling cell)
+                (false, None),           // both air
+            ];
+            for (fine_solid, coarse_cell) in cases {
+                let mut fine = Chunk::empty();
+                if fine_solid {
+                    assert_eq!(fine.write_local(fine_local, VoxelId(2)), VoxelId::AIR);
+                }
+                let mut coarse_source = Chunk::empty();
+                if let Some(cell) = coarse_cell {
+                    assert_eq!(coarse_source.write_local(cell, VoxelId(7)), VoxelId::AIR);
+                }
+                let (expect_fine, expect_coarse) =
+                    mixed_seam_expectation(face, &fine, &coarse_source);
+                let (fine_mesh, coarse_mesh) = mixed_seam_meshes(face, &fine, &coarse_source);
+                let (axis, fine_plane, coarse_plane) = seam_axis_and_planes(face);
+                let fine_count = seam_face_count(&fine_mesh, face, fine_plane, axis);
+                let coarse_count =
+                    seam_face_count(&coarse_mesh, face.opposite(), coarse_plane, axis);
+                assert_eq!(
+                    fine_count, expect_fine,
+                    "{face:?} fine={fine_solid} coarse={coarse_cell:?}"
+                );
+                assert_eq!(
+                    coarse_count, expect_coarse,
+                    "{face:?} fine={fine_solid} coarse={coarse_cell:?}"
+                );
+                // Never both sides at one location; never visible air without a face.
+                let expected_pair = match (fine_solid, coarse_cell.is_some()) {
+                    (true, false) => (1, 0),
+                    (false, true) => (0, 1),
+                    (true, true) => (0, 1),
+                    (false, false) => (0, 0),
+                };
+                assert_eq!((fine_count, coarse_count), expected_pair, "{face:?}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_seam_on_negative_fixture_chunks_matches_the_oracle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::multichunk_diagnostic_fixture();
+        let (negative_coord, negative) = &fixture[0];
+        let (origin_coord, origin) = &fixture[1];
+        assert_eq!((negative_coord.x, origin_coord.x), (-1, 0));
+        // Origin is fine; the negative chunk is presented coarse across NegativeX.
+        let face = Face::NegativeX;
+        let (expect_fine, expect_coarse) = mixed_seam_expectation(face, origin, negative);
+        assert!(
+            expect_fine + expect_coarse > 0,
+            "fixture seam must be populated"
+        );
+        let (fine_mesh, coarse_mesh) = mixed_seam_meshes(face, origin, negative);
+        let (axis, fine_plane, coarse_plane) = seam_axis_and_planes(face);
+        assert_eq!(
+            seam_face_count(&fine_mesh, face, fine_plane, axis),
+            expect_fine
+        );
+        assert_eq!(
+            seam_face_count(&coarse_mesh, face.opposite(), coarse_plane, axis),
+            expect_coarse
+        );
+        // Same-level Lod0 seam between the same chunks is unchanged from M3A.
+        let m3a = mesh_exposed_faces_with_neighbors(
+            ChunkNeighborhood::new(origin).with_neighbor(face, negative),
+            BoundaryPolicy::Expose,
+        )?;
+        let owned: [FaceSlab<CHUNK_EDGE>; 6] = std::array::from_fn(|index| {
+            if Face::ALL[index] == face {
+                FaceSlab::from_neighbor(face, negative)
+            } else {
+                FaceSlab::known_air()
+            }
+        });
+        assert_eq!(
+            mesh_exposed_faces_from_snapshot(&OwnedMeshingSnapshot::new(origin.clone(), owned)),
+            m3a
         );
         Ok(())
     }

@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A and M3B complete and merged; M3C0 (edge-generic grid and mesher) implemented on the feature branch; the rest of M3C is planned, not implemented**
+Status: **M3A and M3B complete and merged; M3C0 (edge-generic grid and mesher) and M3C1 (headless LOD core) implemented on the feature branch; renderer, debug views, and benchmarks are planned, not implemented**
 Planning branch: `feat/m3c-lod-debug`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -408,7 +408,7 @@ Normal logs report transitions in aggregates, not one line per chunk per frame. 
 
 ## Milestone: M3C — Initial LOD + Streaming Debug Visualization
 
-Status: **M3C0 implemented; LOD selection, streaming integration, and debug rendering remain planned**.
+Status: **M3C0 and M3C1 implemented headlessly; renderer scaling, F1/F2 debug views, and the `Lod0`-versus-`Lod1` benchmark remain planned**.
 Planning branch: `feat/m3c-lod-debug`
 
 M3C answers one question with evidence: does a second, coarser level of chunk detail buy visible distance for less CPU/GPU/upload cost than simply widening the full-resolution render radius? It must do so without drawing a knowingly incorrect seam, without ever treating an unloaded chunk as AIR, and while keeping every M3B contract (tokens, generations, stamps, budgets, negative coordinates) intact. It also adds the debug visualization needed to see what the streaming runtime is doing.
@@ -418,7 +418,7 @@ M3C answers one question with evidence: does a second, coarser level of chunk de
 `Chunk` was fixed at `CHUNK_EDGE = 32` and the mesher iterated that edge. A coarse level needs a dense grid of a different edge meshed by the same exposed-face loop, so M3C0 generalizes the primitive on stable Rust without generic const expressions:
 
 - `DenseGrid<const EDGE: usize>` owns `EDGE³` `VoxelId` cells in a heap slice (`vec![AIR; EDGE * EDGE * EDGE]`), so no `[T; EDGE * EDGE * EDGE]` type is needed. It exposes `VOLUME`, `BYTES`, `empty`, `read`, `write`, `read_local`, `write_local`, `solid_count`.
-- `GridCoord<const EDGE: usize>` is the validated local coordinate; `LocalCoord = GridCoord<32>`. `ChunkBoundsError` gained a public `edge` field so its message names the violated grid.
+- `GridCoord<const EDGE: usize>` is the validated local coordinate with `usize` components (no truncating casts; `GridCoord::<300>::new(299, 0, 0)` is locked by test); `LocalCoord = GridCoord<32>`. `ChunkBoundsError` gained a public `edge` field so its message names the violated grid.
 - `Chunk = DenseGrid<32>` and `CoarseGrid = DenseGrid<16>` (`COARSE_EDGE = 16`) are type aliases, so every M2–M3B call site (`Chunk::empty()`, `LocalCoord::new`, `CHUNK_BYTES`, fixtures, streaming, client) compiles unchanged.
 - `ChunkNeighborhood<'a, const EDGE = CHUNK_EDGE>`, `FaceSlab<const EDGE = CHUNK_EDGE>`, `OwnedMeshingSnapshot<const EDGE = CHUNK_EDGE>`, and `MeshBoundaryError<const EDGE = CHUNK_EDGE>` use const-parameter defaults, so existing names without a parameter still mean the 32-edge types. `mesh_exposed_faces`, `mesh_exposed_faces_with_neighbors`, and `mesh_exposed_faces_from_snapshot` are generic over the edge and share one `mesh_with_sampler` loop; positions are cell units of the meshed grid, so a coarse mesh is scaled at presentation time.
 - The only conversion is explicit and deterministic: `Chunk::downsample_2x(&self) -> CoarseGrid`. A coarse cell is solid if any of its 2×2×2 voxels is solid; its material is the most frequent solid `VoxelId`, ties resolved by the lowest ID. It reads local content only, so chunk coordinates (including negative ones) never influence the result. There is no runtime `factor` and no generic `downsample`.
@@ -480,11 +480,30 @@ Deterministic counts for these defaults, computed from the set definitions:
 | retention | radius-4 cube | 729 | 47,775,744 |
 | single-step transient | old retention ∪ new dependency (one chunk of travel) | 810 | 53,084,160 |
 
-The hard resident cap must cover the single-step transient, so the M3C default is `hard_resident_cap = 810` (about 50.6 MiB of raw dense payload before record overhead); the M3B default of 160 is insufficient for either configuration. Teleports are throttled through the cap as in M3B: retired payloads keep counting until the bounded eviction releases them. In the diagnostic corridor most tracked chunks outside `y ∈ [-1, 1]` are `KnownAbsent` and hold no payload, so observed usage will be far below the worst case; the worst case is still the number that sizes the cap. The eviction budget of 8 per update is re-measured against the larger churn.
+These four numbers are recorded separately because they answer different questions: 343 is what is presented, 637 is what must be resident for seams, 729 is what is kept to avoid churn, and 810 is the transient union of two retention cubes one chunk apart. The M3C diagnostic profile sets `hard_resident_cap = 810` as transient headroom for this profile (about 50.6 MiB of raw dense payload before record overhead); it is not a mathematically required limit, and the cap must never be raised silently because a set grew. The M3B default profile keeps 160. Teleports are throttled through the cap as in M3B: retired payloads keep counting until the bounded eviction releases them. In the diagnostic corridor most tracked chunks outside `y ∈ [-1, 1]` are `KnownAbsent` and hold no payload (231 resident of 637 tracked when settled), so observed usage is far below the headroom. The eviction budget of 8 per update is re-measured against the larger churn.
 
 The performance baseline is `Lod0` only to the same visible distance (`render_radius = 3`, identical dependency, retention, and cap). Debug visualization stays off during every measurement and its box uploads never share or alter the mesh upload budget.
 
-### Jobs, stamps, residency, and stale rejection
+### M3C1 — headless LOD core (implemented)
+
+`veldwake-streaming` now carries levels end to end without touching the renderer or client:
+
+- `LodLevel { Lod0, Lod1 }` and `NeighborPresentation { ContentOnly, Rendered(LodLevel) }` in `types`; `MeshStamp` gains `lod`, and `NeighborStamp::Resident` gains `presentation`.
+- `LodSelection { Lod0Only, Banded }` with `LodSelection::select(distance, previous)`: `Lod0Only` is M3B; `Banded` is `d <= 1` → `Lod0`, `d == 2` → previous level (or `Lod1` with no history), `d >= 3` → `Lod1`, using Chebyshev chunk distance. `StreamingConfig::default()` is unchanged (`Lod0Only`); `StreamingConfig::m3c_diagnostic()` is radius 3 / halo 1 / retention 4 / cap 810 / `Banded`.
+- Each record stores its desired level as history while retained; `set_demand_center` re-selects every render-demand record, and a change bumps the mesh generation, dirties the chunk and its six neighbors, and counts `lod_swaps`. Eviction or reincarnation loses the history and takes a fresh deterministic decision. Tokens, content generations, residency, the cap, and loads are untouched by level changes.
+- `current_mesh_stamp` includes the level and each resident neighbor's presentation (`Rendered(level)` only for render-demand neighbors; dependency/retention neighbors are `ContentOnly`), so an old-level result or a neighbor level change fails the existing stamp comparison. `stale_lod_results` classifies a rejected result whose level differs from the record's current level; it is derived after the same validation, not a second check.
+- Snapshots are built per level: a `Lod0` job is `OwnedMeshingSnapshot<32>` with `FaceSlab::coarse_occupancy_of` toward a `Rendered(Lod1)` neighbor and `from_neighbor` otherwise; a `Lod1` job is `OwnedMeshingSnapshot<16>` with the center's `downsample_2x`, `FaceSlab::downsampled_from` toward content-only or `Lod1` neighbors, and `known_air` toward a `Rendered(Lod0)` neighbor (the coarse side always emits its seam). `KnownAbsent` is known AIR at both levels; unavailable neighbors still block. The worker meshes either variant with the same `mesh_exposed_faces_from_snapshot`; `mesh_with_sampler` was not duplicated.
+- `ResidencySummary` reports `lod0_desired`, `lod1_desired`, `lod0_ready`, `lod1_ready`; `RuntimeMetrics` reports `lod_swaps` and `stale_lod_results`.
+
+Mixed-resolution seam evidence (voxel crate): `FaceSlab::<16>::downsampled_from` equals `from_neighbor` on the full downsample for every face; `coarse_occupancy_of` expands the same blocks to 32×32. A seam oracle checks all six directions × four occupancy cases (fine solid/coarse air → one fine face, fine air/coarse solid → one coarse face, both solid → none, both air → none) with different IDs, plus the negative-coordinate fixture pair `(-1, 0, 0)`/`(0, 0, 0)` where the fine `Lod0` seam between the same chunks is byte-identical to M3A. No location receives faces from both sides; no visible air lacks a face.
+
+Headless evidence (`streaming-probe --release`, audited host): the default profile is unchanged (27/81/125, 63 residents, 27 `Lod0` meshes, 2,064,384 snapshot bytes, 0 swaps on oscillation). The M3C profile settles at 637 tracked, 231 resident (15,138,816 bytes), 406 `KnownAbsent`, 27 `Lod0` desired and ready, 316 `Lod1` desired with 120 ready (the other 196 render chunks are source-absent), 637 loads, 147 meshes, 5,323,040 CPU mesh bytes, 3,356,672 snapshot bytes, 0 stale, 0 cap blocks, 36.8 ms to idle. One boundary crossing and return swaps 9 chunks the first time and 0 the second; after it 36 `Lod0` / 307 `Lod1` are desired.
+
+Runtime tests added: `Lod0Only` never selects `Lod1`; banded startup counts (27/316) and per-coordinate levels; approach 3→2→1 promotes only at `d <= 1`; retreat 1→2→3 keeps `Lod0` through the band; repeated 1↔2 oscillation swaps nothing after the first cycle; teleport assigns by distance only; eviction/re-entry forgets history and issues a new token; an old-level result is rejected with `stale_lod_results` while token and content generation survive; a neighbor's level change rewrites the seam stamp and dirties the center; dependency-only neighbors are `ContentOnly`; the M3C profile reaches idle with meshes at both levels under the cap.
+
+Not yet done (M3C2+): `Lod1` meshes are in 16-cell units and the client does not scale them, so the default profile stays `Lod0Only` until the renderer applies the level's scale; debug views; the `Lod0`-only radius-3 baseline versus banded benchmark.
+
+### Jobs, stamps, residency, and stale rejection (plan, now implemented as above)
 
 - `MeshStamp` gains `lod: LodLevel` and each `NeighborStamp::Resident` gains the neighbor's **current desired** `lod`. The record stores its desired `lod` next to `mesh_generation`.
 - A desired-LOD change bumps `mesh_generation` and dirties the chunk and its six axial neighbors (the seam rule depends on both sides' levels). A result is accepted only if its full stamp, including `lod` and every neighbor `lod`, still matches; a result carrying the old level is counted as `stale_mesh_results` with a new reason counter `stale_lod`.

@@ -4,13 +4,16 @@ use std::{
     fmt,
 };
 
-use veldwake_voxel::{CHUNK_BYTES, Chunk, ChunkCoord, Face, FaceSlab, Mesh, OwnedMeshingSnapshot};
+use veldwake_voxel::{
+    CHUNK_BYTES, CHUNK_EDGE, COARSE_EDGE, Chunk, ChunkCoord, Face, FaceSlab, Mesh,
+    OwnedMeshingSnapshot,
+};
 
 use crate::{
     demand::{DemandError, DemandSets, StreamingConfig},
     source::{DiagnosticChunkSource, SourceChunk},
-    types::{MeshStamp, NeighborStamp, RequestToken},
-    worker::{MeshJob, Worker, WorkerJob, WorkerResult},
+    types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken},
+    worker::{MeshJob, MeshSnapshot, Worker, WorkerJob, WorkerResult},
 };
 
 const MESH_BURST_BEFORE_LOAD: u8 = 4;
@@ -46,6 +49,11 @@ pub struct RuntimeMetrics {
     pub snapshot_bytes_dispatched: u64,
     pub cpu_evictions_finalized: u64,
     pub eviction_budget_hits: u64,
+    /// Render-demand chunks whose desired level changed.
+    pub lod_swaps: u64,
+    /// Stale mesh results whose level no longer matches the record; a subset
+    /// of `stale_mesh_results`, classified after the same validation.
+    pub stale_lod_results: u64,
 }
 
 /// One aggregate observation of runtime state, cheap enough to sample per frame.
@@ -67,6 +75,12 @@ pub struct ResidencySummary {
     pub reserved_load_slots: usize,
     pub resident_payload_bytes: usize,
     pub cpu_mesh_bytes: usize,
+    /// Render-demand chunks desired at each level.
+    pub lod0_desired: usize,
+    pub lod1_desired: usize,
+    /// Ready meshes at each level.
+    pub lod0_ready: usize,
+    pub lod1_ready: usize,
 }
 
 #[derive(Debug)]
@@ -134,6 +148,8 @@ struct ChunkRecord {
     residency: ResidencyState,
     mesh_generation: u64,
     mesh: MeshState,
+    /// Desired level; kept as history while the record is retained.
+    lod: LodLevel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -239,6 +255,22 @@ impl StreamingRuntime {
         }
 
         self.create_dependency_records()?;
+
+        let render: Vec<_> = self.demand.render.iter().copied().collect();
+        for coord in render {
+            let Some(record) = self.records.get(&coord) else {
+                continue;
+            };
+            let next = self.select_lod(coord, Some(record.lod));
+            if next != record.lod {
+                if let Some(record) = self.records.get_mut(&coord) {
+                    record.lod = next;
+                }
+                self.metrics.lod_swaps += 1;
+                self.invalidate_mesh(coord)?;
+                self.invalidate_neighbors(coord)?;
+            }
+        }
 
         let tracked: Vec<_> = self.records.keys().copied().collect();
         for coord in tracked {
@@ -349,6 +381,17 @@ impl StreamingRuntime {
     }
 
     #[must_use]
+    pub fn desired_lod(&self, coord: ChunkCoord) -> Option<LodLevel> {
+        self.records.get(&coord).map(|record| record.lod)
+    }
+
+    fn select_lod(&self, coord: ChunkCoord, previous: Option<LodLevel>) -> LodLevel {
+        self.config
+            .lod_selection
+            .select(chebyshev_distance(coord, self.center), previous)
+    }
+
+    #[must_use]
     pub fn summary(&self) -> ResidencySummary {
         let mut summary = ResidencySummary {
             tracked: self.records.len(),
@@ -358,7 +401,13 @@ impl StreamingRuntime {
             reserved_load_slots: self.reserved_load_slots.len(),
             ..ResidencySummary::default()
         };
-        for record in self.records.values() {
+        for (coord, record) in &self.records {
+            if self.demand.render.contains(coord) {
+                match record.lod {
+                    LodLevel::Lod0 => summary.lod0_desired += 1,
+                    LodLevel::Lod1 => summary.lod1_desired += 1,
+                }
+            }
             match &record.residency {
                 ResidencyState::LoadQueued => summary.load_queued += 1,
                 ResidencyState::Loading => summary.loading += 1,
@@ -379,9 +428,13 @@ impl StreamingRuntime {
                 MeshState::WaitingForNeighbors => summary.mesh_waiting += 1,
                 MeshState::Dirty(_) => summary.mesh_dirty += 1,
                 MeshState::Meshing(_) => summary.mesh_meshing += 1,
-                MeshState::CpuReady { mesh, .. } => {
+                MeshState::CpuReady { stamp, mesh } => {
                     summary.mesh_ready += 1;
                     summary.cpu_mesh_bytes += mesh.payload_bytes();
+                    match stamp.lod {
+                        LodLevel::Lod0 => summary.lod0_ready += 1,
+                        LodLevel::Lod1 => summary.lod1_ready += 1,
+                    }
                 }
             }
         }
@@ -464,6 +517,7 @@ impl StreamingRuntime {
             .collect();
         for coord in missing {
             let token = self.allocate_token()?;
+            let lod = self.select_lod(coord, None);
             self.records.insert(
                 coord,
                 ChunkRecord {
@@ -471,6 +525,7 @@ impl StreamingRuntime {
                     residency: ResidencyState::LoadQueued,
                     mesh_generation: 0,
                     mesh: MeshState::NotRequired,
+                    lod,
                 },
             );
             self.load_queue.push(LoadQueueEntry {
@@ -616,6 +671,7 @@ impl StreamingRuntime {
         Some(MeshStamp {
             coord,
             request_token: record.token,
+            lod: record.lod,
             mesh_generation: record.mesh_generation,
             center_content_generation: content_generation,
             neighbors,
@@ -632,6 +688,11 @@ impl StreamingRuntime {
                 coord: neighbor_coord,
                 token: neighbor.token,
                 content_generation,
+                presentation: if self.demand.render.contains(&neighbor_coord) {
+                    NeighborPresentation::Rendered(neighbor.lod)
+                } else {
+                    NeighborPresentation::ContentOnly
+                },
             }),
             ResidencyState::KnownAbsent => Some(NeighborStamp::KnownAbsent {
                 coord: neighbor_coord,
@@ -641,7 +702,14 @@ impl StreamingRuntime {
         }
     }
 
-    fn snapshot(&self, stamp: MeshStamp) -> Option<OwnedMeshingSnapshot> {
+    /// Builds the owned job input for `stamp` at its level.
+    ///
+    /// Mixed-resolution seams follow the coarse-occupancy rule: a fine center
+    /// samples the coarse block covering each seam cell of a `Lod1`-presented
+    /// neighbor, and a coarse center always emits its seam toward a
+    /// `Lod0`-presented neighbor. Content-only neighbors supply voxels at the
+    /// center's own resolution; unavailable neighbors still block.
+    fn snapshot(&self, stamp: MeshStamp) -> Option<MeshSnapshot> {
         if self.current_mesh_stamp(stamp.coord)? != stamp {
             return None;
         }
@@ -649,28 +717,63 @@ impl StreamingRuntime {
         let ResidencyState::CpuResident { chunk: center, .. } = &center_record.residency else {
             return None;
         };
-        let slab = |face| {
+        let neighbor_of = |face: Face| {
             let neighbor_coord = stamp.coord.neighbor(face)?;
-            let neighbor = self.records.get(&neighbor_coord)?;
-            match &neighbor.residency {
-                ResidencyState::CpuResident { chunk, .. } => {
-                    Some(FaceSlab::from_neighbor(face, chunk))
-                }
-                ResidencyState::KnownAbsent => Some(FaceSlab::known_air()),
+            let record = self.records.get(&neighbor_coord)?;
+            let presented = self
+                .demand
+                .render
+                .contains(&neighbor_coord)
+                .then_some(record.lod);
+            match &record.residency {
+                ResidencyState::CpuResident { chunk, .. } => Some(Some((chunk, presented))),
+                ResidencyState::KnownAbsent => Some(None),
                 _ => None,
             }
         };
-        Some(OwnedMeshingSnapshot::new(
-            center.clone(),
-            [
-                slab(Face::NegativeX)?,
-                slab(Face::PositiveX)?,
-                slab(Face::NegativeY)?,
-                slab(Face::PositiveY)?,
-                slab(Face::NegativeZ)?,
-                slab(Face::PositiveZ)?,
-            ],
-        ))
+        match stamp.lod {
+            LodLevel::Lod0 => {
+                let slab = |face: Face| -> Option<FaceSlab<CHUNK_EDGE>> {
+                    Some(match neighbor_of(face)? {
+                        None => FaceSlab::known_air(),
+                        Some((chunk, Some(LodLevel::Lod1))) => {
+                            FaceSlab::coarse_occupancy_of(face, chunk)
+                        }
+                        Some((chunk, _)) => FaceSlab::from_neighbor(face, chunk),
+                    })
+                };
+                Some(MeshSnapshot::Fine(OwnedMeshingSnapshot::new(
+                    center.clone(),
+                    [
+                        slab(Face::NegativeX)?,
+                        slab(Face::PositiveX)?,
+                        slab(Face::NegativeY)?,
+                        slab(Face::PositiveY)?,
+                        slab(Face::NegativeZ)?,
+                        slab(Face::PositiveZ)?,
+                    ],
+                )))
+            }
+            LodLevel::Lod1 => {
+                let slab = |face: Face| -> Option<FaceSlab<COARSE_EDGE>> {
+                    Some(match neighbor_of(face)? {
+                        None | Some((_, Some(LodLevel::Lod0))) => FaceSlab::known_air(),
+                        Some((chunk, _)) => FaceSlab::downsampled_from(face, chunk),
+                    })
+                };
+                Some(MeshSnapshot::Coarse(OwnedMeshingSnapshot::new(
+                    center.downsample_2x(),
+                    [
+                        slab(Face::NegativeX)?,
+                        slab(Face::PositiveX)?,
+                        slab(Face::NegativeY)?,
+                        slab(Face::PositiveY)?,
+                        slab(Face::NegativeZ)?,
+                        slab(Face::PositiveZ)?,
+                    ],
+                )))
+            }
+        }
     }
 
     fn integrate_result(&mut self, result: WorkerResult) -> Result<(), RuntimeError> {
@@ -728,6 +831,13 @@ impl StreamingRuntime {
             );
         if !accepted {
             self.metrics.stale_mesh_results += 1;
+            if self
+                .records
+                .get(&stamp.coord)
+                .is_some_and(|record| record.lod != stamp.lod)
+            {
+                self.metrics.stale_lod_results += 1;
+            }
             return Ok(());
         }
         let record = self
@@ -863,6 +973,14 @@ impl StreamingRuntime {
             + axis_distance(coord.z, self.center.z);
         Reverse((squared, coord))
     }
+}
+
+fn chebyshev_distance(coord: ChunkCoord, center: ChunkCoord) -> u32 {
+    let axis = |left: i32, right: i32| (i64::from(left) - i64::from(right)).unsigned_abs();
+    let largest = axis(coord.x, center.x)
+        .max(axis(coord.y, center.y))
+        .max(axis(coord.z, center.z));
+    u32::try_from(largest).unwrap_or(u32::MAX)
 }
 
 fn axis_distance(left: i32, right: i32) -> u128 {
@@ -1178,6 +1296,7 @@ mod tests {
         let stamp = MeshStamp {
             coord: load.coord,
             request_token: load.token,
+            lod: LodLevel::Lod0,
             mesh_generation: 0,
             center_content_generation: 1,
             neighbors: [NeighborStamp::KnownAbsent {
@@ -1223,6 +1342,7 @@ mod tests {
             retention_radius: 1,
             hard_resident_cap: cap,
             max_cpu_evictions_per_update: 1,
+            ..StreamingConfig::default()
         })?;
         load_center_neighborhood(&mut runtime)?;
         assert_eq!(runtime.resident_payload_count(), cap);
@@ -1265,6 +1385,7 @@ mod tests {
             retention_radius: 1,
             hard_resident_cap: cap,
             max_cpu_evictions_per_update: 1,
+            ..StreamingConfig::default()
         })?;
         for _ in 0..10_000 {
             runtime.poll()?;
@@ -1321,6 +1442,251 @@ mod tests {
             summary.resident_payload_bytes,
             summary.cpu_resident * CHUNK_BYTES
         );
+        Ok(())
+    }
+
+    fn m3c() -> Result<StreamingRuntime, RuntimeError> {
+        runtime_with(StreamingConfig::m3c_diagnostic())
+    }
+
+    fn lod(runtime: &StreamingRuntime, x: i32, y: i32, z: i32) -> Option<LodLevel> {
+        runtime.desired_lod(ChunkCoord::new(x, y, z))
+    }
+
+    #[test]
+    fn lod0_only_profile_never_selects_lod1() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig::default())?;
+        runtime.set_demand_center(ChunkCoord::new(5, 0, -5))?;
+        let summary = runtime.summary();
+        assert_eq!(summary.lod0_desired, 27);
+        assert_eq!(summary.lod1_desired, 0);
+        assert_eq!(runtime.metrics.lod_swaps, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn banded_startup_assigns_levels_deterministically() -> Result<(), RuntimeError> {
+        let runtime = m3c()?;
+        let summary = runtime.summary();
+        assert_eq!(summary.lod0_desired, 27);
+        assert_eq!(
+            summary.lod1_desired, 316,
+            "98 band chunks without history plus 218"
+        );
+        assert_eq!(lod(&runtime, 1, 1, 1), Some(LodLevel::Lod0));
+        assert_eq!(lod(&runtime, 2, 0, 0), Some(LodLevel::Lod1));
+        assert_eq!(lod(&runtime, 3, 0, 0), Some(LodLevel::Lod1));
+        assert_eq!(
+            lod(&runtime, 4, 0, 0),
+            Some(LodLevel::Lod1),
+            "dependency halo starts coarse"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approach_promotes_only_inside_radius_one() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        assert_eq!(lod(&runtime, 3, 0, 0), Some(LodLevel::Lod1));
+        runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+        assert_eq!(
+            lod(&runtime, 3, 0, 0),
+            Some(LodLevel::Lod1),
+            "band keeps Lod1"
+        );
+        runtime.set_demand_center(ChunkCoord::new(2, 0, 0))?;
+        assert_eq!(lod(&runtime, 3, 0, 0), Some(LodLevel::Lod0));
+        Ok(())
+    }
+
+    #[test]
+    fn retreat_keeps_lod0_through_the_band() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        runtime.set_demand_center(ChunkCoord::new(2, 0, 0))?;
+        assert_eq!(lod(&runtime, 3, 0, 0), Some(LodLevel::Lod0));
+        runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+        assert_eq!(
+            lod(&runtime, 3, 0, 0),
+            Some(LodLevel::Lod0),
+            "band keeps Lod0"
+        );
+        runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+        assert_eq!(lod(&runtime, 3, 0, 0), Some(LodLevel::Lod1));
+        Ok(())
+    }
+
+    #[test]
+    fn oscillation_across_one_boundary_never_swaps_again() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+        runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+        let settled = runtime.metrics.lod_swaps;
+        assert!(settled > 0, "the first crossing promotes band chunks");
+        for _ in 0..4 {
+            runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+            runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+        }
+        assert_eq!(runtime.metrics.lod_swaps, settled, "no ping-pong");
+        assert_eq!(
+            lod(&runtime, 2, 0, 0),
+            Some(LodLevel::Lod0),
+            "history survives"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn teleport_assigns_levels_by_distance_only() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        runtime.set_demand_center(ChunkCoord::new(40, 0, -40))?;
+        assert_eq!(lod(&runtime, 40, 0, -40), Some(LodLevel::Lod0));
+        assert_eq!(lod(&runtime, 41, 1, -41), Some(LodLevel::Lod0));
+        assert_eq!(
+            lod(&runtime, 42, 0, -40),
+            Some(LodLevel::Lod1),
+            "band without history"
+        );
+        assert_eq!(lod(&runtime, 43, 0, -40), Some(LodLevel::Lod1));
+        assert_eq!(lod(&runtime, 2, 0, 0), None, "old records retired");
+        Ok(())
+    }
+
+    #[test]
+    fn eviction_and_reentry_forget_lod_history() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+        runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+        let coord = ChunkCoord::new(2, 0, 0);
+        assert_eq!(runtime.desired_lod(coord), Some(LodLevel::Lod0));
+        let old_token = runtime.request_token(coord);
+        runtime.set_demand_center(ChunkCoord::new(40, 0, -40))?;
+        for _ in 0..200 {
+            runtime.finalize_evictions();
+        }
+        runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+        assert_eq!(
+            runtime.desired_lod(coord),
+            Some(LodLevel::Lod1),
+            "fresh decision"
+        );
+        assert_ne!(runtime.request_token(coord), old_token);
+        Ok(())
+    }
+
+    #[test]
+    fn old_level_result_is_rejected_and_tokens_survive_a_lod_change() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        load_center_neighborhood(&mut runtime)?;
+        let center = ChunkCoord::default();
+        let token = runtime.request_token(center);
+        let stale = runtime
+            .current_mesh_stamp(center)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        assert_eq!(stale.lod, LodLevel::Lod0);
+        runtime
+            .records
+            .get_mut(&center)
+            .ok_or(RuntimeError::WorkerDisconnected)?
+            .mesh = MeshState::Meshing(stale);
+
+        runtime.set_demand_center(ChunkCoord::new(3, 0, 0))?;
+        assert_eq!(runtime.desired_lod(center), Some(LodLevel::Lod1));
+        assert_eq!(runtime.request_token(center), token, "token untouched");
+        let ResidencyState::CpuResident {
+            content_generation, ..
+        } = runtime
+            .records
+            .get(&center)
+            .ok_or(RuntimeError::WorkerDisconnected)?
+            .residency
+        else {
+            return Err(RuntimeError::WorkerDisconnected);
+        };
+        assert_eq!(content_generation, stale.center_content_generation);
+
+        runtime.integrate_mesh(stale, Mesh::default())?;
+        assert_eq!(runtime.metrics.stale_mesh_results, 1);
+        assert_eq!(runtime.metrics.stale_lod_results, 1);
+        assert_ne!(runtime.mesh_status(center), Some(MeshStatus::CpuReady));
+        Ok(())
+    }
+
+    #[test]
+    fn neighbor_level_change_invalidates_the_seam() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        load_center_neighborhood(&mut runtime)?;
+        let center = ChunkCoord::default();
+        let before = runtime
+            .current_mesh_stamp(center)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        assert!(before.neighbors.iter().all(|stamp| matches!(
+            stamp,
+            NeighborStamp::Resident {
+                presentation: NeighborPresentation::Rendered(LodLevel::Lod0),
+                ..
+            }
+        )));
+        runtime.set_demand_center(ChunkCoord::new(-2, 0, 0))?;
+        assert_eq!(
+            runtime.desired_lod(center),
+            Some(LodLevel::Lod0),
+            "band keeps Lod0"
+        );
+        assert_eq!(lod(&runtime, 1, 0, 0), Some(LodLevel::Lod1));
+        let after = runtime
+            .current_mesh_stamp(center)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        assert_ne!(before, after);
+        assert!(matches!(
+            after.neighbors[Face::PositiveX as usize],
+            NeighborStamp::Resident {
+                presentation: NeighborPresentation::Rendered(LodLevel::Lod1),
+                ..
+            }
+        ));
+        assert!(after.mesh_generation > before.mesh_generation);
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::Dirty));
+        Ok(())
+    }
+
+    #[test]
+    fn dependency_only_neighbors_are_content_only() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig::default())?;
+        let edge = ChunkCoord::new(1, 0, 0);
+        let halo = ChunkCoord::new(2, 0, 0);
+        force_load(&mut runtime, edge, SourceChunk::Present(Chunk::empty()))?;
+        force_load(&mut runtime, halo, SourceChunk::Present(Chunk::empty()))?;
+        let stamp = runtime
+            .neighbor_stamp(edge, Face::PositiveX)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        assert!(matches!(
+            stamp,
+            NeighborStamp::Resident {
+                presentation: NeighborPresentation::ContentOnly,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn m3c_profile_reaches_idle_with_meshes_at_both_levels() -> Result<(), RuntimeError> {
+        let mut runtime = m3c()?;
+        for _ in 0..200_000 {
+            runtime.poll()?;
+            if runtime.is_idle() {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert!(runtime.is_idle());
+        let summary = runtime.summary();
+        assert_eq!(summary.lod0_desired + summary.lod1_desired, 343);
+        assert!(summary.lod0_ready > 0);
+        assert!(summary.lod1_ready > 0);
+        assert_eq!(summary.lod0_ready + summary.lod1_ready, summary.mesh_ready);
+        assert_eq!(runtime.metrics.stale_lod_results, 0);
+        assert!(runtime.resident_payload_count() <= 810);
         Ok(())
     }
 

@@ -13,6 +13,25 @@ impl RequestToken {
     }
 }
 
+/// Level of detail a render-demand chunk is meshed at.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum LodLevel {
+    /// Full `32³` resolution.
+    Lod0,
+    /// `16³` grid derived by `Chunk::downsample_2x`.
+    Lod1,
+}
+
+/// What a neighbor contributes to a seam: content only, or a presented level
+/// that decides the mixed-resolution seam rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NeighborPresentation {
+    /// Dependency/retention chunk: it supplies voxels at the center's own
+    /// resolution and never carries a render level.
+    ContentOnly,
+    Rendered(LodLevel),
+}
+
 /// Versioned state of one axial dependency captured by a mesh job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NeighborStamp {
@@ -20,6 +39,7 @@ pub enum NeighborStamp {
         coord: ChunkCoord,
         token: RequestToken,
         content_generation: u64,
+        presentation: NeighborPresentation,
     },
     KnownAbsent {
         coord: ChunkCoord,
@@ -32,6 +52,7 @@ pub enum NeighborStamp {
 pub struct MeshStamp {
     pub coord: ChunkCoord,
     pub request_token: RequestToken,
+    pub lod: LodLevel,
     pub mesh_generation: u64,
     pub center_content_generation: u64,
     pub neighbors: [NeighborStamp; 6],

@@ -3,7 +3,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use veldwake_voxel::{ChunkCoord, Mesh, OwnedMeshingSnapshot, mesh_exposed_faces_from_snapshot};
+use veldwake_voxel::{
+    CHUNK_EDGE, COARSE_EDGE, ChunkCoord, Mesh, OwnedMeshingSnapshot,
+    mesh_exposed_faces_from_snapshot,
+};
 
 use crate::{
     source::{DiagnosticChunkSource, SourceChunk},
@@ -20,7 +23,29 @@ pub(crate) enum WorkerJob {
 
 pub(crate) struct MeshJob {
     pub(crate) stamp: MeshStamp,
-    pub(crate) snapshot: OwnedMeshingSnapshot,
+    pub(crate) snapshot: MeshSnapshot,
+}
+
+/// Owned meshing input at the level the job was issued for.
+pub(crate) enum MeshSnapshot {
+    Fine(OwnedMeshingSnapshot<CHUNK_EDGE>),
+    Coarse(OwnedMeshingSnapshot<COARSE_EDGE>),
+}
+
+impl MeshSnapshot {
+    pub(crate) fn payload_bytes(&self) -> usize {
+        match self {
+            Self::Fine(snapshot) => snapshot.payload_bytes(),
+            Self::Coarse(snapshot) => snapshot.payload_bytes(),
+        }
+    }
+
+    fn mesh(&self) -> Mesh {
+        match self {
+            Self::Fine(snapshot) => mesh_exposed_faces_from_snapshot(snapshot),
+            Self::Coarse(snapshot) => mesh_exposed_faces_from_snapshot(snapshot),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -104,7 +129,7 @@ fn worker_loop(
             },
             WorkerJob::Mesh(job) => WorkerResult::Mesh(Box::new(MeshResult {
                 stamp: job.stamp,
-                mesh: mesh_exposed_faces_from_snapshot(&job.snapshot),
+                mesh: job.snapshot.mesh(),
             })),
         };
         if results.send(result).is_err() {

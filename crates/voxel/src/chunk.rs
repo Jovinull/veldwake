@@ -27,9 +27,9 @@ impl VoxelId {
 /// A validated coordinate local to one dense grid of edge `EDGE`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GridCoord<const EDGE: usize> {
-    x: u8,
-    y: u8,
-    z: u8,
+    x: usize,
+    y: usize,
+    z: usize,
 }
 
 /// A validated coordinate local to one chunk.
@@ -47,26 +47,22 @@ impl<const EDGE: usize> GridCoord<EDGE> {
             });
         }
 
-        Ok(Self {
-            x: x as u8,
-            y: y as u8,
-            z: z as u8,
-        })
+        Ok(Self { x, y, z })
     }
 
     #[must_use]
     pub const fn x(self) -> usize {
-        self.x as usize
+        self.x
     }
 
     #[must_use]
     pub const fn y(self) -> usize {
-        self.y as usize
+        self.y
     }
 
     #[must_use]
     pub const fn z(self) -> usize {
-        self.z as usize
+        self.z
     }
 }
 
@@ -323,6 +319,25 @@ mod tests {
         assert_eq!(chunk.solid_count(), 1);
         assert_eq!(chunk.write(2, 3, 4, VoxelId::AIR)?, VoxelId(9));
         assert_eq!(chunk.solid_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn grid_coord_preserves_components_beyond_u8() -> Result<(), ChunkBoundsError> {
+        let coord = GridCoord::<300>::new(299, 0, 0)?;
+        assert_eq!((coord.x(), coord.y(), coord.z()), (299, 0, 0));
+        assert_eq!(linear_index(coord), 299);
+        let far = GridCoord::<300>::new(299, 299, 299)?;
+        assert_eq!(linear_index(far), 300 * 300 * 300 - 1);
+        assert_eq!(
+            GridCoord::<300>::new(300, 0, 0),
+            Err(ChunkBoundsError {
+                x: 300,
+                y: 0,
+                z: 0,
+                edge: 300
+            })
+        );
         Ok(())
     }
 
