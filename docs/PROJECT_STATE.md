@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M0 — Repository & Engineering Foundation.** The concept transcript has been preserved and transformed into navigable product, engineering, quality, and planning documentation. A minimal Rust workspace exists only to validate the toolchain and gates.
+**M1 — Rendering Foundation implementation is complete** on `feat/m1-rendering-foundation`, pending remote PR validation and merge into `main`. The repository now has a small, observable Windows/D3D12 diagnostic renderer; it remains a non-playable engineering proof.
 
 ## What works
 
@@ -12,10 +12,14 @@ Last updated: 2026-09-16
 - Repository constitution, ADR process, memory protocol, setup guide, and CI are defined.
 - Rust stable `1.98.1` with `rustfmt` and Clippy is available on the audited Windows host.
 - A dependency-free Rust 2024 foundation crate compiles and validates the workspace.
+- `veldwake-client` uses current `winit 0.30` lifecycle APIs and `wgpu 30` to render a code-generated colored cube with depth and a perspective camera.
+- Input and camera behavior are GPU-independent and covered by 12 headless tests; focus loss clears held input and presentation delta is bounded.
+- Startup diagnostics report the actual adapter/backend/surface configuration; lightweight presentation timing is reported every five seconds at `info`.
+- `cargo-deny` and `cargo-audit` are part of the dependency gates now that runtime dependencies exist.
 
 ## What does not exist yet
 
-No window, frame loop, renderer, input, camera, voxel data, world generation, gameplay, audio, networking, save format, mod runtime, or internal editor exists. The project is not playable.
+No voxel/chunk model, world generation, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The diagnostic client is not a game.
 
 ## Current decisions
 
@@ -36,16 +40,18 @@ From a shell where Cargo is on `PATH`:
 cargo build --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --no-tests=pass
+cargo nextest run --workspace
+cargo test --workspace --doc
+cargo deny check
+cargo audit
+cargo run -p veldwake-client
 ```
 
-The no-tests allowance is temporary for M0 and must be removed with the first behavioral test.
-
-There is no runnable game binary. See [`environment/SETUP.md`](environment/SETUP.md).
+The runnable binary is diagnostic presentation content only. See [`environment/SETUP.md`](environment/SETUP.md).
 
 ## Tools on the audited host
 
-Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM, Ninja, Python, Codex CLI, rustup, Cargo, rustc, rustfmt, Clippy, and cargo-nextest. See the environment report for versions and tools intentionally deferred.
+Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM, Ninja, Python, Codex CLI, rustup, Cargo, rustc, rustfmt, Clippy, cargo-nextest, cargo-deny, and cargo-audit. See the environment report for versions and tools intentionally deferred.
 
 ## Known problems and blocks
 
@@ -53,8 +59,8 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 - The working title lacks formal trademark/domain/store clearance.
 - Target hardware tiers and memory/frame budgets are not yet approved.
 - Visual style bible and accessibility baseline remain to be authored during the relevant milestones.
-- A repository remote was deliberately not created.
+- The public repository is `https://github.com/Jovinull/veldwake`; changing visibility, remotes, releases, or other publication policy requires owner authorization.
 
 ## Next milestone
 
-**M1 — Rendering Foundation:** create a minimal window/GPU/frame/input/camera slice with observability, backend reporting, clean shutdown, and tests for GPU-independent boundaries. Do not include voxel world generation in M1.
+**M2 — Voxel Prototype:** define the smallest deterministic voxel/chunk fixture and baseline meshing path on top of the presentation boundary, with correctness tests and measurements. Do not introduce streaming or world generation yet.

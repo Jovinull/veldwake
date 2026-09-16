@@ -26,6 +26,11 @@ jobs:
       - name: Install cargo-nextest
         run: cargo install --locked cargo-nextest --version 0.9.144
 
+      - name: Install dependency policy tools
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -36,5 +41,13 @@ jobs:
         run: cargo build --workspace --all-features
 
       - name: Run tests
-        # M0 has no behavioral code. Remove --no-tests=pass with the first real test.
-        run: cargo nextest run --workspace --no-tests=pass
+        run: cargo nextest run --workspace
+
+      - name: Run documentation tests
+        run: cargo test --workspace --doc
+
+      - name: Check dependency policy
+        run: cargo deny check
+
+      - name: Audit RustSec advisories
+        run: cargo audit

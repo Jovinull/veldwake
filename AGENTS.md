@@ -51,13 +51,11 @@ Run the applicable gates:
 ```text
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --no-tests=pass
+cargo nextest run --workspace
 ```
-
-The `--no-tests=pass` exception exists only while M0 contains no behavioral code. Remove it from all local/CI instructions as soon as the first real test is added; an empty test suite must then fail.
 
 If a tool is unavailable, report `BLOCKED` or `NOT YET APPLICABLE`; never claim `PASS`. See `docs/quality/DEFINITION_OF_DONE.md`.
 
 ## Scope guardrails
 
-Veldwake is a working title. Do not publish, create a remote, choose a project license, or claim trademark clearance without owner approval. Do not introduce Unity, Unreal, Godot, Bevy, or an equivalent central game engine without a superseding ADR. Keep the dependency surface small and the repository free of routine manually authored art/audio requirements.
+Veldwake is a working title. Do not change repository visibility, replace/configure remotes, publish releases, choose a project license, or claim trademark clearance without owner approval. Do not introduce Unity, Unreal, Godot, Bevy, or an equivalent central game engine without a superseding ADR. Keep the dependency surface small and the repository free of routine manually authored art/audio requirements.

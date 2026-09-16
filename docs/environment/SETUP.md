@@ -24,24 +24,42 @@ rustup show
 Install nextest if missing:
 
 ```text
-cargo install --locked cargo-nextest
+cargo install --locked cargo-nextest --version 0.9.144
 ```
 
-Record the actual installed version and warnings when changing build tools.
+CI and local setup intentionally use `cargo-nextest 0.9.144`, the current stable crates.io release verified on 2026-09-16. Record the actual installed version and warnings when changing build tools; update CI and this command together.
+
+Install the dependency-policy tools at the same intentional versions as CI:
+
+```text
+cargo install --locked cargo-deny --version 0.20.2
+cargo install --locked cargo-audit --version 0.22.2
+```
 
 ## Validate
 
 ```text
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo build --workspace
-cargo nextest run --workspace --no-tests=pass
+cargo build --workspace --all-features
+cargo nextest run --workspace
+cargo test --workspace --doc
+cargo metadata --format-version 1 --no-deps
+cargo deny check
+cargo audit
 ```
 
-M0 deliberately has no artificial tests. Remove the no-tests allowance as soon as the first behavioral test lands.
+M1 contains meaningful headless tests, so an empty nextest suite is a failure.
 
-There is no application to run in M0. If a command is not available, report it as BLOCKED rather than substituting an unrecorded tool.
+Run the Windows diagnostic renderer with:
+
+```powershell
+$env:RUST_LOG = "info"
+cargo run -p veldwake-client
+```
+
+If a command or graphical desktop is not available, report it as BLOCKED rather than substituting an unrecorded tool.
 
 ## Optional tools
 
-Do not preinstall the entire future tool list. Add `cargo-deny`, `cargo-audit`, coverage, benchmarks, profiling, fuzzing, CMake, or shader utilities only when the relevant configuration or subsystem exists. Prefer official releases and `cargo install --locked`; preserve provenance and warnings in the environment report.
+Do not preinstall the entire future tool list. Add coverage, benchmarks, profiling, fuzzing, CMake, or shader utilities only when the relevant configuration or subsystem exists. Prefer official releases and `cargo install --locked`; preserve provenance and warnings in the environment report.

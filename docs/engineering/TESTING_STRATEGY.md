@@ -21,6 +21,8 @@ A failing test is evidence. Do not delete it, reduce its assertion, increase tol
 
 Planned fixtures include forest, character, sword, creature, and village seeds. Store canonical configuration alongside the baseline: generator/style/renderer versions, camera, light, viewport, quality, and allowed variance. Cross-vendor GPU differences may require backend-specific policy; do not claim pixel identity prematurely.
 
-## Current M0 applicability
+## Current M1 applicability
 
-The workspace is dependency-free and has no game behavior. Format, lint, build, and zero-test execution validate only the foundation. Coverage, property tests, fuzzing, visual regression, and benchmarks are **NOT YET APPLICABLE**, not “passing.”
+Twelve GPU-independent unit tests cover camera movement and finite projection, diagonal normalization, bounded delta, pitch/aspect guards, input transitions and focus reset, platform-key translation, and deterministic surface-option selection. CI uses plain `cargo nextest run --workspace`; an accidentally empty suite is a failure.
+
+GPU/window behavior remains a separate Windows host smoke test because CI must not require a graphical adapter. Coverage, property tests, fuzzing, automated visual regression, and performance benchmarks remain **NOT YET APPLICABLE**, not “passing.”

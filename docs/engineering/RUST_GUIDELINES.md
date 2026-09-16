@@ -44,7 +44,9 @@ Document hot paths and budgets. Avoid per-frame allocations, global locks, block
 ```text
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --no-tests=pass
+cargo nextest run --workspace
+cargo deny check
+cargo audit
 ```
 
-The no-tests allowance is temporary for the code-free M0 foundation and must disappear with the first behavioral test. Coverage, deny/audit, fuzzing, and benchmarks are added as their configurations become meaningful.
+An empty nextest suite is a failure. Dependency policy and RustSec audit gates are active now that runtime dependencies exist. Coverage, fuzzing, and benchmarks are added when their evidence becomes meaningful.

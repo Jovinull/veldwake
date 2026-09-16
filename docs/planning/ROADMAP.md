@@ -6,11 +6,13 @@ Milestones are evidence gates, not dates. Each milestone must leave a small work
 
 ## M0 — Repository & Engineering Foundation
 
-Source preservation, environment audit, Git/workspace/toolchain, governance, memory, ADRs, quality gates, CI, and structured vision. **Current milestone; complete when bootstrap validation is recorded.**
+Source preservation, environment audit, Git/workspace/toolchain, governance, memory, ADRs, quality gates, CI, and structured vision. **Complete.**
 
 ## M1 — Rendering Foundation
 
 Window, adapter/device/surface, D3D12-first backend reporting, resize/lifecycle, frame loop, input, simple camera, clear diagnostic output, clean shutdown, and GPU-independent boundary tests. No voxel world.
+
+**Implementation complete on `feat/m1-rendering-foundation`; pending PR validation and merge:** see [`M1_RENDERING_FOUNDATION.md`](M1_RENDERING_FOUNDATION.md) for implementation and host validation evidence.
 
 ## M2 — Voxel Prototype
 

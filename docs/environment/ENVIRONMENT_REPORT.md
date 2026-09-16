@@ -9,7 +9,6 @@ Method: non-destructive PowerShell/CIM, registry, `dxdiag`, `vulkaninfo`, versio
 |---|---|
 | OS | Microsoft Windows 11 Home Single Language, 64-bit, version 10.0.26200, build 26200 |
 | Architecture | x86-64 |
-| Hostname | `JOVINULL` (recorded locally; no security-sensitive domain data observed) |
 | Shell | Windows PowerShell 5.1.26100.9444 |
 | CPU | Intel Core i5-1335U, 10 physical cores / 12 logical processors |
 | RAM | 16,384 MB installed; CIM reported 15.68 GiB physical |
@@ -36,7 +35,7 @@ Integrated shared memory and thermally constrained mobile CPU/GPU behavior make 
 |---|---|
 | Git | 2.55.0.windows.3 |
 | Git LFS | 3.7.1; present, not configured for this repository |
-| GitHub CLI | 2.96.0; authenticated to `github.com` as `Jovinull` over HTTPS; no remote created |
+| GitHub CLI | 2.96.0; at bootstrap audit time it was authenticated to `github.com` and no repository remote yet existed |
 | Codex CLI | 0.154.0 |
 | rustup | installed during bootstrap; stable x86_64-pc-windows-msvc default |
 | rustc | 1.98.1 (`48a229cea`, 2026-09-01), LLVM 22.1.8 |
@@ -44,6 +43,8 @@ Integrated shared memory and thermally constrained mobile CPU/GPU behavior make 
 | rustfmt | 1.9.0-stable |
 | Clippy | 0.1.98 |
 | cargo-nextest | 0.9.144, installed with `cargo install --locked`; installer emitted warnings for two yanked transitive lockfile packages—see note below |
+| cargo-deny | 0.20.2, installed with `cargo install --locked` for M1 dependency license/source/advisory/duplicate checks |
+| cargo-audit | 0.22.2, installed with `cargo install --locked` for an independent RustSec audit |
 | Visual Studio Build Tools | 2022 17.14.39; complete/launchable; VC x86/x64 component present |
 | MSVC toolset | 14.44.35207; `link.exe` present |
 | Windows SDK | 10.0.26100.0 |
@@ -62,7 +63,6 @@ The locked `cargo-nextest 0.9.144` installation warned that its upstream lockfil
 
 - Vulkan SDK: no current need; Vulkan runtime already comes from the driver.
 - CMake: no current dependency requires it.
-- `cargo-deny` / `cargo-audit`: configure when the game workspace has third-party dependencies so policies produce meaningful results.
 - `cargo-llvm-cov` / `llvm-tools-preview`: configure when behavior tests can yield meaningful coverage.
 - `cargo-bloat`, `sccache`, Tracy: defer until binary size/build latency/profiling justify them.
 - `cargo-fuzz`: Windows/native workflow limitations and absence of parsers make it premature; reassess with a supported target/CI strategy.
@@ -72,4 +72,4 @@ The locked `cargo-nextest 0.9.144` installation warned that its upstream lockfil
 
 The `winget` Rustup package had no applicable installer and made no change. Rustup was then downloaded from `https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe` and installed non-interactively with profile `default`, stable MSVC host, and `--no-modify-path`. Downloaded installer SHA-256: `6F4BEF66261261FCB43131BE8720BAB817D403A09EDEC7455C371974B90BDB7E`.
 
-No administrator bypass, reboot, Vulkan SDK, remote repository, LFS tracking, or unrelated software was introduced.
+No administrator bypass, reboot, Vulkan SDK, LFS tracking, or unrelated software was introduced. At bootstrap audit time no repository remote existed; that is historical audit context, not the current repository state.
