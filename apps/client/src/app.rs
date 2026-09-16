@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use veldwake_streaming::StreamingConfig;
 use winit::{
     application::ApplicationHandler,
@@ -95,7 +95,8 @@ impl App {
         self.camera
             .set_aspect_from_size(initial_size.width, initial_size.height);
 
-        let config = StreamingConfig::default();
+        let profile = StreamingProfile::from_environment();
+        let config = profile.config();
         let budget = UploadBudget::default();
         let streaming = StreamingBridge::new(config, budget, self.camera.position())
             .map_err(|error| AppRunError(error.to_string()))?;
@@ -107,6 +108,8 @@ impl App {
         .map_err(|error| AppRunError(error.to_string()))?;
 
         info!(
+            profile = profile.name(),
+            lod_selection = ?config.lod_selection,
             camera_chunk = ?streaming.desired_center(),
             render_radius = config.render_radius,
             dependency_halo = config.dependency_halo,
@@ -180,9 +183,13 @@ impl App {
             }
         };
         renderer.update_camera(&self.camera);
-        let request_next_redraw = match renderer.render() {
+        let submit_started = Instant::now();
+        let outcome = renderer.render();
+        let submit_time = submit_started.elapsed();
+        let request_next_redraw = match outcome {
             RenderOutcome::Rendered => {
-                self.frame_stats.record(now, elapsed, report);
+                self.frame_stats
+                    .record(now, elapsed, submit_time, report, streaming);
                 self.frame_stats.report_if_due(now, streaming, renderer);
                 true
             }
@@ -305,10 +312,66 @@ fn camera_action(key: KeyCode) -> Option<CameraAction> {
     }
 }
 
+/// Which streaming configuration the diagnostic client runs. Selected by the
+/// `VELDWAKE_PROFILE` environment variable so no CLI dependency is needed:
+/// `default` (M3B), `m3c-baseline` (radius 3, `Lod0` only), `m3c-banded`
+/// (radius 3, `Lod0`/`Lod1` band).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamingProfile {
+    Default,
+    M3cBaseline,
+    M3cBanded,
+}
+
+impl StreamingProfile {
+    fn from_environment() -> Self {
+        match std::env::var("VELDWAKE_PROFILE") {
+            Ok(value) => match Self::parse(&value) {
+                Some(profile) => profile,
+                None => {
+                    warn!(%value, "unknown VELDWAKE_PROFILE; using default");
+                    Self::Default
+                }
+            },
+            Err(_) => Self::Default,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "default" | "m3b" => Some(Self::Default),
+            "m3c-baseline" | "baseline" => Some(Self::M3cBaseline),
+            "m3c-banded" | "banded" | "lod" => Some(Self::M3cBanded),
+            _ => None,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::M3cBaseline => "m3c-baseline",
+            Self::M3cBanded => "m3c-banded",
+        }
+    }
+
+    const fn config(self) -> StreamingConfig {
+        match self {
+            Self::Default => StreamingConfig::default_profile(),
+            Self::M3cBaseline => StreamingConfig::m3c_baseline(),
+            Self::M3cBanded => StreamingConfig::m3c_diagnostic(),
+        }
+    }
+}
+
 struct FrameStats {
     report_started: Instant,
+    started: Instant,
     frames: u64,
     accumulated_frame_time: Duration,
+    submit_total: Duration,
+    submit_max: Duration,
+    /// First time the runtime reported idle with every render chunk decided.
+    idle_reached: Option<Duration>,
     uploads: u64,
     upload_bytes: u64,
     deactivations: u64,
@@ -321,8 +384,12 @@ impl FrameStats {
     fn new() -> Self {
         Self {
             report_started: Instant::now(),
+            started: Instant::now(),
             frames: 0,
             accumulated_frame_time: Duration::ZERO,
+            submit_total: Duration::ZERO,
+            submit_max: Duration::ZERO,
+            idle_reached: None,
             uploads: 0,
             upload_bytes: 0,
             deactivations: 0,
@@ -332,9 +399,32 @@ impl FrameStats {
         }
     }
 
-    fn record(&mut self, _now: Instant, frame_time: Duration, report: FrameStreamingReport) {
+    fn record(
+        &mut self,
+        now: Instant,
+        frame_time: Duration,
+        submit_time: Duration,
+        report: FrameStreamingReport,
+        streaming: &StreamingBridge,
+    ) {
         self.frames += 1;
         self.accumulated_frame_time += frame_time;
+        self.submit_total += submit_time;
+        self.submit_max = self.submit_max.max(submit_time);
+        if self.idle_reached.is_none()
+            && streaming.runtime().is_idle()
+            && streaming.pending_removal_count() == 0
+            && report.uploads == 0
+        {
+            let elapsed = now.saturating_duration_since(self.started);
+            self.idle_reached = Some(elapsed);
+            let gpu_active = streaming.presented_count();
+            info!(
+                time_to_idle_ms = elapsed.as_secs_f64() * 1000.0,
+                presented = gpu_active,
+                "M3C streaming reached idle coverage"
+            );
+        }
         self.uploads += report.uploads as u64;
         self.upload_bytes += report.upload_bytes as u64;
         self.deactivations += report.deactivations as u64;
@@ -382,8 +472,21 @@ impl FrameStats {
             queued_meshes = summary.queued_meshes,
             jobs_in_flight = summary.jobs_in_flight,
             presented = streaming.presented_count(),
-            gpu_resident = gpu.resident,
-            gpu_active = gpu.active,
+            gpu_resident = gpu.resident(),
+            gpu_active = gpu.active(),
+            gpu_quads = gpu.quads(),
+            lod0_desired = summary.lod0_desired,
+            lod1_desired = summary.lod1_desired,
+            lod0_ready = summary.lod0_ready,
+            lod1_ready = summary.lod1_ready,
+            lod0_gpu_resident = gpu.lod0.resident,
+            lod0_gpu_active = gpu.lod0.active,
+            lod0_gpu_quads = gpu.lod0.quads,
+            lod0_gpu_bytes = gpu.lod0.bytes,
+            lod1_gpu_resident = gpu.lod1.resident,
+            lod1_gpu_active = gpu.lod1.active,
+            lod1_gpu_quads = gpu.lod1.quads,
+            lod1_gpu_bytes = gpu.lod1.bytes,
             pending_gpu_removal = streaming.pending_removal_count(),
             "M3B streaming state"
         );
@@ -411,12 +514,31 @@ impl FrameStats {
             snapshot_bytes_dispatched = metrics.snapshot_bytes_dispatched,
             resident_payload_bytes = summary.resident_payload_bytes,
             cpu_mesh_bytes = summary.cpu_mesh_bytes,
-            gpu_bytes = gpu.bytes,
+            gpu_bytes = gpu.bytes(),
+            total_uploads_lod0 = totals.uploads_lod0,
+            total_uploads_lod1 = totals.uploads_lod1,
+            total_upload_bytes_lod0 = totals.upload_bytes_lod0,
+            total_upload_bytes_lod1 = totals.upload_bytes_lod1,
+            lod_swaps = metrics.lod_swaps,
+            stale_lod = metrics.stale_lod_results,
+            snapshot_build_total_us = metrics.snapshot_build.total_us,
+            snapshot_build_max_us = metrics.snapshot_build.max_us,
+            lod1_derivation_total_us = metrics.lod1_derivation.total_us,
+            lod1_derivation_max_us = metrics.lod1_derivation.max_us,
+            worker_mesh_lod0_total_us = metrics.worker_mesh_lod0.total_us,
+            worker_mesh_lod0_max_us = metrics.worker_mesh_lod0.max_us,
+            worker_mesh_lod1_total_us = metrics.worker_mesh_lod1.total_us,
+            worker_mesh_lod1_max_us = metrics.worker_mesh_lod1.max_us,
+            interval_submit_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
+            interval_submit_max_us = self.submit_max.as_micros(),
+            time_to_idle_ms = self.idle_reached.map(|d| d.as_secs_f64() * 1000.0),
             "M3B streaming work and budgets"
         );
         self.report_started = now;
         self.frames = 0;
         self.accumulated_frame_time = Duration::ZERO;
+        self.submit_total = Duration::ZERO;
+        self.submit_max = Duration::ZERO;
         self.uploads = 0;
         self.upload_bytes = 0;
         self.deactivations = 0;
@@ -431,6 +553,38 @@ mod tests {
     use super::camera_action;
     use crate::input::CameraAction;
     use winit::keyboard::KeyCode;
+
+    #[test]
+    fn streaming_profile_parses_documented_names_only() {
+        use super::StreamingProfile;
+        use veldwake_streaming::StreamingConfig;
+        assert_eq!(
+            StreamingProfile::parse("default"),
+            Some(StreamingProfile::Default)
+        );
+        assert_eq!(StreamingProfile::parse(""), Some(StreamingProfile::Default));
+        assert_eq!(
+            StreamingProfile::parse(" M3C-Baseline "),
+            Some(StreamingProfile::M3cBaseline)
+        );
+        assert_eq!(
+            StreamingProfile::parse("banded"),
+            Some(StreamingProfile::M3cBanded)
+        );
+        assert_eq!(StreamingProfile::parse("m3d"), None);
+        assert_eq!(
+            StreamingProfile::Default.config(),
+            StreamingConfig::default()
+        );
+        assert_eq!(
+            StreamingProfile::M3cBaseline.config(),
+            StreamingConfig::m3c_baseline()
+        );
+        assert_eq!(
+            StreamingProfile::M3cBanded.config(),
+            StreamingConfig::m3c_diagnostic()
+        );
+    }
 
     #[test]
     fn platform_keys_translate_to_camera_actions() {

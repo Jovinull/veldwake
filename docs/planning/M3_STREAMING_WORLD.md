@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A and M3B complete and merged; M3C0 (edge-generic grid and mesher) and M3C1 (headless LOD core) implemented on the feature branch; renderer, debug views, and benchmarks are planned, not implemented**
+Status: **M3A and M3B complete and merged; M3C0, M3C1, and M3C2 (GPU presentation of both levels plus the baseline-versus-LOD measurement) implemented on the feature branch; LOD is implemented but not the default; debug views are planned, not implemented**
 Planning branch: `feat/m3c-lod-debug`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -408,7 +408,7 @@ Normal logs report transitions in aggregates, not one line per chunk per frame. 
 
 ## Milestone: M3C — Initial LOD + Streaming Debug Visualization
 
-Status: **M3C0 and M3C1 implemented headlessly; renderer scaling, F1/F2 debug views, and the `Lod0`-versus-`Lod1` benchmark remain planned**.
+Status: **M3C0–M3C2 implemented; the measured decision keeps `Lod0Only` as the default profile; F1/F2 debug views remain planned**.
 Planning branch: `feat/m3c-lod-debug`
 
 M3C answers one question with evidence: does a second, coarser level of chunk detail buy visible distance for less CPU/GPU/upload cost than simply widening the full-resolution render radius? It must do so without drawing a knowingly incorrect seam, without ever treating an unloaded chunk as AIR, and while keeping every M3B contract (tokens, generations, stamps, budgets, negative coordinates) intact. It also adds the debug visualization needed to see what the streaming runtime is doing.
@@ -496,7 +496,7 @@ The performance baseline is `Lod0` only to the same visible distance (`render_ra
 - `ResidencySummary` reports `lod0_desired`, `lod1_desired`, `lod0_ready`, `lod1_ready`; `RuntimeMetrics` reports `lod_swaps` and `stale_lod_results`.
 - Scheduler (hardening): the mesh heap sorts by level rank before distance, and a pure `choose_dispatch(mesh_level, load_ready, consecutive)` encodes the contract — a ready `Lod0` mesh first, then a ready load, then a ready `Lod1` mesh; after four consecutive meshes a ready load goes first (`fairness_load_dispatches` counts only a preempted `Lod0` mesh, since a load beating `Lod1` is the contract, not fairness). No scheduler framework exists.
 - `stale_lod_results` (hardening) counts a stale result when the center's level changed **or** when any neighbor's presentation (`ContentOnly`/`Rendered(level)`) differs from the stamp for a neighbor that is still resident. Limitation: a neighbor that is no longer resident cannot be compared, so such a result counts only as `stale_mesh_results`.
-- Timings (hardening): `TimingStat { count, total_us, max_us }` with `mean_us()` for `snapshot_build` (orchestration, any level), `lod1_derivation` (center `downsample_2x` plus coarse/occupancy/coverage slab derivation, inside snapshot building), `worker_mesh_lod0`, and `worker_mesh_lod1` (measured in the worker per job and carried in the result). No per-job logging; `streaming-probe` prints them per profile.
+- Timings (hardening): `TimingStat { count, total_us, max_us }` with `mean_us()` for `snapshot_build` (orchestration, any level), `lod1_derivation` (center `downsample_2x` plus coarse/occupancy/coverage slab derivation — a **subset** of `snapshot_build`, never added to it), `worker_mesh_lod0`, and `worker_mesh_lod1` (measured in the worker per job and carried in the result). Maxima are recorded separately: about 205 µs for a derivation and about 289 µs for a whole snapshot build in the probe run. No per-job logging; `streaming-probe` prints them per profile.
 
 Mixed-resolution seam evidence (voxel crate): `FaceSlab::<16>::downsampled_from` equals `from_neighbor` on the full downsample for every face; `coarse_occupancy_of` expands the same blocks to 32×32. Both, and `Chunk::downsample_2x`, use one shared `CoarseTally` (any-solid occupancy, majority material, lowest-ID tie), so the coarsening rule has a single implementation. A seam oracle checks all six directions × four occupancy cases with different IDs, plus the negative-coordinate fixture pair `(-1, 0, 0)`/`(0, 0, 0)` where the fine `Lod0` seam between the same chunks is byte-identical to M3A. No location receives faces from both sides; no visible air lacks a face.
 
@@ -508,7 +508,41 @@ Where the `Lod1` cost is (same probe run, release): `snapshot_build` mean 71–7
 
 Runtime tests added: `Lod0Only` never selects `Lod1`; banded startup counts (27/316) and per-coordinate levels; approach 3→2→1 promotes only at `d <= 1`; retreat 1→2→3 keeps `Lod0` through the band; repeated 1↔2 oscillation swaps nothing after the first cycle; teleport assigns by distance only; eviction/re-entry forgets history and issues a new token; an old-level result is rejected with `stale_lod_results` while token and content generation survive; a neighbor's level change rewrites the seam stamp and dirties the center; dependency-only neighbors are `ContentOnly`; the M3C profile reaches idle with meshes at both levels under the cap.
 
-Not yet done (M3C2+): `Lod1` meshes are in 16-cell units and the client does not scale them, so the default profile stays `Lod0Only` until the renderer applies the level's scale; debug views; the `Lod0`-only radius-3 baseline versus banded benchmark.
+### M3C2 — GPU presentation of both levels and the baseline-versus-LOD measurement (implemented)
+
+- Cleanup: `CoarseTally` is `pub(crate)` in the voxel crate and no longer re-exported; the seam derivations reach it through `crate::chunk::CoarseTally`.
+- Presentation contract: `ChunkPresentation::upsert_chunk(coord, lod, mesh)` carries the level and nothing else from streaming; the renderer still never sees tokens, generations, or the full stamp. The test double records every `(coord, level)` it receives.
+- Model transform: `ModelUniform` is two `vec4` (32 bytes, WGSL-aligned): `translation = ChunkCoord * 32` for both levels, never scaled, and `scale.x = 1` (`Lod0`) or `2` (`Lod1`). The vertex shader computes `world = translation + local_position * scale.x`. `gpu_payload_bytes` counts the 32-byte uniform. A test places positive and negative chunks at both levels and proves both span exactly the same `32³` world volume from the same origin.
+- GPU residency: `GpuChunkMesh` records its level and quads; `GpuResidency { lod0, lod1 }` holds `LevelResidency { resident, active, bytes, quads }` per level with total accessors. The bridge keeps per-level upload counts and bytes. Deactivate-before-upload, budgeted removal, re-entry, empty meshes, and no re-upload of an identical stamp are unchanged and re-tested with both levels.
+- Profiles: `StreamingConfig::m3c_baseline()` is radius 3 / halo 1 / retention 4 / cap 810 / `Lod0Only`; `m3c_diagnostic()` is the same with `Banded`. `StreamingConfig::default()` is untouched (M3B). The client selects a profile from the `VELDWAKE_PROFILE` environment variable (`default`, `m3c-baseline`, `m3c-banded`) with no CLI dependency; unknown values log a warning and use the default. The five-second reports gained per-level desired/ready/GPU counts, quads, bytes, per-level upload totals, swaps, stale-LOD, the four timing totals/maxima, render-submit mean/max per interval, and a one-time `time_to_idle_ms`.
+
+Benchmark (2026-09-16, release client, Intel Iris Xe / D3D12, `Fifo` vsync, no debug views; identical driven path for both profiles: 12 s settle, pitch down, D 8+8 s, A 16+12 s, W 10 s, S 16 s, D 12 s re-entry, rest; both runs performed 378 CPU evictions and 3,2xx loads, confirming the same traversal):
+
+| Metric | `m3c-baseline` (`Lod0Only`) | `m3c-banded` (`Lod0`/`Lod1`) | Change |
+|---|---:|---:|---:|
+| presented chunks (peak) | 147 | 147 | 0% |
+| GPU-active chunks (peak) | 49 (`Lod0` 49) | 49 (`Lod0` 15, `Lod1` 40 at different peaks) | 0% |
+| GPU quads (peak) | 100,836 | 43,374 | −57.0% |
+| GPU bytes (peak) | 12,101,888 | 5,206,128 | −57.0% |
+| CPU mesh bytes (peak) | 13,713,696 | 5,898,864 | −57.0% |
+| uploads (total) | 158 | 494 (`Lod0` 199, `Lod1` 295) | +212.7% |
+| upload bytes (total) | 39,053,296 | 67,864,768 | **+73.8%** |
+| mesh jobs (total) | 473 | 1,262 | +166.8% |
+| `lod_swaps` / `stale_lod` | 0 / 0 | 618 / 2 | — |
+| snapshot build total | 81,475 µs (max 1,550) | 163,096 µs (max 713) | +100.2% |
+| `Lod1` derivation total | 0 | 128,158 µs (max 705) | — |
+| worker mesh total | 192,594 µs (`Lod0`, max 3,400) | 223,487 µs (`Lod0` 155,798, `Lod1` 67,689) | +16.0% |
+| CPU mesh time on the path (worker + snapshot build) | 274,069 µs | 386,583 µs | **+41.1%** |
+| time to idle coverage from start | 13.49 s | 13.21 s | −2% (load-bound, single worker) |
+| observed FPS / avg frame | 60.0 / 16.67 ms | 60.0 / 16.67 ms | vsync-bound |
+| render-submit mean / max | ≈14.2–15.1 ms / 37.6 ms | ≈14.7–15.8 ms / 55.0 ms | inconclusive at vsync |
+| GPU validation errors | 0 | 0 | — |
+
+Decision by the recorded rule (GPU bytes −50%, upload bytes −50%, CPU mesh time not worse, at the same visible distance): **GPU bytes pass (−57%); upload bytes fail (+74%); CPU mesh time fails (+41%).** LOD stays implemented behind `VELDWAKE_PROFILE=m3c-banded`; the client default remains `StreamingConfig::default()` and the radius-3 comparison profile remains `m3c-baseline`. The cause is visible in the counters: every band crossing re-meshes and re-uploads the swapped chunks and their dirtied neighbors (618 swaps, 1,262 mesh jobs against 473), so a moving camera pays the transition cost far more often than it saves resident bytes. The 57% resident-byte saving is real and will matter for a larger visible radius or a static camera; the swap churn is the problem to solve before LOD can be default (candidates, not decisions: a wider band, swap coalescing per crossing, or level-aware upload budgets), and each must be re-measured on this same path.
+
+Driven smoke of the banded profile on the same run (screenshots at every leg plus resize, minimize/restore, focus loss with a key held, Escape → exit code 0): `Lod1` chunks render at the same world footprint as `Lod0` (checkerboard tiles keep their 8-voxel size at every distance; no half-size chunks), the near/far transition shows no seam line, positive and negative chunks behave alike, re-entry rebuilds the scene, two captures three seconds apart at rest are identical (no persistent hole; the transient gaps seen mid-traversal are the KI-009 blink, now also triggered by level swaps), and no GPU validation error was logged. One capture was contaminated by the Windows Start menu opening over the window; the game kept receiving input (the traversal counters match the baseline) and the capture is excluded from the evidence.
+
+Not yet done (M3C3): keyboard-toggled debug views.
 
 ### Jobs, stamps, residency, and stale rejection (plan, now implemented as above)
 
@@ -596,7 +630,7 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 
 - The occupancy-conservative downsample visibly thickens thin features at the ring; acceptable for a diagnostic, but a real terrain will need a material-aware rule and this must be recorded as debt, not hidden.
 - Retention at radius 4 (729 chunks) and a cap of 810 multiply resident memory and eviction churn; the eviction budget needs new evidence, not a silent bump.
-- Blink on LOD swap is more frequent than on neighbor arrival; if measured gaps are long, the fix is scheduling, never drawing a stale mesh.
+- Blink on LOD swap is more frequent than on neighbor arrival; if measured gaps are long, the fix is scheduling, never drawing a stale mesh. Measured in M3C2: 618 swaps and 1,262 mesh jobs on the benchmark path, which is why LOD is not default.
 - The seam rule is proven only for axial neighbors at a 2× ratio; a third level or diagonal dependence would need a new proof.
 - Debug boxes add up to one draw per tracked coordinate; keep the mode off by default and count the draws.
 - M3C0 kept the 32-edge topology byte-identical; the remaining risk is that later LOD work re-introduces edge-specific assumptions instead of using `EDGE`.

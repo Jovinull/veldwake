@@ -1,6 +1,6 @@
 use std::{fmt, mem::size_of_val};
 
-use crate::{CHUNK_EDGE, COARSE_EDGE, Chunk, CoarseTally, DenseGrid, GridCoord, VoxelId};
+use crate::{CHUNK_EDGE, COARSE_EDGE, Chunk, DenseGrid, GridCoord, VoxelId, chunk::CoarseTally};
 
 /// The six outward faces in right-handed, Y-up local chunk space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

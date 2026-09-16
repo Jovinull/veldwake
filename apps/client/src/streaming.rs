@@ -14,7 +14,7 @@ use std::{
 
 use glam::Vec3;
 use tracing::warn;
-use veldwake_streaming::{MeshStamp, RuntimeError, StreamingConfig, StreamingRuntime};
+use veldwake_streaming::{LodLevel, MeshStamp, RuntimeError, StreamingConfig, StreamingRuntime};
 use veldwake_voxel::{ChunkCoord, Mesh, WorldCoordinateRangeError, WorldVoxelCoord};
 
 const MEBIBYTE: usize = 1_024 * 1_024;
@@ -103,15 +103,46 @@ impl Display for ChunkUploadError {
 
 impl Error for ChunkUploadError {}
 
-/// Presentation-side chunk residency, as observed by the bridge.
+/// GPU residency of one presentation level.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct GpuResidency {
+pub struct LevelResidency {
     /// Chunks holding GPU buffers, drawable or not.
     pub resident: usize,
     /// Chunks in the current draw set.
     pub active: usize,
     /// Exact bytes of vertex, index, and model data held on the GPU.
     pub bytes: usize,
+    /// Quads held, drawable or not.
+    pub quads: usize,
+}
+
+/// Presentation-side chunk residency per level, as observed by the bridge.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GpuResidency {
+    pub lod0: LevelResidency,
+    pub lod1: LevelResidency,
+}
+
+impl GpuResidency {
+    #[must_use]
+    pub const fn resident(&self) -> usize {
+        self.lod0.resident + self.lod1.resident
+    }
+
+    #[must_use]
+    pub const fn active(&self) -> usize {
+        self.lod0.active + self.lod1.active
+    }
+
+    #[must_use]
+    pub const fn bytes(&self) -> usize {
+        self.lod0.bytes + self.lod1.bytes
+    }
+
+    #[must_use]
+    pub const fn quads(&self) -> usize {
+        self.lod0.quads + self.lod1.quads
+    }
 }
 
 /// Minimal GPU-side operations the streaming bridge needs.
@@ -122,9 +153,16 @@ pub trait ChunkPresentation {
     /// Exact GPU bytes `mesh` would occupy, computed before any upload.
     fn gpu_payload_bytes(&self, mesh: &Mesh) -> usize;
 
-    /// Uploads or replaces `coord` and makes it drawable. An empty mesh releases
-    /// any previous buffers and returns `Ok(0)`.
-    fn upsert_chunk(&mut self, coord: ChunkCoord, mesh: &Mesh) -> Result<usize, ChunkUploadError>;
+    /// Uploads or replaces `coord` at presentation level `lod` and makes it
+    /// drawable. The level is the only streaming fact the presentation learns;
+    /// it never sees tokens, generations, or the full stamp. An empty mesh
+    /// releases any previous buffers and returns `Ok(0)`.
+    fn upsert_chunk(
+        &mut self,
+        coord: ChunkCoord,
+        lod: LodLevel,
+        mesh: &Mesh,
+    ) -> Result<usize, ChunkUploadError>;
 
     /// Removes `coord` from the draw set immediately while keeping its buffers.
     fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool;
@@ -197,6 +235,10 @@ pub struct BridgeTotals {
     pub anchor_rejections: u64,
     pub uploads: u64,
     pub upload_bytes: u64,
+    pub uploads_lod0: u64,
+    pub uploads_lod1: u64,
+    pub upload_bytes_lod0: u64,
+    pub upload_bytes_lod1: u64,
     pub empty_meshes_presented: u64,
     pub oversized_uploads: u64,
     pub upload_budget_deferrals: u64,
@@ -347,7 +389,7 @@ impl StreamingBridge {
         for (_, coord, stamp, mesh) in candidates {
             if mesh.indices().is_empty() {
                 // Nothing reaches the GPU; presenting it only clears stale buffers.
-                match presentation.upsert_chunk(coord, mesh) {
+                match presentation.upsert_chunk(coord, stamp.lod, mesh) {
                     Ok(_) => {
                         self.totals.empty_meshes_presented += 1;
                         presented_now.push((coord, stamp));
@@ -369,10 +411,20 @@ impl StreamingBridge {
                 UploadAdmission::AdmitOversized => self.totals.oversized_uploads += 1,
                 UploadAdmission::Admit => {}
             }
-            match presentation.upsert_chunk(coord, mesh) {
+            match presentation.upsert_chunk(coord, stamp.lod, mesh) {
                 Ok(uploaded) => {
                     uploads += 1;
                     bytes_done += uploaded;
+                    match stamp.lod {
+                        LodLevel::Lod0 => {
+                            self.totals.uploads_lod0 += 1;
+                            self.totals.upload_bytes_lod0 += uploaded as u64;
+                        }
+                        LodLevel::Lod1 => {
+                            self.totals.uploads_lod1 += 1;
+                            self.totals.upload_bytes_lod1 += uploaded as u64;
+                        }
+                    }
                     presented_now.push((coord, stamp));
                 }
                 Err(error) => {
@@ -468,7 +520,7 @@ mod tests {
     use std::{collections::BTreeMap, thread, time::Duration};
 
     use glam::Vec3;
-    use veldwake_streaming::StreamingConfig;
+    use veldwake_streaming::{LodLevel, StreamingConfig};
     use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, WorldVoxelCoord};
 
     use super::{
@@ -476,37 +528,58 @@ mod tests {
         StreamingBridge, UploadAdmission, UploadBudget, camera_chunk, camera_world_voxel,
     };
 
+    /// One held mesh in the double: bytes, quads, level, drawable.
+    #[derive(Clone, Copy, Debug)]
+    struct Held {
+        bytes: usize,
+        quads: usize,
+        lod: LodLevel,
+        active: bool,
+    }
+
     #[derive(Default)]
     struct FakePresentation {
-        chunks: BTreeMap<ChunkCoord, (usize, bool)>,
+        chunks: BTreeMap<ChunkCoord, Held>,
         upserts: usize,
         removals: usize,
+        /// Every level the bridge sent, in order, including empty meshes.
+        levels_sent: Vec<(ChunkCoord, LodLevel)>,
     }
 
     impl ChunkPresentation for FakePresentation {
         fn gpu_payload_bytes(&self, mesh: &Mesh) -> usize {
-            mesh.vertices().len() * 24 + mesh.indices().len() * 4 + 16
+            mesh.vertices().len() * 24 + mesh.indices().len() * 4 + 32
         }
 
         fn upsert_chunk(
             &mut self,
             coord: ChunkCoord,
+            lod: LodLevel,
             mesh: &Mesh,
         ) -> Result<usize, ChunkUploadError> {
             self.upserts += 1;
+            self.levels_sent.push((coord, lod));
             if mesh.indices().is_empty() {
                 self.chunks.remove(&coord);
                 return Ok(0);
             }
             let bytes = self.gpu_payload_bytes(mesh);
-            self.chunks.insert(coord, (bytes, true));
+            self.chunks.insert(
+                coord,
+                Held {
+                    bytes,
+                    quads: mesh.quad_count(),
+                    lod,
+                    active: true,
+                },
+            );
             Ok(bytes)
         }
 
         fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
             self.chunks
                 .get_mut(&coord)
-                .map(|(_, active)| *active = false)
+                .map(|held| held.active = false)
                 .is_some()
         }
 
@@ -516,11 +589,20 @@ mod tests {
         }
 
         fn residency(&self) -> GpuResidency {
-            GpuResidency {
-                resident: self.chunks.len(),
-                active: self.chunks.values().filter(|(_, active)| *active).count(),
-                bytes: self.chunks.values().map(|(bytes, _)| *bytes).sum(),
+            let mut residency = GpuResidency::default();
+            for held in self.chunks.values() {
+                let level = match held.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.resident += 1;
+                level.bytes += held.bytes;
+                level.quads += held.quads;
+                if held.active {
+                    level.active += 1;
+                }
             }
+            residency
         }
     }
 
@@ -528,7 +610,7 @@ mod tests {
         fn active(&self) -> Vec<ChunkCoord> {
             self.chunks
                 .iter()
-                .filter(|(_, (_, active))| *active)
+                .filter(|(_, held)| held.active)
                 .map(|(coord, _)| *coord)
                 .collect()
         }
@@ -687,8 +769,15 @@ mod tests {
                 assert!(held.is_none(), "empty mesh must hold no GPU bytes");
             } else {
                 assert!(
-                    matches!(held, Some((_, true))),
-                    "non-empty mesh must be active"
+                    matches!(
+                        held,
+                        Some(Held {
+                            active: true,
+                            lod: LodLevel::Lod0,
+                            ..
+                        })
+                    ),
+                    "non-empty mesh must be active at Lod0"
                 );
             }
         }
@@ -720,7 +809,7 @@ mod tests {
         let mut fake = FakePresentation::default();
         let mut bridge = bridge_at(Vec3::new(5.0, 5.0, 5.0), budget);
         settle(&mut bridge, &mut fake);
-        let held_before = fake.residency().resident;
+        let held_before = fake.residency().resident();
         assert!(
             held_before > 2,
             "need a backlog larger than one release batch"
@@ -742,14 +831,14 @@ mod tests {
         };
         assert!(report.demand_changed);
         assert_eq!(
-            fake.residency().active,
+            fake.residency().active(),
             0,
             "stale meshes must stop drawing now"
         );
         assert_eq!(bridge.presented_count(), 0);
         assert_eq!(report.removals, 2);
         assert!(
-            fake.residency().resident > 0,
+            fake.residency().resident() > 0,
             "release is budgeted, not immediate"
         );
         assert_eq!(bridge.totals().removal_budget_hits, 1);
@@ -761,7 +850,7 @@ mod tests {
         );
 
         settle(&mut bridge, &mut fake);
-        assert_eq!(fake.residency().resident, 0);
+        assert_eq!(fake.residency().resident(), 0);
         assert_eq!(bridge.pending_removal_count(), 0);
     }
 
@@ -791,7 +880,96 @@ mod tests {
             .presented_stamp(origin)
             .unwrap_or_else(|| panic!("origin not re-presented"));
         assert_ne!(first.request_token, second.request_token);
-        assert!(matches!(fake.chunks.get(&origin), Some((_, true))));
+        assert!(matches!(
+            fake.chunks.get(&origin),
+            Some(Held { active: true, .. })
+        ));
+    }
+
+    #[test]
+    fn banded_profile_presents_both_levels_with_per_level_accounting() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = match StreamingBridge::new(
+            StreamingConfig::m3c_diagnostic(),
+            UploadBudget::default(),
+            Vec3::new(5.0, 5.0, 5.0),
+        ) {
+            Ok(bridge) => bridge,
+            Err(error) => panic!("bridge failed to start: {error}"),
+        };
+        settle(&mut bridge, &mut fake);
+
+        let summary = bridge.runtime().summary();
+        assert!(summary.lod1_ready > 0 && summary.lod0_ready > 0);
+        let residency = fake.residency();
+        assert!(residency.lod0.resident > 0 && residency.lod1.resident > 0);
+        assert_eq!(
+            residency.resident(),
+            residency.lod0.resident + residency.lod1.resident
+        );
+        assert_eq!(
+            residency.active(),
+            residency.resident(),
+            "all presented meshes drawable"
+        );
+        assert_eq!(
+            residency.bytes(),
+            residency.lod0.bytes + residency.lod1.bytes
+        );
+        assert!(residency.quads() > 0);
+        // The level sent to the presentation matches the ready mesh's stamp.
+        for (coord, stamp, mesh) in bridge.runtime().render_ready_meshes() {
+            if mesh.indices().is_empty() {
+                continue;
+            }
+            let held = fake
+                .chunks
+                .get(&coord)
+                .unwrap_or_else(|| panic!("{coord:?} not held"));
+            assert_eq!(held.lod, stamp.lod, "{coord:?}");
+        }
+        assert!(
+            fake.levels_sent
+                .iter()
+                .any(|(_, lod)| *lod == LodLevel::Lod1)
+        );
+        let totals = bridge.totals();
+        assert_eq!(totals.uploads, totals.uploads_lod0 + totals.uploads_lod1);
+        assert_eq!(
+            totals.upload_bytes,
+            totals.upload_bytes_lod0 + totals.upload_bytes_lod1
+        );
+        assert!(totals.uploads_lod1 > 0);
+        assert_eq!(
+            residency.bytes() as u64,
+            totals.upload_bytes,
+            "nothing re-uploaded"
+        );
+    }
+
+    #[test]
+    fn baseline_profile_never_sends_lod1() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = match StreamingBridge::new(
+            StreamingConfig::m3c_baseline(),
+            UploadBudget::default(),
+            Vec3::new(5.0, 5.0, 5.0),
+        ) {
+            Ok(bridge) => bridge,
+            Err(error) => panic!("bridge failed to start: {error}"),
+        };
+        settle(&mut bridge, &mut fake);
+        assert!(
+            fake.levels_sent
+                .iter()
+                .all(|(_, lod)| *lod == LodLevel::Lod0)
+        );
+        assert_eq!(fake.residency().lod1, super::LevelResidency::default());
+        assert_eq!(bridge.totals().uploads_lod1, 0);
+        assert_eq!(
+            bridge.presented_count(),
+            bridge.runtime().demand().render.len() - bridge.runtime().summary().render_known_absent
+        );
     }
 
     #[test]

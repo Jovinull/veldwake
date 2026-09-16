@@ -112,6 +112,8 @@ pub struct ResidencySummary {
     /// Render-demand chunks desired at each level.
     pub lod0_desired: usize,
     pub lod1_desired: usize,
+    /// Render-demand chunks the source confirmed absent (never presented).
+    pub render_known_absent: usize,
     /// Ready meshes at each level.
     pub lod0_ready: usize,
     pub lod1_ready: usize,
@@ -462,6 +464,9 @@ impl StreamingRuntime {
                 match record.lod {
                     LodLevel::Lod0 => summary.lod0_desired += 1,
                     LodLevel::Lod1 => summary.lod1_desired += 1,
+                }
+                if matches!(record.residency, ResidencyState::KnownAbsent) {
+                    summary.render_known_absent += 1;
                 }
             }
             match &record.residency {

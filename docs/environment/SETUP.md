@@ -58,7 +58,7 @@ $env:RUST_LOG = "info"
 cargo run -p veldwake-client
 ```
 
-The client logs two aggregate `M3B streaming` lines every five seconds; there is no per-chunk logging. The headless streaming evidence comes from `cargo run --release -p veldwake-streaming --bin streaming-probe`.
+The client logs two aggregate `M3B streaming` lines every five seconds; there is no per-chunk logging. `VELDWAKE_PROFILE` selects the streaming profile: `default` (M3B radius 1, `Lod0` only), `m3c-baseline` (radius 3, `Lod0` only), or `m3c-banded` (radius 3 with the `Lod0`/`Lod1` band); unknown values fall back to `default` with a warning. The headless streaming evidence comes from `cargo run --release -p veldwake-streaming --bin streaming-probe`.
 
 If a command or graphical desktop is not available, report it as BLOCKED rather than substituting an unrecorded tool.
 

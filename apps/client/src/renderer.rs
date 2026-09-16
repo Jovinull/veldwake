@@ -11,6 +11,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
+use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
@@ -48,14 +49,17 @@ struct CameraUniform {
     view_projection: [[f32; 4]; 4],
 }
 
+/// Two `vec4` for WGSL uniform alignment: the chunk origin (never scaled)
+/// and the local cell size of the level in `x`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct ModelUniform {
     translation: [f32; 4],
+    scale: [f32; 4],
 }
 
 impl ModelUniform {
-    fn from_chunk_coord(coord: ChunkCoord) -> Self {
+    fn from_chunk(coord: ChunkCoord, lod: LodLevel) -> Self {
         let edge = CHUNK_EDGE as f32;
         Self {
             translation: [
@@ -64,7 +68,33 @@ impl ModelUniform {
                 coord.z as f32 * edge,
                 0.0,
             ],
+            scale: [level_scale(lod), 0.0, 0.0, 0.0],
         }
+    }
+
+    #[cfg(test)]
+    /// World-space bounds of the chunk volume this uniform places: the
+    /// `Lod1` grid has half the cells at twice the size, so both levels span
+    /// exactly `CHUNK_EDGE` world units from the same origin.
+    fn world_bounds(&self, lod: LodLevel) -> ([f32; 3], [f32; 3]) {
+        let cells = match lod {
+            LodLevel::Lod0 => CHUNK_EDGE,
+            LodLevel::Lod1 => veldwake_voxel::COARSE_EDGE,
+        } as f32;
+        let extent = cells * self.scale[0];
+        let min = [
+            self.translation[0],
+            self.translation[1],
+            self.translation[2],
+        ];
+        (min, [min[0] + extent, min[1] + extent, min[2] + extent])
+    }
+}
+
+const fn level_scale(lod: LodLevel) -> f32 {
+    match lod {
+        LodLevel::Lod0 => 1.0,
+        LodLevel::Lod1 => 2.0,
     }
 }
 
@@ -84,6 +114,9 @@ struct GpuChunkMesh {
     model_bind_group: wgpu::BindGroup,
     _model_buffer: wgpu::Buffer,
     bytes: usize,
+    quads: usize,
+    /// Presentation level this mesh was uploaded at.
+    lod: LodLevel,
     /// Drawable this frame. Cleared immediately when the bridge revokes it.
     active: bool,
 }
@@ -497,7 +530,12 @@ impl ChunkPresentation for Renderer {
         gpu_payload_bytes(mesh)
     }
 
-    fn upsert_chunk(&mut self, coord: ChunkCoord, mesh: &Mesh) -> Result<usize, ChunkUploadError> {
+    fn upsert_chunk(
+        &mut self,
+        coord: ChunkCoord,
+        lod: LodLevel,
+        mesh: &Mesh,
+    ) -> Result<usize, ChunkUploadError> {
         if mesh.indices().is_empty() {
             self.chunks.remove(&coord);
             return Ok(0);
@@ -533,7 +571,7 @@ impl ChunkPresentation for Renderer {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("M3B streamed chunk model uniform"),
-                contents: bytemuck::bytes_of(&ModelUniform::from_chunk_coord(coord)),
+                contents: bytemuck::bytes_of(&ModelUniform::from_chunk(coord, lod)),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let model_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -556,6 +594,8 @@ impl ChunkPresentation for Renderer {
                 model_bind_group,
                 _model_buffer: model_buffer,
                 bytes,
+                quads: mesh.quad_count(),
+                lod,
                 active: true,
             },
         );
@@ -574,11 +614,20 @@ impl ChunkPresentation for Renderer {
     }
 
     fn residency(&self) -> GpuResidency {
-        GpuResidency {
-            resident: self.chunks.len(),
-            active: self.chunks.values().filter(|chunk| chunk.active).count(),
-            bytes: self.chunks.values().map(|chunk| chunk.bytes).sum(),
+        let mut residency = GpuResidency::default();
+        for chunk in self.chunks.values() {
+            let level = match chunk.lod {
+                LodLevel::Lod0 => &mut residency.lod0,
+                LodLevel::Lod1 => &mut residency.lod1,
+            };
+            level.resident += 1;
+            level.bytes += chunk.bytes;
+            level.quads += chunk.quads;
+            if chunk.active {
+                level.active += 1;
+            }
         }
+        residency
     }
 }
 
@@ -679,22 +728,60 @@ mod tests {
         ModelUniform, diagnostic_color, gpu_payload_bytes, select_alpha_mode, select_present_mode,
         select_surface_format,
     };
+    use veldwake_streaming::LodLevel;
     use veldwake_voxel::{ChunkCoord, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
 
     #[test]
     fn gpu_payload_bytes_are_exact_for_the_uploaded_layout() {
-        assert_eq!(gpu_payload_bytes(&Mesh::default()), 16);
+        assert_eq!(std::mem::size_of::<ModelUniform>(), 32);
+        assert_eq!(gpu_payload_bytes(&Mesh::default()), 32);
         let mesh = mesh_exposed_faces(&diagnostic_fixture());
-        // 528 vertices of 24 bytes, 792 u32 indices, one 16-byte model uniform.
+        // 528 vertices of 24 bytes, 792 u32 indices, one 32-byte model uniform.
         assert_eq!(mesh.vertices().len(), 528);
         assert_eq!(mesh.indices().len(), 792);
-        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 16);
+        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 32);
+    }
+
+    #[test]
+    fn both_levels_span_the_same_world_volume_at_positive_and_negative_chunks() {
+        for coord in [ChunkCoord::new(3, 1, -2), ChunkCoord::new(-1, -1, -1)] {
+            let fine = ModelUniform::from_chunk(coord, LodLevel::Lod0);
+            let coarse = ModelUniform::from_chunk(coord, LodLevel::Lod1);
+            assert_eq!(
+                fine.translation, coarse.translation,
+                "origin is never scaled"
+            );
+            assert_eq!(fine.scale, [1.0, 0.0, 0.0, 0.0]);
+            assert_eq!(coarse.scale, [2.0, 0.0, 0.0, 0.0]);
+            let expected_min = [
+                coord.x as f32 * 32.0,
+                coord.y as f32 * 32.0,
+                coord.z as f32 * 32.0,
+            ];
+            let expected_max = [
+                expected_min[0] + 32.0,
+                expected_min[1] + 32.0,
+                expected_min[2] + 32.0,
+            ];
+            assert_eq!(
+                fine.world_bounds(LodLevel::Lod0),
+                (expected_min, expected_max)
+            );
+            assert_eq!(
+                coarse.world_bounds(LodLevel::Lod1),
+                (expected_min, expected_max)
+            );
+        }
     }
 
     #[test]
     fn chunk_model_translation_preserves_signed_chunk_offsets() {
         assert_eq!(
-            ModelUniform::from_chunk_coord(ChunkCoord::new(-1, 2, 3)).translation,
+            ModelUniform::from_chunk(ChunkCoord::new(-1, 2, 3), LodLevel::Lod0).translation,
+            [-32.0, 64.0, 96.0, 0.0]
+        );
+        assert_eq!(
+            ModelUniform::from_chunk(ChunkCoord::new(-1, 2, 3), LodLevel::Lod1).translation,
             [-32.0, 64.0, 96.0, 0.0]
         );
     }

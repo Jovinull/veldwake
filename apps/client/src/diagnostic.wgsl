@@ -6,7 +6,10 @@ struct CameraUniform {
 var<uniform> camera: CameraUniform;
 
 struct ModelUniform {
+    // xyz: chunk origin in world units (ChunkCoord * 32), never scaled.
     translation: vec4<f32>,
+    // x: local cell size (1 for Lod0, 2 for Lod1); yzw padding.
+    scale: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -25,7 +28,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    let world_position = input.position + model.translation.xyz;
+    let world_position = model.translation.xyz + input.position * model.scale.x;
     output.clip_position = camera.view_projection * vec4<f32>(world_position, 1.0);
     output.color = input.color;
     return output;

@@ -169,7 +169,7 @@ impl<const EDGE: usize> DenseGrid<EDGE> {
 /// coarse cell solid) and the material is the most frequent solid `VoxelId`,
 /// ties resolved by the lowest ID.
 #[derive(Clone, Copy, Debug)]
-pub struct CoarseTally {
+pub(crate) struct CoarseTally {
     solids: [(VoxelId, u8); 8],
     distinct: usize,
     seen: u8,
@@ -177,7 +177,7 @@ pub struct CoarseTally {
 
 impl CoarseTally {
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             solids: [(VoxelId::AIR, 0); 8],
             distinct: 0,
@@ -186,7 +186,7 @@ impl CoarseTally {
     }
 
     /// Adds one fine voxel; at most eight per tally.
-    pub fn add(&mut self, fine: VoxelId) {
+    pub(crate) fn add(&mut self, fine: VoxelId) {
         debug_assert!(self.seen < 8, "a coarse tally covers at most 2×2×2 voxels");
         self.seen += 1;
         if fine.is_air() {
@@ -206,7 +206,7 @@ impl CoarseTally {
 
     /// Number of solid voxels added so far.
     #[must_use]
-    pub fn solid_count(&self) -> u8 {
+    pub(crate) fn solid_count(&self) -> u8 {
         self.solids[..self.distinct]
             .iter()
             .map(|(_, count)| *count)
@@ -215,18 +215,12 @@ impl CoarseTally {
 
     /// The coarse material: AIR when no solid was added.
     #[must_use]
-    pub fn material(&self) -> VoxelId {
+    pub(crate) fn material(&self) -> VoxelId {
         self.solids[..self.distinct]
             .iter()
             .copied()
             .min_by_key(|&(id, count)| (std::cmp::Reverse(count), id.0))
             .map_or(VoxelId::AIR, |(id, _)| id)
-    }
-}
-
-impl Default for CoarseTally {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

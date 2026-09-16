@@ -58,6 +58,14 @@ pub struct StreamingConfig {
 impl Default for StreamingConfig {
     /// The M3B diagnostic profile: radius 1, every render chunk at `Lod0`.
     fn default() -> Self {
+        Self::default_profile()
+    }
+}
+
+impl StreamingConfig {
+    /// `Default::default()` as a `const fn`, for const profile tables.
+    #[must_use]
+    pub const fn default_profile() -> Self {
         Self {
             render_radius: 1,
             dependency_halo: 1,
@@ -70,6 +78,17 @@ impl Default for StreamingConfig {
 }
 
 impl StreamingConfig {
+    /// The M3C baseline: the same visible distance, halo, retention, and cap
+    /// as `m3c_diagnostic`, but every render chunk at `Lod0`. It is the
+    /// no-LOD reference the LOD profile is measured against.
+    #[must_use]
+    pub const fn m3c_baseline() -> Self {
+        Self {
+            lod_selection: LodSelection::Lod0Only,
+            ..Self::m3c_diagnostic()
+        }
+    }
+
     /// The M3C diagnostic profile: visible radius 3 with the banded selector.
     ///
     /// Set sizes at these radii are 343 render, 637 dependency, and 729
@@ -283,6 +302,22 @@ mod tests {
         let shifted = DemandSets::around(ChunkCoord::new(1, 0, 0), config)?;
         assert_eq!(sets.retention.union(&shifted.retention).count(), 810);
         assert!(config.hard_resident_cap >= 810);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_profile_differs_from_banded_only_in_selection() -> Result<(), DemandError> {
+        let baseline = StreamingConfig::m3c_baseline().validate()?;
+        let banded = StreamingConfig::m3c_diagnostic().validate()?;
+        assert_eq!(baseline.lod_selection, LodSelection::Lod0Only);
+        assert_eq!(
+            StreamingConfig {
+                lod_selection: LodSelection::Banded,
+                ..baseline
+            },
+            banded
+        );
+        assert_ne!(baseline, StreamingConfig::default());
         Ok(())
     }
 
