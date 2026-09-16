@@ -4,7 +4,7 @@
 
 Veldwake is a planned 3D voxel action RPG about exploration in a persistent, systemic procedural world. Geography, creatures, settlements, economies, and events can evolve, while player actions leave observable consequences. Its audiovisual identity is intended to be produced predominantly through code and constrained generators rather than a traditional manual asset pipeline.
 
-Current status: **M1 — Rendering Foundation complete**. A Windows-first diagnostic client opens a real `wgpu`/D3D12 surface and renders a code-generated 3D cube; it is an engineering proof, not a playable game.
+Current status: **M2 — Voxel Prototype implementation complete on `feat/m2-voxel-prototype`, pending PR validation and merge**. The Windows-first diagnostic client renders one deterministic, CPU-meshed voxel fixture through `wgpu`/D3D12; it is an engineering proof, not a playable game.
 
 ## Principles
 

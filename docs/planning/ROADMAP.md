@@ -12,11 +12,13 @@ Source preservation, environment audit, Git/workspace/toolchain, governance, mem
 
 Window, adapter/device/surface, D3D12-first backend reporting, resize/lifecycle, frame loop, input, simple camera, clear diagnostic output, clean shutdown, and GPU-independent boundary tests. No voxel world.
 
-**Implementation complete on `feat/m1-rendering-foundation`; pending PR validation and merge:** see [`M1_RENDERING_FOUNDATION.md`](M1_RENDERING_FOUNDATION.md) for implementation and host validation evidence.
+**Complete and merged through PR #1:** see [`M1_RENDERING_FOUNDATION.md`](M1_RENDERING_FOUNDATION.md) for implementation and validation evidence.
 
 ## M2 — Voxel Prototype
 
 Explicit voxel/chunk representation, one deterministic fixture chunk, edit/read API, selected baseline meshing technique, upload/render path, bounds/correctness tests, and CPU/mesh metrics.
+
+**Implementation and local validation complete on `feat/m2-voxel-prototype`; pending PR validation and merge:** the CPU/headless chunk, deterministic fixture, exposed-face reference mesher, one-time GPU upload/render path, tests, metrics, and Windows/D3D12 smoke evidence are present. See [`M2_VOXEL_PROTOTYPE.md`](M2_VOXEL_PROTOTYPE.md). M3 has not started.
 
 ## M3 — Streaming World
 

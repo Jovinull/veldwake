@@ -21,8 +21,12 @@ A failing test is evidence. Do not delete it, reduce its assertion, increase tol
 
 Planned fixtures include forest, character, sword, creature, and village seeds. Store canonical configuration alongside the baseline: generator/style/renderer versions, camera, light, viewport, quality, and allowed variance. Cross-vendor GPU differences may require backend-specific policy; do not claim pixel identity prematurely.
 
-## Current M1 applicability
+## Current client applicability
 
-Twelve GPU-independent unit tests cover camera movement and finite projection, diagonal normalization, bounded delta, pitch/aspect guards, input transitions and focus reset, platform-key translation, and deterministic surface-option selection. CI uses plain `cargo nextest run --workspace`; an accidentally empty suite is a failure.
+Thirteen GPU-independent unit tests cover camera movement and finite projection, diagonal normalization, bounded delta, pitch/aspect guards, input transitions and focus reset, platform-key translation, deterministic surface-option selection, and stable/distinct diagnostic voxel colors. CI uses plain `cargo nextest run --workspace`; an accidentally empty suite is a failure.
 
 GPU/window behavior remains a separate Windows host smoke test because CI must not require a graphical adapter. Coverage, property tests, fuzzing, automated visual regression, and performance benchmarks remain **NOT YET APPLICABLE**, not “passing.”
+
+## Current M2 applicability
+
+Eleven dependency-free voxel tests cover chunk strides and index uniqueness, bounds versus air, mutation and solid-count invariants, the locked diagnostic fixture/fingerprint and its exact 132/528/792 topology, empty/single/adjacent/solid chunks, all six face directions, internal-face removal, and triangle winding. The release `voxel-probe` reports topology, logical payload bytes, and one diagnostic CPU timing sample; it is not a benchmark or regression threshold. GPU/window behavior is validated separately by the Windows host smoke test.

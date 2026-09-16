@@ -22,13 +22,13 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            position: Vec3::new(0.0, 1.5, 5.0),
-            yaw: 0.0,
-            pitch: -0.2,
+            position: Vec3::new(62.0, 50.0, 72.0),
+            yaw: -0.68,
+            pitch: -0.44,
             aspect: DEFAULT_ASPECT,
             vertical_fov_radians: 55.0_f32.to_radians(),
             near_plane: 0.1,
-            far_plane: 100.0,
+            far_plane: 160.0,
         }
     }
 }
@@ -81,7 +81,7 @@ pub struct CameraController {
 impl Default for CameraController {
     fn default() -> Self {
         Self {
-            movement_speed: 4.0,
+            movement_speed: 12.0,
             look_sensitivity: 0.0025,
         }
     }
@@ -132,7 +132,7 @@ mod tests {
 
         CameraController::default().update(&mut camera, &mut input, Duration::from_secs(1));
 
-        assert!((camera.position.length() - 0.4).abs() < EPSILON);
+        assert!((camera.position.length() - 1.2).abs() < EPSILON);
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
 
         CameraController::default().update(&mut camera, &mut input, Duration::from_secs(30));
 
-        assert!((camera.position.length() - 0.4).abs() < EPSILON);
+        assert!((camera.position.length() - 1.2).abs() < EPSILON);
     }
 
     #[test]

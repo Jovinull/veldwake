@@ -79,7 +79,7 @@ impl Default for App {
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), AppRunError> {
         let attributes = Window::default_attributes()
-            .with_title("Veldwake — M1 Diagnostic Renderer")
+            .with_title("Veldwake — M2 Voxel Prototype")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_visible(false);
         let window = Arc::new(
@@ -90,10 +90,22 @@ impl App {
         let initial_size = window.inner_size();
         self.camera
             .set_aspect_from_size(initial_size.width, initial_size.height);
+
+        let chunk = veldwake_voxel::diagnostic_fixture();
+        let mesh_started = Instant::now();
+        let mesh = veldwake_voxel::mesh_exposed_faces(&chunk);
+        let mesh_cpu_time = mesh_started.elapsed();
+        let mesh_diagnostics = crate::renderer::VoxelMeshDiagnostics {
+            solid_count: chunk.solid_count(),
+            fingerprint: veldwake_voxel::fingerprint(&chunk),
+            mesh_cpu_time,
+        };
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),
             &self.camera,
+            &mesh,
+            mesh_diagnostics,
         ))
         .map_err(|error| AppRunError(error.to_string()))?;
 
@@ -102,7 +114,7 @@ impl App {
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M1 diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
+            "M2 diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
         );
         Ok(())
     }

@@ -4,11 +4,11 @@ Last updated: 2026-09-16
 
 ## Current position
 
-M1 implementation is complete on `feat/m1-rendering-foundation`, pending remote PR validation and merge into `main`. The workspace contains the unchanged dependency-free `foundation` crate and one Windows-first presentation client. The client renders a diagnostic cube through `wgpu`/D3D12, supports a pure camera/input model, handles window/surface lifecycle, and reports adapter/frame diagnostics. It contains no authoritative game state.
+M1 is merged into `main`. M2 implementation and local validation are complete on `feat/m2-voxel-prototype`, pending remote PR validation and merge. The dependency-free `veldwake-voxel` crate owns CPU chunk/mesh contracts; the client consumes one immutable mesh, assigns diagnostic colors, and owns the GPU buffers. No authoritative game state exists in the renderer.
 
 ## Continue here
 
-Finish remote review and merge of M1 before beginning M2. The implementation and verification record belongs in [`planning/M1_RENDERING_FOUNDATION.md`](../planning/M1_RENDERING_FOUNDATION.md). After merge, M2 should begin by specifying a minimal deterministic voxel/chunk fixture and CPU-side correctness contract before adding a mesher; preserve the tested rule that world/voxel data does not require a GPU and that the renderer only consumes presentation data.
+Follow [`planning/M2_VOXEL_PROTOTYPE.md`](../planning/M2_VOXEL_PROTOTYPE.md). Validate and merge the M2 PR before selecting or starting M3 work. Preserve the tested CPU/presentation boundary; do not fold GPU color or buffer types into the voxel crate. Streaming, neighbors, seams, world coordinates, world generation, LOD, persistence, and multiple chunks are still absent.
 
 ## Read before continuing
 
@@ -22,7 +22,9 @@ Finish remote review and merge of M1 before beginning M2. The implementation and
 ## Immediate risks
 
 - Do not turn the documented future crate map into empty crates.
-- Do not let the M2 voxel representation depend on `wgpu`, `winit`, or the diagnostic camera.
-- Keep the cube clearly identified as disposable diagnostic content; do not evolve it into game content.
+- Do not let the M2 voxel representation or mesher depend on `wgpu`, `winit`, or the diagnostic camera.
+- The M1 cube has been replaced by the M2 fixture; its palette and framing remain diagnostic presentation, not game art direction.
+- Keep chunk dimensions, material encoding, coordinate order, and mesh winding explicit and tested; accidental conventions will become expensive compatibility constraints.
+- The current outside-as-air rule is local to the isolated M2 reference mesher; it is not a future seam/neighborhood policy.
 - Treat integrated Intel Iris Xe as one conservative host, not the target matrix.
 - Do not change repository visibility, replace/configure remotes, publish releases, choose a license, or present the working title as cleared without owner authorization.

@@ -4,7 +4,7 @@ Last updated: 2026-09-16
 
 ## Stage
 
-**M1 — Rendering Foundation implementation is complete** on `feat/m1-rendering-foundation`, pending remote PR validation and merge into `main`. The repository now has a small, observable Windows/D3D12 diagnostic renderer; it remains a non-playable engineering proof.
+**M2 — Voxel Prototype implementation is complete** on `feat/m2-voxel-prototype`, pending remote PR validation and merge into `main`. Its CPU/headless representation, deterministic fixture, reference mesher, immutable GPU upload, tests, metrics, and Windows/D3D12 smoke validation are implemented. The repository remains a non-playable engineering proof.
 
 ## What works
 
@@ -12,14 +12,16 @@ Last updated: 2026-09-16
 - Repository constitution, ADR process, memory protocol, setup guide, and CI are defined.
 - Rust stable `1.98.1` with `rustfmt` and Clippy is available on the audited Windows host.
 - A dependency-free Rust 2024 foundation crate compiles and validates the workspace.
-- `veldwake-client` uses current `winit 0.30` lifecycle APIs and `wgpu 30` to render a code-generated colored cube with depth and a perspective camera.
+- `veldwake-client` uses current `winit 0.30` lifecycle APIs and `wgpu 30` to render the deterministic M2 voxel fixture with depth, back-face culling, and a perspective camera.
 - Input and camera behavior are GPU-independent and covered by 12 headless tests; focus loss clears held input and presentation delta is bounded.
 - Startup diagnostics report the actual adapter/backend/surface configuration; lightweight presentation timing is reported every five seconds at `info`.
 - `cargo-deny` and `cargo-audit` are part of the dependency gates now that runtime dependencies exist.
+- `veldwake-voxel` provides a dependency-free dense `32³` chunk, checked local access, a stable diagnostic fixture, and a CPU exposed-face reference mesher with headless correctness tests.
+- The client builds and meshes the fixture once at startup, converts voxel IDs to diagnostic colors in presentation code, and creates immutable vertex/index buffers without per-frame remeshing or upload.
 
 ## What does not exist yet
 
-No voxel/chunk model, world generation, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The diagnostic client is not a game.
+No multi-chunk model, neighbor/seam handling, streaming, world generation, LOD, authoritative simulation, gameplay, audio, networking, save format, mod runtime, UI framework, or internal editor exists. The diagnostic client is not a game.
 
 ## Current decisions
 
@@ -45,6 +47,7 @@ cargo test --workspace --doc
 cargo deny check
 cargo audit
 cargo run -p veldwake-client
+cargo run --release -p veldwake-voxel --bin voxel-probe
 ```
 
 The runnable binary is diagnostic presentation content only. See [`environment/SETUP.md`](environment/SETUP.md).
@@ -61,6 +64,6 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 - Visual style bible and accessibility baseline remain to be authored during the relevant milestones.
 - The public repository is `https://github.com/Jovinull/veldwake`; changing visibility, remotes, releases, or other publication policy requires owner authorization.
 
-## Next milestone
+## Active milestone
 
-**M2 — Voxel Prototype:** define the smallest deterministic voxel/chunk fixture and baseline meshing path on top of the presentation boundary, with correctness tests and measurements. Do not introduce streaming or world generation yet.
+**M2 — Voxel Prototype:** implementation and local validation are complete on the feature branch; remote PR validation and merge remain. See [`planning/M2_VOXEL_PROTOTYPE.md`](planning/M2_VOXEL_PROTOTYPE.md). M3 has not started; streaming, world generation, LOD, persistence, ECS, gameplay, and multiple chunks remain excluded.

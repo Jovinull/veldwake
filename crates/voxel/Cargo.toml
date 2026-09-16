@@ -1,0 +1,14 @@
+[package]
+name = "veldwake-voxel"
+version = "0.0.0"
+description = "GPU-independent voxel data and reference meshing for Veldwake"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "voxel-probe"
+path = "src/bin/voxel-probe.rs"

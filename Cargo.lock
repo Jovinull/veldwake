@@ -1447,12 +1447,17 @@ dependencies = [
  "pollster",
  "tracing",
  "tracing-subscriber",
+ "veldwake-voxel",
  "wgpu",
  "winit",
 ]
 
 [[package]]
 name = "veldwake-foundation"
+version = "0.0.0"
+
+[[package]]
+name = "veldwake-voxel"
 version = "0.0.0"
 
 [[package]]
