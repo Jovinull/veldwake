@@ -53,6 +53,7 @@ client ----------------------> commands/intents to authority
 ## Current physical structure
 
 - `crates/foundation`: dependency-free policy anchor; still intentionally small.
+- `crates/voxel`: dependency-free CPU voxel/chunk representation, deterministic M2 fixture, and exposed-face reference mesher. It contains no platform, client, or GPU types.
 - `apps/client`: the M1 presentation executable. Internal `app`, `renderer`, `camera`, `input`, and `diagnostics` modules keep platform translation and GPU work away from pure camera/input behavior.
 
-The M1 renderer owns only disposable GPU/window state and the diagnostic cube. It does not own world, voxel, simulation, or gameplay authority. A future domain crate is justified only when M2 establishes a real GPU-independent data boundary; the large conceptual tree remains direction, not a scaffold instruction.
+The M1 renderer owns only disposable GPU/window state and the diagnostic cube. It does not own world, voxel, simulation, or gameplay authority. M2 justified exactly one domain crate through a real GPU-independent representation/meshing boundary; the large conceptual tree remains direction, not a scaffold instruction.

@@ -1456,6 +1456,10 @@ name = "veldwake-foundation"
 version = "0.0.0"
 
 [[package]]
+name = "veldwake-voxel"
+version = "0.0.0"
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

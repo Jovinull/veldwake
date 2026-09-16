@@ -18,7 +18,7 @@ Window, adapter/device/surface, D3D12-first backend reporting, resize/lifecycle,
 
 Explicit voxel/chunk representation, one deterministic fixture chunk, edit/read API, selected baseline meshing technique, upload/render path, bounds/correctness tests, and CPU/mesh metrics.
 
-**Active in planning on `feat/m2-voxel-prototype`:** see [`M2_VOXEL_PROTOTYPE.md`](M2_VOXEL_PROTOTYPE.md). No voxel implementation exists yet.
+**Active on `feat/m2-voxel-prototype`:** the CPU/headless chunk, deterministic fixture, exposed-face reference mesher, tests, and metrics probe are implemented. The minimal one-chunk GPU adapter remains. See [`M2_VOXEL_PROTOTYPE.md`](M2_VOXEL_PROTOTYPE.md).
 
 ## M3 — Streaming World
 

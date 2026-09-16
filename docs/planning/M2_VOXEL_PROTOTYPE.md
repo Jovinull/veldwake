@@ -1,6 +1,6 @@
 # M2 — Voxel Prototype
 
-Status: **Active planning; implementation not started**
+Status: **Active; CPU/headless slice implemented, GPU integration pending**
 Branch: `feat/m2-voxel-prototype`
 
 ## Purpose
@@ -16,31 +16,43 @@ Prove the smallest correct path from GPU-independent voxel data to one visible d
 - One immutable mesh result transferred through a narrow presentation adapter and rendered by the existing client.
 - Headless correctness tests plus basic CPU/mesh metrics for named fixtures.
 
-## Proposed technical baseline
+## Implemented CPU/headless baseline
 
-These are starting hypotheses, not accepted compatibility promises. Implementation evidence may change them within M2, with this document updated in the same work.
+These are accepted experimental choices for M2, not save-format or permanent compatibility promises.
 
 ### Representation and chunk
 
-- Use a dense fixed-size array as the reference representation. Dense storage makes indexing, deterministic fixtures, mutation semantics, memory cost, and mesher correctness directly observable before compression is justified.
-- Start by evaluating a cubic edge of 32 voxels (`32³ = 32,768` cells). Record the chosen edge and byte cost; do not generalize to arbitrary runtime dimensions unless a concrete test requires it.
-- Represent cell content with a compact typed identifier, provisionally `VoxelId(u16)`, reserving zero for air. Material/render metadata remains outside the cell value until M2 demonstrates a need.
-- Define one canonical linearization order, provisionally `x + EDGE * (y + EDGE * z)`, and test corners, axis strides, uniqueness, and maximum index.
-- Accept only checked local coordinates at public read/write boundaries. Reads should distinguish out-of-bounds from air; writes should return the previous value or a typed bounds error rather than silently clamp or ignore input.
+- Use a dense heap-backed fixed-size payload of 32³ = 32,768 `VoxelId(u16)` cells: 65,536 logical bytes. The private boxed slice has invariant length; an incrementally maintained solid count makes inspection constant-time.
+- Reserve `VoxelId::AIR` (`0`) for air. Material/render metadata remains outside the cell value.
+- Linearize as `x + 32 * (y + 32 * z)` in right-handed, Y-up local space. Tests lock corners, strides, uniqueness, and maximum index.
+- Public coordinate construction and numeric read/write boundaries are checked. Out-of-bounds produces `ChunkBoundsError` and is never silently interpreted as air; writes return the previous value.
 - Keep representation and meshing free of `wgpu`, `winit`, camera, and window types.
 
 ### Deterministic fixture
 
-- Define one named fixture entirely in code, without RNG or world generation.
+- Define one named fixture entirely in code, without RNG or world generation. The implemented fixture contains 31 solids across IDs 1, 2, and 7: adjacent structures on all six boundaries, a mixed-ID internal face, two isolated voxels, and an asymmetric five-step form.
 - Include isolated voxels, adjacent voxels, an enclosed/internal face, all chunk boundaries, and a non-symmetric stepped silhouette so coordinate/winding mistakes are visible.
-- Record stable cell counts and a stable content hash or equivalent canonical fingerprint. The fingerprint protects fixture construction, not a future save-format promise.
+- Its locked fingerprint is `0xa465ff82790404b9`, computed with documented 64-bit FNV-1a over the edge and every little-endian cell ID. The fingerprint protects fixture construction, not a future save-format promise.
 
 ### Mesher selection
 
-- Begin with an exposed-face, face-culling CPU mesher as the correctness reference: emit a quad only when a solid cell borders air or the outside of this isolated fixture chunk.
-- Make vertex positions, normals, triangle winding, material identifier, and index type explicit. The mesh output is ordinary CPU data and must be testable without a GPU.
+- The selected M2 correctness reference is an exposed-face CPU mesher: it emits a quad only when a solid cell borders air or the outside of this isolated fixture chunk. Outside-as-air is not a future seam policy.
+- Vertices carry local position, outward normal, face, and `VoxelId`; indices are `u32`. Each quad uses four independent vertices and two counter-clockwise triangles when viewed from outside.
 - Measure emitted quads/vertices/indices and wall-clock build time for at least empty, single-voxel, solid, and named-fixture inputs. Exact topology expectations are correctness assertions; timing is diagnostic evidence, not a performance target.
-- Select the M2 baseline only after this evidence. Greedy meshing may replace the reference only if it preserves tested topology/material boundaries and demonstrates useful geometry reduction on the fixture. Otherwise retain face culling for M2 and defer optimization.
+- Face culling is retained for M2 because it is simple, deterministic, and fully testable. Greedy meshing is deferred; no optimization evidence currently justifies adding its material-boundary and winding complexity.
+
+### Headless measurement evidence
+
+Command: `cargo run --release -p veldwake-voxel --bin voxel-probe`. One run on the audited Windows host produced the following diagnostic samples; time is neither a target nor a benchmark threshold. Mesh bytes are logical vertex-plus-index payload and exclude vector capacity/allocator overhead.
+
+| Fixture | Solids | Quads | Vertices | Indices | Chunk bytes | Mesh bytes | Mesh CPU |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| empty | 0 | 0 | 0 | 0 | 65,536 | 0 | 12 µs |
+| single | 1 | 6 | 24 | 36 | 65,536 | 816 | 17 µs |
+| solid | 32,768 | 6,144 | 24,576 | 36,864 | 65,536 | 835,584 | 1,086 µs |
+| diagnostic | 31 | 132 | 528 | 792 | 65,536 | 17,952 | 34 µs |
+
+The maximum exposed-face checkerboard at edge 32 contains 16,384 solids, 98,304 quads, 393,216 vertices, and 589,824 indices. This proves mathematically that `u16` cannot address the reference mesh; a deliberately huge unit test would add cost without new evidence.
 
 ### Rendering integration
 
@@ -71,15 +83,12 @@ These are starting hypotheses, not accepted compatibility promises. Implementati
 
 ## Evidence and validation plan
 
-1. Record representation alternatives and choose the smallest explicit contract before implementation.
-2. Add headless tests for indexing, bounds, mutation, fixture determinism, and topology.
-3. Capture mesh counts and debug-profile CPU timing for named fixtures; do not state a target or regression threshold from one host run.
-4. Inspect the rendered fixture from multiple angles and exercise the existing window lifecycle.
-5. Review dependency direction, allocations, error handling, documentation, and scope before declaring M2 complete.
+1. **Complete:** explicit dense representation, fixture, and CPU mesh contract.
+2. **Complete:** headless tests for indexing, bounds, mutation, fixture determinism, six directions, winding, and exact topology.
+3. **Complete:** release probe for named fixtures; its timing remains diagnostic only.
+4. **Pending:** integrate the immutable CPU mesh through a narrow client-owned upload adapter and inspect the rendered fixture/window lifecycle.
+5. **Pending at M2 exit:** final dependency, allocation, error-handling, documentation, and scope review.
 
-## Open decisions for M2 evidence
+## Remaining decision for M2 evidence
 
-- Confirm or revise the proposed 32-cell edge after memory/index/test ergonomics are measured.
-- Confirm whether `VoxelId(u16)` is sufficient for the first material boundary without embedding presentation data.
-- Decide whether the exposed-face reference remains the M2 baseline or greedy meshing earns selection from fixture evidence.
-- Decide whether the real CPU ownership boundary justifies one focused voxel crate or a smaller existing-package module; do not create empty future crates.
+- Define only the narrow client-side GPU vertex conversion/upload boundary required to render this CPU mesh. The CPU crate must remain independent of `wgpu`, `winit`, and client types.
