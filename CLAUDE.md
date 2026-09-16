@@ -15,6 +15,21 @@ The repository constitution is [`AGENTS.md`](AGENTS.md). It is binding for every
 
 Definition of done, gate vocabulary (PASS / FAIL / BLOCKED / NOT YET APPLICABLE), invariants, and scope guardrails all live in those documents. Do not restate or relax them here.
 
+## Documentation is part of every change
+
+`AGENTS.md` makes this law; this section only makes it impossible to miss. A change is not done when the code works. It is done when the next agent, in either runtime, can read what exists, why it is that way, what was measured, and what remains, without rediscovering any of it. Update these in the same change, never in a follow-up:
+
+- `docs/planning/M<n>_*.md` — the milestone document: status line, implementation result, observed evidence with real numbers, accepted behavior, remaining risks, and explicit non-goals.
+- `docs/PROJECT_STATE.md` — stage, what works, what does not exist yet, active milestone.
+- `docs/agents/HANDOFF.md` — the single next continuation point and the immediate risks; not a diary.
+- `docs/LEARNINGS.md` — every reusable discovery below ADR scope: a bug and its cause, a refuted assumption, a test technique, a tooling quirk.
+- `docs/KNOWN_ISSUES.md` — new defects and limitations, including work the agent could not verify itself.
+- `docs/engineering/ARCHITECTURE.md`, `PERFORMANCE.md`, `TESTING_STRATEGY.md` — when structure, measurements, or test counts change.
+- `docs/planning/ROADMAP.md`, `README.md`, `docs/audiovisual/RENDERING_VISION.md` — when milestone status changes.
+- `docs/adr/` — only for a durable structural decision whose alternatives must outlive the milestone.
+
+Record decisions and their reasons, not only outcomes. Record what was deliberately not done and why. Record numbers as observations on a named host, never as targets. Report every gate with the `AGENTS.md` vocabulary and say plainly what the agent could not verify (for example, an interactive smoke that needs a person at the screen).
+
 ## Agent runtime differences
 
 - Project instructions: Claude Code loads `CLAUDE.md`; Codex CLI loads `AGENTS.md`. This file is the bridge, so always-on repository law stays in `AGENTS.md` and is never forked between the two.
