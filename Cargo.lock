@@ -1447,6 +1447,7 @@ dependencies = [
  "pollster",
  "tracing",
  "tracing-subscriber",
+ "veldwake-procedural",
  "veldwake-streaming",
  "veldwake-voxel",
  "wgpu",
@@ -1458,9 +1459,17 @@ name = "veldwake-foundation"
 version = "0.0.0"
 
 [[package]]
+name = "veldwake-procedural"
+version = "0.0.0"
+dependencies = [
+ "veldwake-voxel",
+]
+
+[[package]]
 name = "veldwake-streaming"
 version = "0.0.0"
 dependencies = [
+ "veldwake-procedural",
  "veldwake-voxel",
 ]
 

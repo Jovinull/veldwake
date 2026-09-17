@@ -1,5 +1,11 @@
 [workspace]
-members = ["apps/client", "crates/foundation", "crates/streaming", "crates/voxel"]
+members = [
+    "apps/client",
+    "crates/foundation",
+    "crates/procedural",
+    "crates/streaming",
+    "crates/voxel",
+]
 resolver = "3"
 
 [workspace.package]
