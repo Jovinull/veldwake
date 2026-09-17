@@ -1,12 +1,13 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use tracing::{debug, info, warn};
-use veldwake_streaming::StreamingConfig;
+use veldwake_streaming::{CacheConfig, ChunkCache, DiagnosticChunkSource, StreamingConfig};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -25,6 +26,10 @@ use crate::{
 };
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Opt-in directory for the experimental M3D chunk cache. Unset means no
+/// cache and no filesystem access from the streaming worker.
+const CACHE_DIR_VARIABLE: &str = "VELDWAKE_CACHE_DIR";
 
 pub fn run() -> Result<(), AppRunError> {
     let event_loop = EventLoop::new().map_err(|error| AppRunError(error.to_string()))?;
@@ -105,8 +110,41 @@ impl App {
         let profile = StreamingProfile::from_environment();
         let config = profile.config();
         let budget = UploadBudget::default();
-        let streaming = StreamingBridge::new(config, budget, self.camera.position())
-            .map_err(|error| AppRunError(error.to_string()))?;
+        // The experimental disk cache is opt-in and off by default: without
+        // the variable the client behaves exactly as before and touches no
+        // filesystem. The client picks a directory and nothing else; the entry
+        // format lives entirely inside the streaming crate.
+        let cache = match std::env::var_os(CACHE_DIR_VARIABLE) {
+            Some(dir) => {
+                let cache_config = CacheConfig::new(PathBuf::from(dir));
+                match ChunkCache::open(&cache_config, DiagnosticChunkSource.fingerprint()) {
+                    Ok((cache, report)) => {
+                        info!(
+                            entries_dir = %report.entries_dir.display(),
+                            entries = report.footprint.entries,
+                            disk_bytes = report.footprint.bytes,
+                            swept_temporaries = report.temporaries_removed,
+                            "experimental chunk cache opened"
+                        );
+                        Some(cache)
+                    }
+                    Err(error) => {
+                        // A cache is an accelerator: failing to open one must
+                        // never stop the client from running without it.
+                        warn!(%error, "chunk cache could not be opened; continuing without it");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let streaming = match cache {
+            Some(cache) => {
+                StreamingBridge::with_cache(config, budget, self.camera.position(), cache)
+            }
+            None => StreamingBridge::new(config, budget, self.camera.position()),
+        }
+        .map_err(|error| AppRunError(error.to_string()))?;
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),

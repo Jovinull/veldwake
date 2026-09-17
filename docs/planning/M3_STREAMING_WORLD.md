@@ -819,3 +819,122 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 - The seam rule is proven only for axial neighbors at a 2× ratio; a third level or diagonal dependence would need a new proof.
 - Debug boxes add up to one draw per tracked coordinate; keep the mode off by default and count the draws.
 - M3C0 kept the 32-edge topology byte-identical; the remaining risk is that later LOD work re-introduces edge-specific assumptions instead of using `EDGE`.
+
+## Milestone: M3D — Disk Cache & Persistence Experiment
+
+Status: **implemented on `feat/m3d-cache-persistence`, awaiting branch QA**. M3C is merged into `main` through [PR #6](https://github.com/Jovinull/veldwake/pull/6) at merge commit `c669929b00427c2f438529b572931400a24b6d3d`.
+
+M3D closes the last M3 capability: a persistence and cache experiment serious enough to inform the architecture, and explicitly not a save system.
+
+**The distinction is the point.** A *cache* is discardable: every entry is reproducible by asking the source again, so deleting all of it loses nothing but time. *Authoritative world persistence* — player edits, world history, anything that cannot be regenerated — is a different problem with different guarantees and belongs to a later world-editing milestone. Nothing in M3D pretends otherwise: the format carries no migration path, the runtime never treats a cache failure as data loss, and every rejection falls back to the source.
+
+### Architecture and boundary
+
+The cache lives in `crates/streaming` as a private `cache` module with `format`, `store`, and policy layers. No new crate was created, and the decision was made against the crate test in `ARCHITECTURE.md`: nothing else consumes it, it needs no build isolation, it would invert no dependency, and the streaming crate is already the headless, filesystem-free-until-now owner of the load path. A crate for one consumer would have been a boundary without a reason. `veldwake-voxel` stays dependency-free and filesystem-free; it exposes cells and coordinates, and the format reads them through the public API without duplicating the voxel representation.
+
+The cache sits on the worker thread, inside the load path:
+
+```text
+load job -> cache lookup -> hit: decode and validate
+                         -> miss/reject/read failure: source
+                                       -> best-effort publish
+         -> result (+ per-load cache counters) -> runtime
+```
+
+No filesystem call happens on a frame or render thread, so `PERF-001` holds. The client learns nothing about the format: it passes a directory through `StreamingBridge::with_cache` and reads aggregate counters. `RequestToken`, content generations, and stale-result rejection are untouched, and a cached result is accepted or rejected by exactly the same rules as a source result.
+
+### On-disk format
+
+A fixed 48-byte header and an explicit payload, little-endian throughout. No Rust struct is written directly, there is no `transmute`, no `repr` dependency, and no native-endian integer reaches disk.
+
+| offset | size | field |
+|---|---|---|
+| 0 | 8 | magic `VWKCACHE` |
+| 8 | 2 | format version |
+| 10 | 2 | chunk edge |
+| 12 | 2 | voxel encoding discriminant |
+| 14 | 1 | entry kind: `KnownAbsent` or `Present` |
+| 15 | 1 | payload encoding: raw or run-length |
+| 16 | 12 | chunk coordinate, three `i32` |
+| 28 | 8 | source fingerprint |
+| 36 | 4 | payload length |
+| 40 | 8 | FNV-1a 64 checksum over bytes 0..40 and the payload |
+
+A file is exactly `48 + payload_len` bytes. Cells are `u16` little-endian in the grid's own `x + EDGE * (y + EDGE * z)` order. `KnownAbsent` is a typed entry with an empty payload, never an absent file. Encode and decode return typed errors; `CacheFormatError` has fourteen variants and classifies each as *stale* (another version, cell encoding, or source identity) or *corrupt* (damaged or mismatched), because routine invalidation and real damage must never share a counter.
+
+**Source identity.** `DiagnosticChunkSource::fingerprint()` hashes an explicit descriptor of the generation rules — corridor bounds, checkerboard period, materials, landmark geometry, chunk edge — plus a hand-maintained `SOURCE_SCHEMA_REVISION`. A locked test pins the value, so changing what the source generates fails a test until someone decides what it means for cached content. The fingerprint is part of the cache key *and* of the header: a new identity writes to a different directory, and a file that somehow arrives under the wrong key is rejected on read. This is a cache-invalidation key and nothing else; it promises no save or network compatibility.
+
+### Writing, recovery, and boundedness
+
+Entries are **write-once per key**, where the key is `(format version, source fingerprint, chunk coord)`. A new identity or version writes elsewhere instead of overwriting, which removes overwrite races from the common path. Publishing writes a temporary file in the same directory and renames it, so a reader never sees a partially written entry; a losing race on the rename is not a failure because the entry that already exists is equivalent.
+
+The temporary file is deliberately **not** flushed before the rename. This is a discardable cache whose entries carry a checksum: a torn file after a power loss is detected on read and falls back to the source, so an `fsync` per chunk would buy nothing a regeneration does not already give. Temporary files from a crashed writer are swept and counted when the cache opens, and they can never be read as entries because only the final extension is ever opened.
+
+A rejected entry is deleted on detection. That is the only reason a published entry is removed, and it is what lets the source result republish over a write-once key.
+
+Nothing evicts. The footprint is walked on demand and reported as entries and bytes, `ChunkCache::clear` removes an identity's entries explicitly, and the absence of an eviction or size policy is recorded as KI-015 rather than hidden behind a running total the experiment does not maintain.
+
+### Coordinates and paths
+
+Entry names are derived only from the coordinate: `x{:08x}_y{:08x}_z{:08x}.vwc` over the two's-complement bit pattern, so negative coordinates are fixed-width, every name has the same length and character set, and `..`, separators, and traversal are impossible by construction. No external string reaches a path. Directory structure is flat under `<root>/v1/<fingerprint>/`; sharding and region files are a production concern this experiment does not need at 81 to 729 entries.
+
+### Compression
+
+Both encodings are implemented and measured on the same 81-chunk settle. Raw is a fixed 65,536-byte payload; run-length is `(u32 count, u16 value)` pairs, dependency free in about forty lines.
+
+| | raw | run-length |
+|---|---:|---:|
+| disk for 81 entries | 4,132,656 B | 24,438 B |
+| per present entry | 65,584 B | ~380 B average |
+| encode mean / max | 154 / 515 µs | 22 / 200 µs |
+| decode mean / max | 156 / 293 µs | 13 / 67 µs |
+
+Run-length is 169 times smaller and several times faster on this fixture, with no dependency. **The default stays raw anyway**, and the reason is the fixture rather than the measurement: the diagnostic corridor is a one-voxel floor in an otherwise empty chunk, so it is about 97% air and compresses absurdly well. Real terrain will not, and run-length has a genuine worst case of three times raw on cell-by-cell variation, where raw is always exactly 64 KiB. A bounded, predictable default is worth more than a fixture-shaped win; the encoding is a config choice, both paths are tested, and M4 should re-measure against real terrain before changing the default. No compression crate was introduced, so no dependency, licence, or audit surface was added for a result that may not survive the fixture.
+
+### Measured cold versus warm
+
+Release `streaming-probe` on the audited host, one identical settle of the default profile per phase, three repetitions. Every phase reports the same residency: 81 tracked, 63 resident, 4,128,768 resident bytes, 2,511,648 CPU mesh bytes, 81 source load jobs dispatched, 0 stale loads, 0 stale meshes, 0 hard-cap blocks.
+
+| phase | raw, time to idle (µs) | run-length, time to idle (µs) |
+|---|---|---|
+| cache off | 7,280 / 6,187 / 6,520 | 14,137 / 5,500 / 6,022 |
+| cold | 106,706 / 82,666 / 83,308 | 112,203 / 62,944 / 75,151 |
+| warm | 36,887 / 20,480 / 37,415 | 15,585 / 13,202 / 14,809 |
+| warm again | 42,124 / 16,618 / 24,002 | 16,116 / 11,340 / 16,052 |
+
+Cold: 81 lookups, 81 misses, 81 source fallbacks, 81 writes, 0 failures. Warm and warm again: 81 lookups, 63 present hits, 18 absence hits, 0 misses, 0 source fallbacks, 0 write attempts, and a stable disk footprint. Warm is reproducible across repetitions.
+
+**The honest headline is that the cache does not pay here.** Warm is consistently *slower* than no cache at all — about 13 to 37 ms against 6 to 7 ms — because the diagnostic source is a trivial in-memory generator that costs far less than reading and decoding 4 MB, or even 24 KB, from disk. This experiment proves the boundary, the format discipline, the failure handling, and the cost; it does not demonstrate a speedup and must not be quoted as one (KI-016). A cache of this shape only pays when generation is expensive, which is exactly what M4 terrain will make true and what should decide whether any of this becomes default behaviour.
+
+### What survives for real world generation
+
+- The header discipline: explicit magic, version, content-shape fields, identity, length, and checksum, with typed errors and a stale/corrupt split.
+- Source identity as a cache key, with a locked fingerprint test forcing a deliberate decision whenever generation changes.
+- Write-once keys plus temp-and-rename, which removes overwrite races without a journal.
+- `KnownAbsent` as a typed entry rather than an absent file.
+- Best-effort publication: a cache failure degrades throughput, never correctness.
+- Aggregate-only counters kept apart from the streaming counters.
+
+What does not survive: the flat directory, the absence of eviction, and the raw-versus-run-length choice, all of which are fixture-shaped and must be re-decided against real terrain.
+
+### Observability
+
+`RuntimeMetrics::cache` is a separate `CacheMetrics` struct so a cache experiment can never make the streaming numbers look different than they are: lookups, present hits, absence hits, misses, stale rejects, corrupt rejects, read failures, repairs, source fallbacks, write attempts, writes, skipped writes, write failures, bytes read, bytes written, and encode/decode timing. All zero when no cache is configured, which is the contract that keeps M3B and M3C evidence comparable. Nothing logs per chunk.
+
+### Configuration
+
+`VELDWAKE_CACHE_DIR` opts the client into the experiment and names the directory. Unset, the client behaves exactly as before and the streaming worker touches no filesystem. The repository working tree is never written to: the probe uses the system temporary directory, and the client uses the directory it is given. A cache that fails to open is logged and skipped rather than fatal. No general configuration system was introduced.
+
+### Headless tests
+
+Thirty-two new tests, all headless: format layout and endianness including a negative coordinate; byte-exact round trips of both encodings at positive, negative, and extreme coordinates; an empty chunk distinguished from known absence; truncation at five lengths; bad magic, unknown version, foreign chunk edge, foreign cell encoding, unknown entry kind, unknown payload encoding; impossible payload length, trailing bytes, checksum damage, wrong coordinate, wrong fingerprint, absence carrying a payload, zero-length run, and a run payload that does not fill the chunk; fixed-width traversal-free names; write-once publication; fingerprint isolation; temporary residue swept and never read; probing without creating directories; cold miss to source to publish; warm hit without the source; absence stored and replayed as its own counter; a missing file as a miss and never absence; corrupt entry falling back, repaired, and hitting afterwards; an entry moved onto another coordinate's path; a write failure that still returns the source result; both encodings returning identical content; clearing; all-material round trip through disk; and four runtime-level tests covering no-cache silence, cold-then-warm identity of content, stale token rejection with a cache configured, and a changed fingerprint refilling from the source.
+
+All 144 tests that existed before M3D are preserved and pass unchanged; the workspace is at 176.
+
+### Gates
+
+`cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets --all-features -- -D warnings` PASS, `cargo nextest run --workspace` PASS (176 tests: 38 voxel, 82 streaming, 56 client), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS, `cargo test --workspace --doc` PASS, `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. `cargo run --release -p veldwake-streaming --bin streaming-probe` PASS with the cache phases above. No Windows/D3D12 smoke was run: M3D changes no presentation code, and the client path is opt-in and off by default.
+
+### M3D non-goals
+
+Product world generation, player saves, sparse player-edit persistence, general save migration, cloud saves, eviction or size policy, sharding or region files, compression dependencies, ECS, gameplay, physics, networking, biomes, multiple workers, origin rebasing, render graph, generalized batching, and M4 terrain.

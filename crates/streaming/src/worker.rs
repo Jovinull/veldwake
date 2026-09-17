@@ -10,6 +10,7 @@ use veldwake_voxel::{
 };
 
 use crate::{
+    cache::{CacheLoadOutcome, ChunkCache},
     source::{DiagnosticChunkSource, SourceChunk},
     types::{MeshStamp, RequestToken},
 };
@@ -55,6 +56,9 @@ pub(crate) enum WorkerResult {
         coord: ChunkCoord,
         token: RequestToken,
         source: SourceChunk,
+        /// What the disk cache did for this load. All zero when no cache is
+        /// configured, which is what keeps the cacheless path unchanged.
+        cache: CacheLoadOutcome,
     },
     Mesh(Box<MeshResult>),
 }
@@ -74,12 +78,18 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    pub(crate) fn spawn(source: DiagnosticChunkSource) -> std::io::Result<Self> {
+    /// Starts the worker thread. The cache, when configured, lives entirely
+    /// on this thread: no filesystem access ever happens on the caller's
+    /// frame or render thread.
+    pub(crate) fn spawn(
+        source: DiagnosticChunkSource,
+        cache: Option<ChunkCache>,
+    ) -> std::io::Result<Self> {
         let (job_tx, job_rx) = mpsc::sync_channel::<WorkerJob>(1);
         let (result_tx, result_rx) = mpsc::sync_channel::<WorkerResult>(1);
         let thread = thread::Builder::new()
             .name("veldwake-streaming".to_owned())
-            .spawn(move || worker_loop(source, &job_rx, &result_tx));
+            .spawn(move || worker_loop(source, cache.as_ref(), &job_rx, &result_tx));
         let thread = thread?;
         Ok(Self {
             jobs: Some(job_tx),
@@ -120,16 +130,26 @@ impl Drop for Worker {
 
 fn worker_loop(
     source: DiagnosticChunkSource,
+    cache: Option<&ChunkCache>,
     jobs: &Receiver<WorkerJob>,
     results: &SyncSender<WorkerResult>,
 ) {
     while let Ok(job) = jobs.recv() {
         let result = match job {
-            WorkerJob::Load { coord, token } => WorkerResult::Load {
-                coord,
-                token,
-                source: source.load(coord),
-            },
+            WorkerJob::Load { coord, token } => {
+                // Cache first, source second; the source always decides the
+                // value the runtime receives, cached or not.
+                let (loaded, cache_outcome) = match cache {
+                    Some(cache) => cache.load_with(coord, || source.load(coord)),
+                    None => (source.load(coord), CacheLoadOutcome::default()),
+                };
+                WorkerResult::Load {
+                    coord,
+                    token,
+                    source: loaded,
+                    cache: cache_outcome,
+                }
+            }
             WorkerJob::Mesh(job) => {
                 let started = Instant::now();
                 let mesh = job.snapshot.mesh();
@@ -152,11 +172,11 @@ mod tests {
 
     #[test]
     fn worker_shutdown_is_clean_with_and_without_work() {
-        let worker = Worker::spawn(DiagnosticChunkSource);
+        let worker = Worker::spawn(DiagnosticChunkSource, None);
         assert!(worker.is_ok());
         drop(worker);
 
-        let worker = match Worker::spawn(DiagnosticChunkSource) {
+        let worker = match Worker::spawn(DiagnosticChunkSource, None) {
             Ok(worker) => worker,
             Err(error) => panic!("test worker failed to start: {error}"),
         };
