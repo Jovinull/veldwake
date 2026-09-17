@@ -96,10 +96,12 @@ pub const TERRAIN_GENERATOR_VERSION: u32 = 1;
 /// because one number is easier to reason about than two.
 pub const STYLE_CONTRACT_VERSION: u32 = 1;
 
-/// Locked by the exhaustive golden-region test in `region`. This is folded
-/// into the cheap descriptor fingerprint rather than recomputed at runtime:
-/// an output change must update this value deliberately, which invalidates
-/// cache entries without making every cache lookup generate terrain.
+/// Locked by the exhaustive canonical-golden-region test in `region`. This is
+/// folded into the cheap descriptor fingerprint rather than recomputed at
+/// runtime: a golden-world output change must update this value deliberately,
+/// which invalidates cache entries without making every cache lookup generate
+/// terrain. It is not a universal multi-seed proof; general algorithm changes
+/// still require the explicit [`TERRAIN_GENERATOR_VERSION`] contract bump.
 pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
 
 /// The seed a world is generated from.
@@ -377,7 +379,12 @@ impl TerrainConfig {
 
         let min_y = i64::from(self.extent.min_chunk_y) * 32;
         let max_y_exclusive = (i64::from(self.extent.max_chunk_y) + 1) * 32;
-        let region_width = f64::from(self.extent.max_chunk_x - self.extent.min_chunk_x + 1) * 32.0;
+        // Widen before deriving the inclusive span: public descriptors may
+        // legally order the complete i32 range, for which i32 subtraction
+        // would overflow before validation could return its typed error.
+        let region_width = (i64::from(self.extent.max_chunk_x) - i64::from(self.extent.min_chunk_x)
+            + 1) as f64
+            * 32.0;
         let lowest_content = self.water_source_height
             - self.water_gradient * region_width
             - self.river_bed_depth
@@ -624,5 +631,29 @@ mod tests {
         config = TerrainConfig::golden();
         config.river_bed_depth = 100.0;
         assert_rejected("outside water bed", config);
+    }
+
+    #[test]
+    fn extreme_ordered_extents_return_typed_validation_results_without_overflow() {
+        let mut full_range = TerrainConfig::golden();
+        full_range.extent.min_chunk_x = i32::MIN;
+        full_range.extent.max_chunk_x = i32::MAX;
+        assert!(matches!(
+            full_range.validate(),
+            Err(TerrainConfigError::VerticalBounds { .. })
+        ));
+
+        let mut one_chunk_at_the_edge = TerrainConfig::golden();
+        one_chunk_at_the_edge.extent.min_chunk_x = i32::MAX;
+        one_chunk_at_the_edge.extent.max_chunk_x = i32::MAX;
+        assert_eq!(one_chunk_at_the_edge.validate(), Ok(()));
+
+        let mut inverted_extremes = TerrainConfig::golden();
+        inverted_extremes.extent.min_chunk_x = i32::MAX;
+        inverted_extremes.extent.max_chunk_x = i32::MIN;
+        assert_eq!(
+            inverted_extremes.validate(),
+            Err(TerrainConfigError::InvertedExtent { axis: "x" })
+        );
     }
 }

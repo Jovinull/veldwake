@@ -169,10 +169,13 @@ pub const SIGNATURE_CHUNKS: &[ChunkCoord] = &[
 /// in the milestone document what moved and why.
 pub const GOLDEN_REGION_SIGNATURE: u64 = 0x1285_7799_1516_4f6a;
 
-/// Exhaustive signature of every present chunk in the finite golden region.
-/// Unlike [`GOLDEN_REGION_SIGNATURE`], which is a compact spread-out fixture,
-/// this is the cache-invalidation tripwire: it is deliberately test-only work
-/// and is never part of runtime source fingerprinting cost.
+/// Exhaustive signature of every present chunk in the finite canonical golden
+/// region. Unlike [`GOLDEN_REGION_SIGNATURE`], which is a compact spread-out
+/// fixture, this is the golden-world cache-invalidation tripwire: it is
+/// deliberately test-only work and is never part of runtime source
+/// fingerprinting cost. It does not prove output equivalence for arbitrary
+/// seeds; an intentional general algorithm change still bumps
+/// `TERRAIN_GENERATOR_VERSION`.
 pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
 
 /// Folds the locked chunks into one value.

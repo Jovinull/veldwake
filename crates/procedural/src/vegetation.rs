@@ -756,4 +756,62 @@ mod tests {
         assert!(vegetation.trees_touching(&field, outside).is_empty());
         assert!(vegetation.shrubs_touching(&field, outside).is_empty());
     }
+
+    #[test]
+    fn every_emittable_golden_plant_fits_the_vertical_region_before_clipping() {
+        let (field, vegetation) = system();
+        let extent = TerrainConfig::golden().extent;
+        let edge = CHUNK_EDGE as i64;
+        let min_x = i64::from(extent.min_chunk_x) * edge;
+        let max_x = (i64::from(extent.max_chunk_x) + 1) * edge - 1;
+        let min_z = i64::from(extent.min_chunk_z) * edge;
+        let max_z = (i64::from(extent.max_chunk_z) + 1) * edge - 1;
+        let min_y = i64::from(extent.min_chunk_y) * edge;
+        let max_y_exclusive = (i64::from(extent.max_chunk_y) + 1) * edge;
+        let mut trees = 0;
+        let mut shrubs = 0;
+
+        for cell_z in min_z.div_euclid(vegetation.config.tree_spacing)
+            ..=max_z.div_euclid(vegetation.config.tree_spacing)
+        {
+            for cell_x in min_x.div_euclid(vegetation.config.tree_spacing)
+                ..=max_x.div_euclid(vegetation.config.tree_spacing)
+            {
+                let Some(tree) = vegetation.tree_in_cell(&field, cell_x, cell_z) else {
+                    continue;
+                };
+                trees += 1;
+                let (low, high) = tree.bounds();
+                assert!(
+                    low[1] >= min_y && high[1] < max_y_exclusive,
+                    "tree {tree:?} reaches y={}..={} outside [{min_y}, {max_y_exclusive}) before chunk clipping",
+                    low[1],
+                    high[1]
+                );
+            }
+        }
+
+        for cell_z in min_z.div_euclid(vegetation.config.shrub_spacing)
+            ..=max_z.div_euclid(vegetation.config.shrub_spacing)
+        {
+            for cell_x in min_x.div_euclid(vegetation.config.shrub_spacing)
+                ..=max_x.div_euclid(vegetation.config.shrub_spacing)
+            {
+                let Some(shrub) = vegetation.shrub_in_cell(&field, cell_x, cell_z) else {
+                    continue;
+                };
+                shrubs += 1;
+                let top = shrub.base_y + shrub.height - 1;
+                assert!(
+                    shrub.base_y >= min_y && top < max_y_exclusive,
+                    "shrub {shrub:?} reaches y={}..={top} outside [{min_y}, {max_y_exclusive}) before chunk clipping",
+                    shrub.base_y
+                );
+            }
+        }
+        assert!(
+            trees > 0 && shrubs > 0,
+            "the descriptor walk emitted no plants"
+        );
+    }
 }
