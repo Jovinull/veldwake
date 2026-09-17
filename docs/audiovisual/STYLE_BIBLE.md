@@ -144,7 +144,7 @@ A frame where foreground and background have the same contrast range fails.
 
 - Water is a distinct material with its own shading response, not tinted terrain.
 - It must show a specular highlight from the sun that terrain does not, which is the primary cue that it is liquid.
-- Water surfaces are flat and horizontal by construction. A water surface that steps at a chunk boundary is a bug, not a style choice.
+- Water follows one continuous monotone downstream surface. A discontinuity introduced at a chunk boundary is a bug, not a style choice. The voxel top is `floor(surface)`, so a gently sloped river can legitimately change one top-water voxel between adjacent columns; this quantization is not a boundary discontinuity.
 - Shoreline sediment is mandatory; it is what makes the water read as contained rather than painted on.
 - This slice renders water opaque. Transparency, refraction, and motion are deliberately out of scope and are recorded as a limitation rather than pretended away.
 

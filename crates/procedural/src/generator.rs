@@ -15,7 +15,7 @@
 use veldwake_voxel::{CHUNK_EDGE, Chunk, ChunkCoord, LocalCoord, VoxelId};
 
 use crate::{
-    identity::{WorldIdentity, WorldSeed},
+    identity::{TerrainConfigError, WorldIdentity, WorldSeed},
     material::TerrainMaterial,
     terrain::{ColumnProfile, TerrainField, TerrainSample, slope_from_neighbours},
     vegetation::{MAX_SHRUB_REACH, VegetationSystem},
@@ -41,20 +41,23 @@ pub struct TerrainGenerator {
 }
 
 impl TerrainGenerator {
-    #[must_use]
-    pub fn new(identity: WorldIdentity) -> Self {
-        Self {
+    pub fn new(identity: WorldIdentity) -> Result<Self, TerrainConfigError> {
+        identity.validate()?;
+        Ok(Self {
             identity,
             field: TerrainField::new(&identity),
             vegetation: VegetationSystem::new(&identity),
             fingerprint: identity.fingerprint(),
-        }
+        })
     }
 
     /// The M4 golden slice.
     #[must_use]
     pub fn golden() -> Self {
-        Self::new(WorldIdentity::golden())
+        match Self::new(WorldIdentity::golden()) {
+            Ok(generator) => generator,
+            Err(error) => panic!("the compile-time golden terrain descriptor is invalid: {error}"),
+        }
     }
 
     /// A diagnostic world: the golden configuration under another seed.
@@ -64,10 +67,13 @@ impl TerrainGenerator {
     /// art controls at runtime.
     #[must_use]
     pub fn with_seed(seed: WorldSeed) -> Self {
-        Self::new(WorldIdentity::new(
+        match Self::new(WorldIdentity::new(
             seed,
             crate::identity::TerrainConfig::golden(),
-        ))
+        )) {
+            Ok(generator) => generator,
+            Err(error) => panic!("the compile-time golden terrain descriptor is invalid: {error}"),
+        }
     }
 
     #[must_use]
@@ -424,6 +430,44 @@ mod tests {
     }
 
     #[test]
+    fn the_complete_golden_region_fits_its_declared_vertical_slice() {
+        let generator = TerrainGenerator::golden();
+        let extent = generator.identity().config.extent;
+        let mut lowest = None;
+        let mut highest = None;
+        for chunk_z in extent.min_chunk_z..=extent.max_chunk_z {
+            for chunk_y in extent.min_chunk_y..=extent.max_chunk_y {
+                for chunk_x in extent.min_chunk_x..=extent.max_chunk_x {
+                    let coord = ChunkCoord::new(chunk_x, chunk_y, chunk_z);
+                    let chunk = generated(&generator, coord);
+                    for local_z in 0..CHUNK_EDGE {
+                        for local_y in 0..CHUNK_EDGE {
+                            for local_x in 0..CHUNK_EDGE {
+                                let id = chunk.read_local(local(local_x, local_y, local_z));
+                                if id.is_air() {
+                                    continue;
+                                }
+                                let world_y =
+                                    i64::from(chunk_y) * CHUNK_EDGE as i64 + local_y as i64;
+                                lowest = Some(
+                                    lowest.map_or(world_y, |current: i64| current.min(world_y)),
+                                );
+                                highest = Some(
+                                    highest.map_or(world_y, |current: i64| current.max(world_y)),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let floor = i64::from(extent.min_chunk_y) * CHUNK_EDGE as i64;
+        let ceiling = (i64::from(extent.max_chunk_y) + 1) * CHUNK_EDGE as i64;
+        assert!(lowest.is_some_and(|value| value >= floor));
+        assert!(highest.is_some_and(|value| value < ceiling));
+    }
+
+    #[test]
     fn a_ground_chunk_is_solid_at_the_bottom_and_open_at_the_top() {
         let generator = TerrainGenerator::golden();
         let chunk = generated(&generator, ChunkCoord::new(0, 0, 0));
@@ -489,31 +533,33 @@ mod tests {
     }
 
     #[test]
-    fn water_stands_level_across_a_chunk_seam() {
+    fn water_has_no_chunk_boundary_discontinuity() {
         let generator = TerrainGenerator::golden();
-        // The two chunks either side of the pond centre.
-        let left = generator.column_samples(ChunkCoord::new(2, 0, 0));
-        let right = generator.column_samples(ChunkCoord::new(3, 0, 0));
+        let gradient = generator.identity().config.water_gradient;
         let mut submerged = 0;
-        for index in 0..CHUNK_EDGE {
-            let last = &left[index * CHUNK_EDGE + CHUNK_EDGE - 1];
-            let first = &right[index * CHUNK_EDGE];
-            if last.is_submerged() || first.is_submerged() {
-                submerged += 1;
-                assert!(
-                    (last.water_surface - first.water_surface).abs() < 0.01,
-                    "the waterline steps at the seam: {} against {}",
-                    last.water_surface,
-                    first.water_surface
-                );
-                assert_eq!(
-                    last.water_surface_y(),
-                    first.water_surface_y(),
-                    "the top water voxel changes across the seam"
-                );
+        let extent = generator.identity().config.extent;
+        for chunk_x in extent.min_chunk_x..extent.max_chunk_x {
+            for chunk_z in extent.min_chunk_z..=extent.max_chunk_z {
+                let left = generator.column_samples(ChunkCoord::new(chunk_x, 0, chunk_z));
+                let right = generator.column_samples(ChunkCoord::new(chunk_x + 1, 0, chunk_z));
+                for index in 0..CHUNK_EDGE {
+                    let last = &left[index * CHUNK_EDGE + CHUNK_EDGE - 1];
+                    let first = &right[index * CHUNK_EDGE];
+                    if last.is_submerged() || first.is_submerged() {
+                        submerged += 1;
+                        assert!(
+                            ((last.water_surface - first.water_surface) - gradient).abs() < 1e-10,
+                            "water changed by more than its continuous downstream slope at x seam {chunk_x}"
+                        );
+                        assert!(
+                            (last.water_surface_y() - first.water_surface_y()).unsigned_abs() <= 1,
+                            "a voxel waterline jump exceeded one adjacent-column quantization step"
+                        );
+                    }
+                }
             }
         }
-        assert!(submerged > 0, "no water at the sampled seam");
+        assert!(submerged > 0, "no water crossed any tested seam");
     }
 
     #[test]

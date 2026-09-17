@@ -9,8 +9,6 @@
 @group(0) @binding(0)
 var<uniform> scene: SceneUniform;
 
-// Where the gradient's middle stop sits, as a fraction of the way up.
-const SKY_MID_HEIGHT = 0.35;
 // Angular size of the disc, as a cosine threshold. Soft-edged, not a hard dot.
 const SUN_DISC_INNER = 0.9992;
 const SUN_DISC_OUTER = 0.9997;

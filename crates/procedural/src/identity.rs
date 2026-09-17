@@ -14,6 +14,75 @@
 
 use crate::hash::fnv1a64;
 
+/// Why an art-control descriptor cannot safely be compiled into terrain.
+///
+/// Controls are public because probes and future descriptor loading need to
+/// inspect them, but arbitrary bit patterns are not valid generator input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerrainConfigError {
+    NonFinite {
+        field: &'static str,
+    },
+    NonPositive {
+        field: &'static str,
+    },
+    Negative {
+        field: &'static str,
+    },
+    InvertedExtent {
+        axis: &'static str,
+    },
+    InvalidValleyWidths,
+    TreeSpacingTooSmall {
+        found: i64,
+        minimum: i64,
+    },
+    VerticalBounds {
+        lowest_content: f64,
+        highest_content: f64,
+        min_y: i64,
+        max_y_exclusive: i64,
+    },
+}
+
+impl std::fmt::Display for TerrainConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite { field } => {
+                write!(formatter, "terrain control {field} must be finite")
+            }
+            Self::NonPositive { field } => {
+                write!(formatter, "terrain control {field} must be positive")
+            }
+            Self::Negative { field } => {
+                write!(formatter, "terrain control {field} cannot be negative")
+            }
+            Self::InvertedExtent { axis } => {
+                write!(formatter, "terrain extent is inverted on {axis}")
+            }
+            Self::InvalidValleyWidths => write!(
+                formatter,
+                "valley_floor_half_width must be smaller than highland_onset"
+            ),
+            Self::TreeSpacingTooSmall { found, minimum } => write!(
+                formatter,
+                "tree spacing {found} is below the {minimum}-voxel minimum"
+            ),
+            Self::VerticalBounds {
+                lowest_content,
+                highest_content,
+                min_y,
+                max_y_exclusive,
+            } => write!(
+                formatter,
+                "terrain content [{lowest_content}, {highest_content}] exceeds vertical region [{min_y}, {max_y_exclusive})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TerrainConfigError {}
+
 /// Bumped by hand for an intentional generator-contract revision that the
 /// descriptor below does not already capture.
 pub const TERRAIN_GENERATOR_VERSION: u32 = 1;
@@ -26,6 +95,12 @@ pub const TERRAIN_GENERATOR_VERSION: u32 = 1;
 /// document says so explicitly, but the version is bumped together either way
 /// because one number is easier to reason about than two.
 pub const STYLE_CONTRACT_VERSION: u32 = 1;
+
+/// Locked by the exhaustive golden-region test in `region`. This is folded
+/// into the cheap descriptor fingerprint rather than recomputed at runtime:
+/// an output change must update this value deliberately, which invalidates
+/// cache entries without making every cache lookup generate terrain.
+pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
 
 /// The seed a world is generated from.
 ///
@@ -218,6 +293,116 @@ impl TerrainConfig {
         }
     }
 
+    /// Rejects controls that would divide by zero, propagate non-finite
+    /// values, invalidate the vegetation spacing proof, or clip generated
+    /// terrain/vegetation at the declared vertical region boundary.
+    pub fn validate(&self) -> Result<(), TerrainConfigError> {
+        for (axis, low, high) in [
+            ("x", self.extent.min_chunk_x, self.extent.max_chunk_x),
+            ("y", self.extent.min_chunk_y, self.extent.max_chunk_y),
+            ("z", self.extent.min_chunk_z, self.extent.max_chunk_z),
+        ] {
+            if low > high {
+                return Err(TerrainConfigError::InvertedExtent { axis });
+            }
+        }
+        for (field, value) in [
+            ("valley_floor_height", self.valley_floor_height),
+            ("highland_rise", self.highland_rise),
+            ("valley_floor_half_width", self.valley_floor_half_width),
+            ("highland_onset", self.highland_onset),
+            ("ridge_amplitude", self.ridge_amplitude),
+            ("mid_detail_amplitude", self.mid_detail_amplitude),
+            ("fine_detail_amplitude", self.fine_detail_amplitude),
+            ("meander_amplitude", self.meander_amplitude),
+            ("meander_wavelength", self.meander_wavelength),
+            ("water_source_height", self.water_source_height),
+            ("water_gradient", self.water_gradient),
+            ("river_bed_depth", self.river_bed_depth),
+            ("river_half_width", self.river_half_width),
+            ("pond_centre_x", self.pond_centre_x),
+            ("pond_half_length", self.pond_half_length),
+            ("pond_extra_half_width", self.pond_extra_half_width),
+            ("pond_extra_depth", self.pond_extra_depth),
+            ("cliff_slope", self.cliff_slope),
+            ("tree_max_slope", self.tree_max_slope),
+        ] {
+            if !value.is_finite() {
+                return Err(TerrainConfigError::NonFinite { field });
+            }
+        }
+        for (field, value) in [
+            ("highland_rise", self.highland_rise),
+            ("ridge_amplitude", self.ridge_amplitude),
+            ("mid_detail_amplitude", self.mid_detail_amplitude),
+            ("fine_detail_amplitude", self.fine_detail_amplitude),
+            ("meander_amplitude", self.meander_amplitude),
+            ("river_bed_depth", self.river_bed_depth),
+            ("pond_extra_half_width", self.pond_extra_half_width),
+            ("pond_extra_depth", self.pond_extra_depth),
+        ] {
+            if value < 0.0 {
+                return Err(TerrainConfigError::Negative { field });
+            }
+        }
+        for (field, value) in [
+            ("valley_floor_half_width", self.valley_floor_half_width),
+            ("highland_onset", self.highland_onset),
+            ("meander_wavelength", self.meander_wavelength),
+            ("water_gradient", self.water_gradient),
+            ("river_bed_depth", self.river_bed_depth),
+            ("river_half_width", self.river_half_width),
+            ("pond_half_length", self.pond_half_length),
+            ("cliff_slope", self.cliff_slope),
+            ("tree_max_slope", self.tree_max_slope),
+        ] {
+            if value <= 0.0 {
+                return Err(TerrainConfigError::NonPositive { field });
+            }
+        }
+        if self.valley_floor_half_width >= self.highland_onset {
+            return Err(TerrainConfigError::InvalidValleyWidths);
+        }
+        if self.tree_spacing < 6 {
+            return Err(TerrainConfigError::TreeSpacingTooSmall {
+                found: self.tree_spacing,
+                minimum: 6,
+            });
+        }
+        if self.shrub_spacing <= 0 {
+            return Err(TerrainConfigError::NonPositive {
+                field: "shrub_spacing",
+            });
+        }
+
+        let min_y = i64::from(self.extent.min_chunk_y) * 32;
+        let max_y_exclusive = (i64::from(self.extent.max_chunk_y) + 1) * 32;
+        let region_width = f64::from(self.extent.max_chunk_x - self.extent.min_chunk_x + 1) * 32.0;
+        let lowest_content = self.water_source_height
+            - self.water_gradient * region_width
+            - self.river_bed_depth
+            - self.pond_extra_depth;
+        // Ridge noise is non-negative, while the signed detail fields are
+        // bounded by their amplitudes. The golden region's complete generated
+        // voxel envelope (including vegetation) is separately locked in
+        // `generator` tests; this descriptor-only bound rejects terrain and
+        // water controls that would already escape the vertical slice.
+        let highest_content = self.valley_floor_height
+            + self.highland_rise
+            + self.ridge_amplitude
+            + self.mid_detail_amplitude
+            + self.fine_detail_amplitude;
+        if lowest_content < min_y as f64 || highest_content >= max_y_exclusive as f64 {
+            return Err(TerrainConfigError::VerticalBounds {
+                lowest_content,
+                highest_content,
+                min_y,
+                max_y_exclusive,
+            });
+        }
+        Ok(())
+    }
+
     /// Serialises the configuration for hashing. Floating-point controls are
     /// hashed by their bit pattern, which is exact and avoids a formatting
     /// round trip; the order is fixed here and must never be reshuffled
@@ -270,6 +455,11 @@ impl WorldIdentity {
         Self { seed, config }
     }
 
+    /// Validates the descriptor before it is used to generate any chunk.
+    pub fn validate(&self) -> Result<(), TerrainConfigError> {
+        self.config.validate()
+    }
+
     /// The M4 golden slice: golden seed, golden configuration.
     #[must_use]
     pub const fn golden() -> Self {
@@ -289,6 +479,7 @@ impl WorldIdentity {
         bytes.extend_from_slice(&self.seed.0.to_le_bytes());
         bytes.extend_from_slice(&TERRAIN_GENERATOR_VERSION.to_le_bytes());
         bytes.extend_from_slice(&STYLE_CONTRACT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&TERRAIN_BEHAVIOR_SIGNATURE.to_le_bytes());
         bytes.extend_from_slice(&self.config.descriptor());
         fnv1a64(&bytes)
     }
@@ -373,6 +564,7 @@ mod tests {
     #[test]
     fn the_golden_configuration_satisfies_the_style_bible_proportions() {
         let config = TerrainConfig::golden();
+        assert_eq!(config.validate(), Ok(()));
         // "The valley is wider than it is deep: floor width at least three
         // times the highland rise."
         let floor_width = config.valley_floor_half_width * 2.0;
@@ -393,5 +585,44 @@ mod tests {
         assert!((1.0..=2.0).contains(&config.fine_detail_amplitude));
         // Minimum tree spacing of six voxels.
         assert!(config.tree_spacing >= 6);
+    }
+
+    #[test]
+    fn invalid_art_controls_are_rejected_before_generation() {
+        let assert_rejected = |name: &str, config: TerrainConfig| {
+            assert!(config.validate().is_err(), "{name} was accepted");
+            assert!(
+                crate::TerrainGenerator::new(WorldIdentity::new(WorldSeed::GOLDEN, config))
+                    .is_err(),
+                "{name} reached the generator"
+            );
+        };
+        let mut config = TerrainConfig::golden();
+        config.tree_spacing = 0;
+        assert_rejected("zero tree spacing", config);
+        config.tree_spacing = -1;
+        assert_rejected("negative tree spacing", config);
+        config = TerrainConfig::golden();
+        config.shrub_spacing = 0;
+        assert_rejected("zero shrub spacing", config);
+        config.shrub_spacing = -1;
+        assert_rejected("negative shrub spacing", config);
+        config = TerrainConfig::golden();
+        config.ridge_amplitude = f64::NAN;
+        assert_rejected("nan", config);
+        config.meander_wavelength = f64::INFINITY;
+        assert_rejected("infinity", config);
+        config = TerrainConfig::golden();
+        config.extent.min_chunk_x = config.extent.max_chunk_x + 1;
+        assert_rejected("inverted extent", config);
+        config = TerrainConfig::golden();
+        config.valley_floor_half_width = config.highland_onset;
+        assert_rejected("inverted valley", config);
+        config = TerrainConfig::golden();
+        config.fine_detail_amplitude = -1.0;
+        assert_rejected("negative amplitude", config);
+        config = TerrainConfig::golden();
+        config.river_bed_depth = 100.0;
+        assert_rejected("outside water bed", config);
     }
 }

@@ -266,13 +266,13 @@ impl App {
         let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
         renderer.set_debug_primitives(&primitives);
         renderer.update_scene(&self.camera, self.weather, self.debug_mode.lod_tint());
-        let submit_started = Instant::now();
+        let render_started = Instant::now();
         let outcome = renderer.render();
-        let submit_time = submit_started.elapsed();
+        let renderer_render_wall_time = render_started.elapsed();
         let request_next_redraw = match outcome {
             RenderOutcome::Rendered => {
                 self.frame_stats
-                    .record(now, elapsed, submit_time, report, streaming);
+                    .record(now, elapsed, renderer_render_wall_time, report, streaming);
                 self.frame_stats.report_if_due(
                     now,
                     streaming,
@@ -422,8 +422,8 @@ fn camera_action(key: KeyCode) -> Option<CameraAction> {
 /// Which streaming configuration the client runs. Selected by the
 /// `VELDWAKE_PROFILE` environment variable so no CLI dependency is needed:
 /// `default` (M3B), `m3c-baseline` (radius 3, `Lod0` only), `m3c-banded`
-/// (radius 3, `Lod0`/`Lod1` band), `m4-golden` (radius 5, `Lod0` only), and
-/// `m4-golden-banded` (radius 5 with the band, for the compatibility run).
+/// (radius 3, `Lod0`/`Lod1` band), `m4-golden` (radius 6, `Lod0` only), and
+/// `m4-golden-banded` (radius 6 with the band, for the compatibility run).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StreamingProfile {
     Default,
@@ -519,14 +519,14 @@ impl FrameStats {
         &mut self,
         now: Instant,
         frame_time: Duration,
-        submit_time: Duration,
+        renderer_render_wall_time: Duration,
         report: FrameStreamingReport,
         streaming: &StreamingBridge,
     ) {
         self.frames += 1;
         self.accumulated_frame_time += frame_time;
-        self.submit_total += submit_time;
-        self.submit_max = self.submit_max.max(submit_time);
+        self.submit_total += renderer_render_wall_time;
+        self.submit_max = self.submit_max.max(renderer_render_wall_time);
         if self.idle_reached.is_none()
             && streaming.runtime().is_idle()
             && streaming.pending_removal_count() == 0
@@ -727,8 +727,8 @@ impl FrameStats {
             cache_encode_max_us = metrics.cache.encode.max_us,
             cache_decode_total_us = metrics.cache.decode.total_us,
             cache_decode_max_us = metrics.cache.decode.max_us,
-            interval_submit_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
-            interval_submit_max_us = self.submit_max.as_micros(),
+            renderer_render_wall_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
+            renderer_render_wall_max_us = self.submit_max.as_micros(),
             time_to_idle_ms = self.idle_reached.map(|d| d.as_secs_f64() * 1000.0),
             "M3B streaming work and budgets"
         );

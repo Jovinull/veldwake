@@ -25,8 +25,6 @@ var<uniform> model: ModelUniform;
 
 // Cool blue for the coarse level in the Lod debug view.
 const LOD1_DEBUG_TINT = vec3<f32>(0.35, 0.60, 1.0);
-// Where the sky gradient's middle stop sits, as a fraction of the way up.
-const SKY_MID_HEIGHT = 0.35;
 // Tightness of the specular lobe. High enough that only water and wet rock
 // catch the sun, which is the cue the style bible asks water to carry.
 const SPECULAR_EXPONENT = 64.0;
@@ -67,9 +65,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-/// The procedural sky in one direction. Shared with the sky pass by
-/// construction: fog resolves to exactly what is drawn behind the terrain, so
-/// there is no seam between the two to tune away.
+/// The procedural sky in one direction. `SKY_MID_HEIGHT` is defined in the
+/// shared scene source, so fog resolves to the same gradient break as the sky.
 fn sky_color(direction: vec3<f32>) -> vec3<f32> {
     let up = clamp(direction.y, 0.0, 1.0);
     var base: vec3<f32>;

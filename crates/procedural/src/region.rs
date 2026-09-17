@@ -169,6 +169,12 @@ pub const SIGNATURE_CHUNKS: &[ChunkCoord] = &[
 /// in the milestone document what moved and why.
 pub const GOLDEN_REGION_SIGNATURE: u64 = 0x1285_7799_1516_4f6a;
 
+/// Exhaustive signature of every present chunk in the finite golden region.
+/// Unlike [`GOLDEN_REGION_SIGNATURE`], which is a compact spread-out fixture,
+/// this is the cache-invalidation tripwire: it is deliberately test-only work
+/// and is never part of runtime source fingerprinting cost.
+pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
+
 /// Folds the locked chunks into one value.
 ///
 /// Absence and emptiness contribute differently, so a region that silently
@@ -184,6 +190,28 @@ pub fn region_signature(generator: &TerrainGenerator) -> u64 {
             None => bytes.push(0),
             Some(chunk) => {
                 bytes.push(1);
+                bytes.extend_from_slice(&fingerprint(&chunk).to_le_bytes());
+                bytes.extend_from_slice(&(chunk.solid_count() as u64).to_le_bytes());
+            }
+        }
+    }
+    fnv1a64(&bytes)
+}
+
+#[cfg(test)]
+fn full_region_signature(generator: &TerrainGenerator) -> u64 {
+    let extent = generator.identity().config.extent;
+    let mut bytes = Vec::with_capacity(1_875 * 32);
+    for z in extent.min_chunk_z..=extent.max_chunk_z {
+        for y in extent.min_chunk_y..=extent.max_chunk_y {
+            for x in extent.min_chunk_x..=extent.max_chunk_x {
+                let coord = ChunkCoord::new(x, y, z);
+                let Some(chunk) = generator.generate(coord) else {
+                    panic!("declared region omitted {coord:?}");
+                };
+                bytes.extend_from_slice(&x.to_le_bytes());
+                bytes.extend_from_slice(&y.to_le_bytes());
+                bytes.extend_from_slice(&z.to_le_bytes());
                 bytes.extend_from_slice(&fingerprint(&chunk).to_le_bytes());
                 bytes.extend_from_slice(&(chunk.solid_count() as u64).to_le_bytes());
             }
@@ -337,6 +365,17 @@ mod tests {
             signature,
             region_signature(&TerrainGenerator::with_seed(WorldSeed(1))),
             "the signature ignores the seed"
+        );
+    }
+
+    #[test]
+    fn exhaustive_world_behavior_is_locked_into_the_cache_identity() {
+        use crate::identity::TERRAIN_BEHAVIOR_SIGNATURE;
+        let signature = full_region_signature(&TerrainGenerator::golden());
+        assert_eq!(signature, GOLDEN_WORLD_BEHAVIOR_SIGNATURE);
+        assert_eq!(
+            TERRAIN_BEHAVIOR_SIGNATURE, GOLDEN_WORLD_BEHAVIOR_SIGNATURE,
+            "the cache identity must carry the same exhaustive behavior tripwire"
         );
     }
 

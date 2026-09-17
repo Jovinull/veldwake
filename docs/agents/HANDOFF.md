@@ -8,11 +8,11 @@ M1, M2, and all of M3 are merged into `main`. M3D landed through PR #7 at merge 
 
 ## Continue here
 
-`feat/m4-beautiful-terrain-slice` is ready for integral branch QA of `main...feat/m4-beautiful-terrain-slice`: correctness, architecture, Rust quality, and the visual claims in `planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`, before any pull request.
+`feat/m4-beautiful-terrain-slice` completed integral branch QA of `main...feat/m4-beautiful-terrain-slice`. QA now rejects cache/source identity mismatches before worker startup, rejects pathological public terrain descriptors before generation, binds the cheap cache fingerprint to a test-only exhaustive 1,875-chunk behavioural signature, tests the real vertical voxel envelope, correctly describes sloped-water quantization, shares the sky-gradient break between WGSL passes, and names the measured render interval honestly. External review/PR is next; do not begin M5.
 
 The three things most worth an adversarial eye:
 
-1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The locked regional signature `0x1285_7799_1516_4f6a` and the named probes in `procedural::region` are the tripwires; check that they would actually catch a change, not merely that they pass.
+1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The compact regional signature `0x1285_7799_1516_4f6a`, named probes, and exhaustive behavioural signature `0x6f13_74ab_a505_8961` in `procedural::region` are the tripwires; the latter is folded into the cache fingerprint.
 2. **The cache default change.** Run-length replaced raw as the default payload encoding on M4 evidence: 107,904 bytes against 4,132,656 for the same eighty-one terrain chunks, encoding six times faster. The worst case is unchanged and still bounded by `MAX_ENTRY_BYTES`, but the decision reverses an M3D one and deserves scrutiny.
 3. **The visual assessment.** It is written in the milestone document as a judgement, with its weaknesses named. Disagreeing with it is a legitimate QA result.
 

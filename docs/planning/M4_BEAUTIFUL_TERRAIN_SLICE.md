@@ -27,9 +27,11 @@ Generation lives in its own crate, between `veldwake-voxel` and `veldwake-stream
 
 ### World identity
 
-`WorldIdentity` is a `WorldSeed` plus a `TerrainConfig`. Its `fingerprint()` hashes the seed, `TERRAIN_GENERATOR_VERSION`, `STYLE_CONTRACT_VERSION`, and the full configuration descriptor, including the region extent and every art control. The runtime fingerprint is deliberately cheap — it hashes a declared descriptor, not the generated world — and the expensive behavioural check lives in a test that locks a regional signature.
+`WorldIdentity` is a `WorldSeed` plus a `TerrainConfig`. Its `fingerprint()` hashes the seed, `TERRAIN_GENERATOR_VERSION`, `STYLE_CONTRACT_VERSION`, a locked exhaustive behavioural signature, and the full configuration descriptor, including the region extent and every art control. The signature covers all 1,875 chunks in the finite golden region but is computed only by a test; runtime fingerprinting remains descriptor-cost. A generator-output change therefore fails the exhaustive tripwire until its cache identity is deliberately advanced.
 
-The golden slice is `WorldSeed(0x5645_4c44_5741_4b45)` with `TerrainConfig::golden()`, whose fingerprint on this branch is `0x2af3_8869_3c50_4f75`. Every fixture, screenshot, and number in this document refers to that world. A diagnostic world is chosen explicitly by seed (`VELDWAKE_WORLD=seed:…`); there is no general configuration system and no runtime art-control tuning.
+`TerrainConfig` remains inspectable public data, but it is not a bag of unchecked numbers: `TerrainConfig::validate` and fallible `TerrainGenerator::new` reject non-finite values, inverted extents/valley widths, non-positive lattice spacings and scales, negative amplitudes, spacing below the six-voxel tree theorem, and terrain/water controls whose conservative vertical envelope leaves the declared region. The golden constructor remains simple because its compile-time descriptor is validated at construction.
+
+The golden slice is `WorldSeed(0x5645_4c44_5741_4b45)` with `TerrainConfig::golden()`. Every fixture, screenshot, and number in this document refers to that world. A diagnostic world is chosen explicitly by seed (`VELDWAKE_WORLD=seed:…`); there is no general configuration system and no runtime art-control tuning.
 
 Random streams are named, never sequential. `StreamLabel` declares one stream per generator stage, derived from the seed and the generator version, so adding a draw to vegetation cannot perturb the terrain.
 
@@ -60,7 +62,7 @@ There are no scattered magic constants: every amplitude, width, and threshold is
 
 There is no global hydrology simulation, and there is no erosion. What exists is one geometric construction that cannot produce the failures a naive river produces:
 
-- `water_surface(x)` falls linearly downstream from `water_source_height` at the region's upstream edge. It is a continuous, strictly decreasing function of world `x`, so **the river cannot run uphill and the waterline cannot step at a chunk seam**. Both are properties of the construction, not of tuning.
+- `water_surface(x)` falls linearly downstream from `water_source_height` at the region's upstream edge. It is a continuous, strictly decreasing function of world `x`, so **the river cannot run uphill and no discontinuity can be introduced at a chunk seam**. Voxelization uses `floor`, so adjacent columns may legitimately differ by one top-water voxel on either side of any coordinate, including a seam; that is slope quantization, not a boundary step. Both properties are construction, not tuning.
 - The channel bed is defined *relative to the water surface*, `water_surface(x) - river_bed_depth`, so the bed descends exactly as fast as the water does and the channel keeps its depth from one end of the region to the other without ever cutting above the waterline.
 - The carve is a smooth bell centred on the meandering axis, widened and deepened around `pond_centre_x` to form the pond.
 - Water fills every cell below the local water surface and above the terrain, and nothing else. Where the ground rises above the surface, the water simply stops.
@@ -93,7 +95,7 @@ One dominant biome with micro-zones decided by slope, height above water, landfo
 
 `veldwake-streaming` gained a two-method `ChunkSource` trait — `fingerprint()` and `load(ChunkCoord)`. `DiagnosticChunkSource` implements it unchanged, and `TerrainChunkSource` adapts the generator by mapping `Option<Chunk>` to `SourceChunk`. The runtime gained `with_source` and `with_source_and_cache`; `new` and `with_cache` keep their diagnostic behaviour so the whole M3 regression suite still tests what it claims to.
 
-`StreamingConfig::m4_golden()` is visible radius 6, `Lod0` only, retention 7: 2,197 render, 3,211 dependency, 3,375 retention coordinates. The M3C decision that the LOD band stays opt-in is unchanged; `m4_golden_banded()` exists for the compatibility run and is never the default.
+`StreamingConfig::m4_golden()` is visible radius 6, `Lod0` only, retention 7: 2,197 render, 3,211 dependency, 3,375 retention coordinates. The M3C decision that the LOD band stays opt-in is unchanged; `m4_golden_banded()` exists for the compatibility run and is never the default. `StreamingRuntime::with_source_and_cache` validates the cache identity against `source.fingerprint()` before it starts the worker: an A cache may not be attached to B and cannot warm-replay A content as B.
 
 ### Rendering
 
@@ -147,11 +149,11 @@ The standalone mesh sizes above the bench prints are not the streamed sizes: wit
 | snapshot build, total | 20,395 µs |
 | worker mesh, total / max | 213,838 µs / 3,490 µs |
 | frame interval, settled | 16.83 ms mean, 59.4 FPS observed |
-| CPU submit, mean / max | 12,638 µs / 30,163 µs |
+| renderer render wall time, mean / max | 12,638 µs / 30,163 µs |
 | stale loads / stale meshes / cap blocks | 0 / 0 / 0 |
 | gap frames / ready-undrawn max / commit failures | 0 / 0 / 0 |
 
-The frame interval is vsync-bound at 60 Hz, so it measures the presentation cadence rather than the renderer's headroom. **Submit time is CPU time in `Renderer::render`, not GPU time**; no GPU timestamps were taken, and none of these numbers may be read as GPU cost.
+The frame interval is vsync-bound at 60 Hz, so it measures the presentation cadence rather than the renderer's headroom. **Renderer render wall time wraps the complete `Renderer::render()` call, including surface acquisition, encoding, submission, and presentation; it is neither isolated CPU-submit time nor GPU time.** No GPU timestamps were taken, and none of these numbers may be read as GPU cost.
 
 The 60-second settle is the dominant cost and is not a rendering cost. The runtime dispatches at most one worker job per `poll`, and `poll` runs once per frame, so at 60 Hz the pipeline is bounded at about sixty jobs per second whatever the worker can actually do. The golden profile needs 3,211 loads plus 351 meshes. Recorded as KI-017.
 
@@ -188,7 +190,7 @@ Against real terrain the band settles to **67 percent fewer chunk-mesh bytes** a
 Two conclusions, both reversals of an M3D finding:
 
 - **The cache is now clearly worth having.** Against the diagnostic fixture it cost more than regenerating (KI-016), because the fixture was a trivial generator. Against real terrain, a warm run reaches idle in 11 ms where regeneration takes 68 — about six times faster. KI-016 stands as written for the diagnostic source and is now scoped to it.
-- **Run-length is now the default payload encoding.** M3D chose raw because the only content was 97 percent air, where run-length's bounded worst case looked like the larger risk. Real terrain is layered, so runs are long: the same 81 chunks occupy 107,904 bytes instead of 4,132,656, a 97.4-percent reduction, while encoding six times faster and decoding five times faster. The worst case is unchanged and still bounded by `MAX_ENTRY_BYTES`.
+- **Run-length is the current experimental default payload encoding.** M3D chose raw because the only content was 97 percent air, where run-length's bounded worst case looked like the larger risk. The 81-chunk terrain cache sample is strongly favourable (107,904 bytes instead of 4,132,656; 97.4-percent reduction, encode about six times faster and decode about five times faster), but it is not a representative distribution by landform and must not be generalized to future worlds. The cache itself remains experimental; retain both decoders and re-measure stratified valley/water, cliff, vegetation, highland, and sky chunks before treating this default as a production compression policy. Worst-case RLE remains exactly 3× raw and bounded by `MAX_ENTRY_BYTES`.
 
 ### Visual evidence
 
@@ -237,11 +239,11 @@ The disk cache remains an experiment and a discardable accelerator. It is still 
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace` | PASS, 269 tests |
+| `cargo test --workspace` | PASS, superseded by 273-test branch-QA run |
 | release `terrain-probe` | PASS |
 | release `streaming-probe` | PASS |
 | Windows/D3D12 driven smoke, six poses, two weather states | PASS, exit code 0, no validation errors |
-| `cargo nextest run --workspace` | PASS, 269 tests |
+| `cargo nextest run --workspace` | PASS, 273 tests in branch QA |
 | `cargo deny check` | PASS — advisories, bans, licenses, sources all ok; KI-007's duplicate warnings are unchanged |
 | `cargo audit` | PASS — 207 crate dependencies scanned, no advisory. No dependency was added in this milestone |
 | 1080p/60 budget | NOT YET APPLICABLE — the budget is Proposed and unaccepted; captures are 1600 × 900 and vsync-bound |

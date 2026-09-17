@@ -70,9 +70,9 @@ Standalone meshing walls off all six chunk faces because it has no neighbours, s
 | snapshot build, total | 20,395 µs |
 | worker mesh, total / max | 213,838 / 3,490 µs |
 | frame interval / observed rate | 16.83 ms / 59.4 FPS |
-| CPU submit, mean / max | 12,638 / 30,163 µs |
+| renderer render wall time, mean / max | 12,638 / 30,163 µs |
 
-The frame interval is vsync-bound at 60 Hz and therefore measures presentation cadence, not renderer headroom. **Submit is CPU time inside `Renderer::render`, not GPU time**; no GPU timestamps were taken and none of these numbers may be read as GPU cost. The settle time is dominated by job dispatch, not by generation: see KI-017.
+The frame interval is vsync-bound at 60 Hz and therefore measures presentation cadence, not renderer headroom. **Renderer render wall time wraps the complete `Renderer::render()` call, including surface acquisition, encoding, submission, and presentation; it is neither isolated CPU-submit time nor GPU time.** No GPU timestamps were taken and none of these numbers may be read as GPU cost. The settle time is dominated by job dispatch, not by generation: see KI-017.
 
 **LOD band against real terrain**, same pose and settle:
 

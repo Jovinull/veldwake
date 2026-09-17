@@ -197,6 +197,10 @@ pub struct ResidencySummary {
 #[derive(Debug)]
 pub enum RuntimeError {
     Demand(DemandError),
+    CacheSourceMismatch {
+        cache_fingerprint: u64,
+        source_fingerprint: u64,
+    },
     WorkerStart(std::io::Error),
     WorkerDisconnected,
     RequestTokenExhausted,
@@ -210,6 +214,13 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Demand(error) => error.fmt(formatter),
+            Self::CacheSourceMismatch {
+                cache_fingerprint,
+                source_fingerprint,
+            } => write!(
+                formatter,
+                "cache source fingerprint {cache_fingerprint:016x} does not match runtime source {source_fingerprint:016x}"
+            ),
             Self::WorkerStart(error) => {
                 write!(formatter, "failed to start streaming worker: {error}")
             }
@@ -376,15 +387,23 @@ impl StreamingRuntime {
 
     /// Starts a runtime on any source, consulting `cache` before it.
     ///
-    /// The caller is responsible for having opened the cache against this
-    /// source's fingerprint; a mismatch is not an error here, it simply means
-    /// every stored entry is stale and gets rejected on read.
+    /// Construction rejects a cache opened for a different source before the
+    /// worker starts. A cache validates its entries against its own identity,
+    /// so accepting mismatched objects here could replay one world's chunk to
+    /// another without an entry-level stale rejection.
     pub fn with_source_and_cache(
         config: StreamingConfig,
         center: ChunkCoord,
         source: Box<dyn ChunkSource>,
         cache: ChunkCache,
     ) -> Result<Self, RuntimeError> {
+        let source_fingerprint = source.fingerprint();
+        if cache.source_fingerprint() != source_fingerprint {
+            return Err(RuntimeError::CacheSourceMismatch {
+                cache_fingerprint: cache.source_fingerprint(),
+                source_fingerprint,
+            });
+        }
         Self::start(config, center, source, Some(cache))
     }
 
@@ -400,7 +419,7 @@ impl StreamingRuntime {
         center: ChunkCoord,
         cache: ChunkCache,
     ) -> Result<Self, RuntimeError> {
-        Self::start(config, center, Box::new(DiagnosticChunkSource), Some(cache))
+        Self::with_source_and_cache(config, center, Box::new(DiagnosticChunkSource), cache)
     }
 
     fn start(
@@ -1711,6 +1730,64 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct FixedSource {
+        fingerprint: u64,
+        material: veldwake_voxel::VoxelId,
+    }
+
+    impl ChunkSource for FixedSource {
+        fn fingerprint(&self) -> u64 {
+            self.fingerprint
+        }
+
+        fn load(&self, _coord: ChunkCoord) -> SourceChunk {
+            let mut chunk = Chunk::empty();
+            match chunk.write(0, 0, 0, self.material) {
+                Ok(_) => SourceChunk::Present(chunk),
+                Err(error) => panic!("fixed test source could not write its chunk: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_cache_for_one_source_cannot_be_attached_to_another_world() {
+        let root = cache_root("source-cache-identity");
+        let source_a = FixedSource {
+            fingerprint: 0xa11c_e001,
+            material: veldwake_voxel::VoxelId(1),
+        };
+        let source_b = FixedSource {
+            fingerprint: 0xb22c_e002,
+            material: veldwake_voxel::VoxelId(2),
+        };
+        let config = crate::CacheConfig::new(root.clone());
+        let cache = match crate::ChunkCache::open(&config, source_a.fingerprint()) {
+            Ok((cache, _)) => cache,
+            Err(error) => panic!("cache failed to open: {error}"),
+        };
+        let coord = ChunkCoord::default();
+        let (_, cold) = cache.load_with(coord, || source_a.load(coord));
+        assert_eq!(cold.misses, 1);
+        let (_, warm) = cache.load_with(coord, || panic!("A must warm-load from its cache"));
+        assert_eq!(warm.hits_present, 1);
+
+        let result = StreamingRuntime::with_source_and_cache(
+            cache_probe_config(),
+            coord,
+            Box::new(source_b),
+            cache,
+        );
+        assert!(matches!(
+            result,
+            Err(RuntimeError::CacheSourceMismatch {
+                cache_fingerprint: 0xa11c_e001,
+                source_fingerprint: 0xb22c_e002,
+            })
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn settle_runtime(runtime: &mut StreamingRuntime) -> Result<(), RuntimeError> {
         for _ in 0..100_000 {
             runtime.poll()?;
@@ -1890,8 +1967,15 @@ mod tests {
                 Ok((cache, _)) => cache,
                 Err(error) => panic!("cache failed to open: {error}"),
             };
-        let mut second =
-            StreamingRuntime::with_cache(cache_probe_config(), ChunkCoord::default(), other)?;
+        let mut second = StreamingRuntime::with_source_and_cache(
+            cache_probe_config(),
+            ChunkCoord::default(),
+            Box::new(FixedSource {
+                fingerprint: DiagnosticChunkSource.fingerprint() ^ 0xff,
+                material: veldwake_voxel::VoxelId(9),
+            }),
+            other,
+        )?;
         settle_runtime(&mut second)?;
         let cache = &second.metrics().cache;
         assert_eq!(

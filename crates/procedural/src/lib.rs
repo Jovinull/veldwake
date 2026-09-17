@@ -39,8 +39,8 @@ pub mod vegetation;
 
 pub use generator::TerrainGenerator;
 pub use identity::{
-    RegionExtent, STYLE_CONTRACT_VERSION, StreamLabel, TERRAIN_GENERATOR_VERSION, TerrainConfig,
-    WorldIdentity, WorldSeed,
+    RegionExtent, STYLE_CONTRACT_VERSION, StreamLabel, TERRAIN_BEHAVIOR_SIGNATURE,
+    TERRAIN_GENERATOR_VERSION, TerrainConfig, TerrainConfigError, WorldIdentity, WorldSeed,
 };
 pub use material::TerrainMaterial;
 pub use terrain::{BiomeZone, Landform, TerrainField, TerrainSample};

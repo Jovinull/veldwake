@@ -31,3 +31,7 @@ struct SceneUniform {
     // w: how far a Lod1 mesh blends toward the debug tint.
     params: vec4<f32>,
 };
+
+// Shared by the sky pass and the world fog target. WGSL has no include, so
+// host pipeline construction prepends this source to both shaders.
+const SKY_MID_HEIGHT = 0.35;
