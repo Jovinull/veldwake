@@ -1,6 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A and M3B complete and merged; M3C0–M3C3 implemented and independently hardened on the feature branch; LOD remains opt-in pending external review and merge**
+Status: **M3A–M3C complete and merged; M3D implemented and independently QA-hardened on `feat/m3d-cache-persistence`, ready for external review; LOD remains opt-in**
 Planning branch: `feat/m3c-lod-debug`
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
@@ -822,7 +822,7 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 
 ## Milestone: M3D — Disk Cache & Persistence Experiment
 
-Status: **implemented on `feat/m3d-cache-persistence`, awaiting branch QA**. M3C is merged into `main` through [PR #6](https://github.com/Jovinull/veldwake/pull/6) at merge commit `c669929b00427c2f438529b572931400a24b6d3d`.
+Status: **implemented and independently QA-hardened on `feat/m3d-cache-persistence`, ready for external review/PR**. M3C is merged into `main` through [PR #6](https://github.com/Jovinull/veldwake/pull/6) at merge commit `c669929b00427c2f438529b572931400a24b6d3d`.
 
 M3D closes the last M3 capability: a persistence and cache experiment serious enough to inform the architecture, and explicitly not a save system.
 
@@ -832,7 +832,7 @@ M3D closes the last M3 capability: a persistence and cache experiment serious en
 
 The cache lives in `crates/streaming` as a private `cache` module with `format`, `store`, and policy layers. No new crate was created, and the decision was made against the crate test in `ARCHITECTURE.md`: nothing else consumes it, it needs no build isolation, it would invert no dependency, and the streaming crate is already the headless, filesystem-free-until-now owner of the load path. A crate for one consumer would have been a boundary without a reason. `veldwake-voxel` stays dependency-free and filesystem-free; it exposes cells and coordinates, and the format reads them through the public API without duplicating the voxel representation.
 
-The cache sits on the worker thread, inside the load path:
+Per-chunk cache work sits on the worker thread, inside the load path:
 
 ```text
 load job -> cache lookup -> hit: decode and validate
@@ -841,7 +841,7 @@ load job -> cache lookup -> hit: decode and validate
          -> result (+ per-load cache counters) -> runtime
 ```
 
-No filesystem call happens on a frame or render thread, so `PERF-001` holds. The client learns nothing about the format: it passes a directory through `StreamingBridge::with_cache` and reads aggregate counters. `RequestToken`, content generations, and stale-result rejection are untouched, and a cached result is accepted or rejected by exactly the same rules as a source result.
+There is one deliberately narrower startup boundary. `ChunkCache::open()` synchronously sweeps temporary files and walks the current identity's footprint. The opt-in client calls it once from `App::initialize`, which is a `winit` event-loop callback: cold setup therefore does filesystem work on the event-loop thread before the redraw cycle begins. It never runs per frame. After the opened handle moves into `StreamingRuntime`, every per-chunk read, decode, source fallback, encode, and publish runs on the dedicated worker. This satisfies `PERF-001` (no blocking I/O on the frame hot path) but does **not** justify the broader claim that no cache filesystem operation ever touches the event-loop thread. The client learns no entry-format details. `RequestToken`, content generations, and stale-result rejection are unchanged, and cache work is accounted even when its eventual worker result is stale.
 
 ### On-disk format
 
@@ -860,17 +860,17 @@ A fixed 48-byte header and an explicit payload, little-endian throughout. No Rus
 | 36 | 4 | payload length |
 | 40 | 8 | FNV-1a 64 checksum over bytes 0..40 and the payload |
 
-A file is exactly `48 + payload_len` bytes. Cells are `u16` little-endian in the grid's own `x + EDGE * (y + EDGE * z)` order. `KnownAbsent` is a typed entry with an empty payload, never an absent file. Encode and decode return typed errors; `CacheFormatError` has fourteen variants and classifies each as *stale* (another version, cell encoding, or source identity) or *corrupt* (damaged or mismatched), because routine invalidation and real damage must never share a counter.
+A file is exactly `48 + payload_len` bytes. Cells are `u16` little-endian in the grid's own `x + EDGE * (y + EDGE * z)` order. `KnownAbsent` is a typed entry with an empty payload, never an absent file. Encode and decode return private typed errors classified as *stale* (another version, cell encoding, or source identity) or *corrupt* (damaged or mismatched); format internals are not re-exported. The store reads at most `MAX_ENTRY_BYTES + 1 = 196,657` bytes, enough to identify any current valid raw/RLE entry or reject an oversized file without attacker-controlled allocation. FNV-1a is deterministic accidental-corruption detection, not cryptographic authentication: a malicious writer can forge it, and the cache is not a trust boundary.
 
-**Source identity.** `DiagnosticChunkSource::fingerprint()` hashes an explicit descriptor of the generation rules — corridor bounds, checkerboard period, materials, landmark geometry, chunk edge — plus a hand-maintained `SOURCE_SCHEMA_REVISION`. A locked test pins the value, so changing what the source generates fails a test until someone decides what it means for cached content. The fingerprint is part of the cache key *and* of the header: a new identity writes to a different directory, and a file that somehow arrives under the wrong key is rejected on read. This is a cache-invalidation key and nothing else; it promises no save or network compatibility.
+**Source identity.** The original descriptor-only locked test did not observe `DiagnosticChunkSource::load`: changing generation logic while leaving constants and `SOURCE_SCHEMA_REVISION` untouched kept both the fingerprint and test green. QA replaced that false guarantee with a behavioral tripwire. A test hashes the canonical result at every coordinate in the declared finite corridor plus a one-chunk absent shell; the locked `SOURCE_BEHAVIOR_SIGNATURE` is then included in the cheap runtime fingerprint alongside the explicit descriptor and manual revision. A content change inside this finite source now fails until the signature and locked identity are updated consciously. The limit is explicit: this is a non-cryptographic test contract for the current finite diagnostic source, not automatic source-code hashing or a general world-generation proof. The fingerprint remains a cache-invalidation key, not a save/network compatibility promise.
 
 ### Writing, recovery, and boundedness
 
-Entries are **write-once per key**, where the key is `(format version, source fingerprint, chunk coord)`. A new identity or version writes elsewhere instead of overwriting, which removes overwrite races from the common path. Publishing writes a temporary file in the same directory and renames it, so a reader never sees a partially written entry; a losing race on the rename is not a failure because the entry that already exists is equivalent.
+Each `(format version, source fingerprint, chunk coord)` has one deterministic **logical value**. A new identity or version writes elsewhere. Publication writes a uniquely named temporary beside the target and then calls same-directory `rename`, so normal readers observe a complete old or new name, not the temporary write. Physical “write-once” is intentionally not promised cross-platform: Windows rename normally refuses an existing target, while Unix rename may atomically replace it if the target appears between `exists` and `rename`. Concurrent publishers are correct because one source identity and coordinate must produce semantically equivalent content, even when raw and RLE yield different bytes. A concurrency regression accepts either complete publisher value and rejects partial mixtures.
 
-The temporary file is deliberately **not** flushed before the rename. This is a discardable cache whose entries carry a checksum: a torn file after a power loss is detected on read and falls back to the source, so an `fsync` per chunk would buy nothing a regeneration does not already give. Temporary files from a crashed writer are swept and counted when the cache opens, and they can never be read as entries because only the final extension is ever opened.
+The temporary file and directory are deliberately **not** `fsync`ed. Temp-and-rename provides normal-operation atomic visibility, not power-loss durability. After a crash, a target may be missing or damaged; length/header/checksum validation rejects damaged bytes and the source regenerates them. Temporary residue is swept and counted during the next cold open and is never selected as an entry.
 
-A rejected entry is deleted on detection. That is the only reason a published entry is removed, and it is what lets the source result republish over a write-once key.
+A rejected entry is best-effort deleted before the source result is republished. QA found that deletion errors were discarded through `unwrap_or(false)`, so a poisoned file could force fallback indefinitely while the metric called nothing out. The source result is still returned, but metrics now distinguish `rejected_entries_removed` from `rejected_entry_delete_failures`; publication has separate written/skipped/failure counters. Removal is never called a repair by itself. A failure-injection regression proves repeated poison remains visible without becoming fatal or becoming AIR.
 
 Nothing evicts. The footprint is walked on demand and reported as entries and bytes, `ChunkCache::clear` removes an identity's entries explicitly, and the absence of an eviction or size policy is recorded as KI-015 rather than hidden behind a running total the experiment does not maintain.
 
@@ -891,6 +891,8 @@ Both encodings are implemented and measured on the same 81-chunk settle. Raw is 
 
 Run-length is 169 times smaller and several times faster on this fixture, with no dependency. **The default stays raw anyway**, and the reason is the fixture rather than the measurement: the diagnostic corridor is a one-voxel floor in an otherwise empty chunk, so it is about 97% air and compresses absurdly well. Real terrain will not, and run-length has a genuine worst case of three times raw on cell-by-cell variation, where raw is always exactly 64 KiB. A bounded, predictable default is worth more than a fixture-shaped win; the encoding is a config choice, both paths are tested, and M4 should re-measure against real terrain before changing the default. No compression crate was introduced, so no dependency, licence, or audit surface was added for a result that may not survive the fixture.
 
+The encoding preference is a write preference, not part of logical cache identity. The header self-describes raw versus RLE, and the decoder accepts either current encoding. Reopening a raw cache with RLE preferred (or the reverse) reads the existing entry without rewriting it; only a missing/rejected entry uses the new preference. A regression locks both directions. Thus two concurrent publishers may produce byte-different but logically equivalent files for the same key, reinforcing why publication correctness is semantic rather than “first physical byte sequence wins.”
+
 ### Measured cold versus warm
 
 Release `streaming-probe` on the audited host, one identical settle of the default profile per phase, three repetitions. Every phase reports the same residency: 81 tracked, 63 resident, 4,128,768 resident bytes, 2,511,648 CPU mesh bytes, 81 source load jobs dispatched, 0 stale loads, 0 stale meshes, 0 hard-cap blocks.
@@ -904,13 +906,15 @@ Release `streaming-probe` on the audited host, one identical settle of the defau
 
 Cold: 81 lookups, 81 misses, 81 source fallbacks, 81 writes, 0 failures. Warm and warm again: 81 lookups, 63 present hits, 18 absence hits, 0 misses, 0 source fallbacks, 0 write attempts, and a stable disk footprint. Warm is reproducible across repetitions.
 
-**The honest headline is that the cache does not pay here.** Warm is consistently *slower* than no cache at all — about 13 to 37 ms against 6 to 7 ms — because the diagnostic source is a trivial in-memory generator that costs far less than reading and decoding 4 MB, or even 24 KB, from disk. This experiment proves the boundary, the format discipline, the failure handling, and the cost; it does not demonstrate a speedup and must not be quoted as one (KI-016). A cache of this shape only pays when generation is expensive, which is exactly what M4 terrain will make true and what should decide whether any of this becomes default behaviour.
+**The honest headline is that the cache does not pay here.** In the original three-run set, warm was 13–37 ms against 6–7 ms cacheless; the final independent QA sample measured raw warm at 15–17 ms against 5 ms cacheless and RLE warm at about 8 ms against 4 ms cacheless. The diagnostic source is a trivial in-memory generator that costs far less than disk plus decode. This experiment proves the boundary, format discipline, failure handling, and cost; it demonstrates no speedup and must not be quoted as one (KI-016). Re-measure only when generation is genuinely expensive.
+
+Independent QA initially measured much slower phases and traced them to reserving the maximum legal entry size (196,657 bytes) before every read, even for 48-byte absence entries and the tiny RLE fixture. The reader still enforces that hard maximum with `take`, but now grows storage from the actual input. The final post-fix raw off/cold/warm/warm-again sample was 5,437/50,624/17,119/14,684 µs; RLE was 4,226/45,733/8,411/8,518 µs. Both encodings produced 81 misses/writes cold, then 63 present + 18 absence hits with zero fallback/write warm; footprints remained 4,132,656 and 24,438 bytes. One sample is not a benchmark distribution, and it still demonstrates no speedup over this trivial source.
 
 ### What survives for real world generation
 
 - The header discipline: explicit magic, version, content-shape fields, identity, length, and checksum, with typed errors and a stale/corrupt split.
-- Source identity as a cache key, with a locked fingerprint test forcing a deliberate decision whenever generation changes.
-- Write-once keys plus temp-and-rename, which removes overwrite races without a journal.
+- Source identity as a cache key, with an exhaustive finite-source behavioral tripwire forcing a deliberate decision whenever current diagnostic output changes.
+- One logical value per key plus same-directory temp-and-rename; correctness is independent of platform-specific concurrent-replacement behavior.
 - `KnownAbsent` as a typed entry rather than an absent file.
 - Best-effort publication: a cache failure degrades throughput, never correctness.
 - Aggregate-only counters kept apart from the streaming counters.
@@ -919,21 +923,21 @@ What does not survive: the flat directory, the absence of eviction, and the raw-
 
 ### Observability
 
-`RuntimeMetrics::cache` is a separate `CacheMetrics` struct so a cache experiment can never make the streaming numbers look different than they are: lookups, present hits, absence hits, misses, stale rejects, corrupt rejects, read failures, repairs, source fallbacks, write attempts, writes, skipped writes, write failures, bytes read, bytes written, and encode/decode timing. All zero when no cache is configured, which is the contract that keeps M3B and M3C evidence comparable. Nothing logs per chunk.
+`RuntimeMetrics::cache` is a separate `CacheMetrics` struct: lookups, present/absence hits, misses, stale/corrupt rejects, read failures, rejected removals, rejected-entry delete failures, source fallbacks, write attempts/writes/skips/failures, bytes, and encode/decode timing. It is folded before token validation, so disk work remains counted when the worker result is stale. All fields are zero without a cache. The client includes them in its existing five-second aggregate work line; the probe prints them per phase; nothing logs per chunk.
 
 ### Configuration
 
-`VELDWAKE_CACHE_DIR` opts the client into the experiment and names the directory. Unset, the client behaves exactly as before and the streaming worker touches no filesystem. The repository working tree is never written to: the probe uses the system temporary directory, and the client uses the directory it is given. A cache that fails to open is logged and skipped rather than fatal. No general configuration system was introduced.
+`VELDWAKE_CACHE_DIR` opts the client into the experiment and names the directory. Unset, the client performs no cache filesystem operation and behaves as before. When set, startup open/scan occurs synchronously during initialization; a failure is logged and the client continues cacheless. The probe uses the system temporary directory, while the client uses exactly the supplied root. No general configuration system was introduced.
 
 ### Headless tests
 
-Thirty-two new tests, all headless: format layout and endianness including a negative coordinate; byte-exact round trips of both encodings at positive, negative, and extreme coordinates; an empty chunk distinguished from known absence; truncation at five lengths; bad magic, unknown version, foreign chunk edge, foreign cell encoding, unknown entry kind, unknown payload encoding; impossible payload length, trailing bytes, checksum damage, wrong coordinate, wrong fingerprint, absence carrying a payload, zero-length run, and a run payload that does not fill the chunk; fixed-width traversal-free names; write-once publication; fingerprint isolation; temporary residue swept and never read; probing without creating directories; cold miss to source to publish; warm hit without the source; absence stored and replayed as its own counter; a missing file as a miss and never absence; corrupt entry falling back, repaired, and hitting afterwards; an entry moved onto another coordinate's path; a write failure that still returns the source result; both encodings returning identical content; clearing; all-material round trip through disk; and four runtime-level tests covering no-cache silence, cold-then-warm identity of content, stale token rejection with a cache configured, and a changed fingerprint refilling from the source.
+Forty M3D tests are headless. In addition to the original format/store/policy/runtime coverage, independent QA checks every header length from 0 through 47, malformed raw and non-multiple/zero/underfilled/overrunning RLE payloads including `u32::MAX`, arbitrary coordinate bits and all `u16` voxel IDs, checksum-before-structural classification, the exact 3× worst-case RLE bound, a store read capped one byte beyond the maximum entry, concurrent publishers leaving one complete value, failed rejected-entry deletion with repeated observable fallback, raw↔RLE preference changes preserving readable existing entries, an exhaustive behavioral source signature, and cache accounting surviving stale-result rejection. `CacheFormatError` remains internal because no other crate encodes or decodes entries.
 
-All 144 tests that existed before M3D are preserved and pass unchanged; the workspace is at 176.
+All 144 tests that existed before M3D are preserved; the workspace is at 184 (38 voxel, 90 streaming, 56 client).
 
 ### Gates
 
-`cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets --all-features -- -D warnings` PASS, `cargo nextest run --workspace` PASS (176 tests: 38 voxel, 82 streaming, 56 client), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS, `cargo test --workspace --doc` PASS, `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. `cargo run --release -p veldwake-streaming --bin streaming-probe` PASS with the cache phases above. No Windows/D3D12 smoke was run: M3D changes no presentation code, and the client path is opt-in and off by default.
+Independent QA (2026-09-17): `cargo fmt --check`, Clippy with warnings denied, debug and release all-feature workspace builds, 184/184 nextest cases (38 voxel, 90 streaming, 56 client), doc tests, rustdoc with warnings denied, locked metadata, `cargo deny check`, `cargo audit`, `git diff --check`, CRLF and relative-link scans, and the complete release probe all passed. No `LNK1104` retry was required for the recorded nextest run. No Windows/D3D12 smoke was run because QA changed no presentation or client lifecycle behavior; the only client edit adds aggregate cache fields to the existing five-second log.
 
 ### M3D non-goals
 

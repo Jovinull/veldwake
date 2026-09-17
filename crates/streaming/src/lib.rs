@@ -16,9 +16,7 @@ mod source;
 mod types;
 mod worker;
 
-pub use cache::{
-    CacheConfig, CacheFootprint, CacheFormatError, CacheOpenReport, ChunkCache, PayloadEncoding,
-};
+pub use cache::{CacheConfig, CacheFootprint, CacheOpenReport, ChunkCache, PayloadEncoding};
 pub use demand::{
     BAND_LOD0_RADIUS, BAND_TRANSITION_RADIUS, DemandError, DemandSets, LodSelection,
     StreamingConfig,

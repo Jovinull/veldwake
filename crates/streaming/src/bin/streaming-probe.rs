@@ -81,7 +81,7 @@ fn cache_report(
         runtime.summary().cpu_mesh_bytes
     );
     println!(
-        "cache encoding={encoding} phase={phase} lookups={} hits_present={} hits_absent={} misses={} stale={} corrupt={} read_failures={} repairs={} source_fallbacks={}",
+        "cache encoding={encoding} phase={phase} lookups={} hits_present={} hits_absent={} misses={} stale={} corrupt={} read_failures={} rejected_removed={} rejected_delete_failures={} source_fallbacks={}",
         cache.lookups,
         cache.hits_present,
         cache.hits_absent,
@@ -89,7 +89,8 @@ fn cache_report(
         cache.stale_rejects,
         cache.corrupt_rejects,
         cache.read_failures,
-        cache.repairs,
+        cache.rejected_entries_removed,
+        cache.rejected_entry_delete_failures,
         cache.source_fallbacks
     );
     println!(

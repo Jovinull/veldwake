@@ -8,9 +8,11 @@
 //! separate problem with separate guarantees; this experiment only proves the
 //! boundary, the format discipline, and the cost.
 //!
-//! The cache sits inside the load path of the streaming worker, on the worker
-//! thread. No filesystem access happens on a frame or render thread, and the
-//! client never learns the format: it only chooses a directory.
+//! Per-chunk lookup, decode, source fallback, and publication sit inside the
+//! streaming worker's load path. Opening is a separate cold-start operation:
+//! it sweeps temporary files and walks the footprint on the caller's thread.
+//! The client performs that opt-in setup during event-loop initialization,
+//! never in the frame hot path. It learns no entry-format details.
 //!
 //! Policy, in one place:
 //!
@@ -24,17 +26,13 @@
 mod format;
 mod store;
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{io, path::PathBuf, time::Instant};
 
 use veldwake_voxel::ChunkCoord;
 
 use crate::source::SourceChunk;
 
-pub use format::{CacheFormatError, PayloadEncoding};
+pub use format::PayloadEncoding;
 pub use store::CacheFootprint;
 
 use format::EntryIdentity;
@@ -45,8 +43,8 @@ use store::{CacheStore, PublishOutcome};
 pub struct CacheConfig {
     /// Root directory for the experiment. Never the repository working tree:
     /// the caller passes a diagnostic or temporary directory explicitly.
-    pub root: PathBuf,
-    pub payload_encoding: PayloadEncoding,
+    root: PathBuf,
+    payload_encoding: PayloadEncoding,
 }
 
 impl CacheConfig {
@@ -86,7 +84,12 @@ pub(crate) struct CacheLoadOutcome {
     pub(crate) stale_rejects: u64,
     pub(crate) corrupt_rejects: u64,
     pub(crate) read_failures: u64,
-    pub(crate) repairs: u64,
+    /// Rejected files successfully removed before best-effort publication.
+    /// This does not by itself claim the replacement was published.
+    pub(crate) rejected_entries_removed: u64,
+    /// Rejected files that could not be removed. The source value is still
+    /// returned, but the poisoned entry can cause another fallback later.
+    pub(crate) rejected_entry_delete_failures: u64,
     pub(crate) source_fallbacks: u64,
     pub(crate) write_attempts: u64,
     pub(crate) writes: u64,
@@ -134,17 +137,8 @@ impl ChunkCache {
         ))
     }
 
-    #[must_use]
-    pub fn source_fingerprint(&self) -> u64 {
-        self.source_fingerprint
-    }
-
-    #[must_use]
-    pub fn payload_encoding(&self) -> PayloadEncoding {
-        self.payload_encoding
-    }
-
-    pub fn entries_dir(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn entries_dir(&self) -> &std::path::Path {
         self.store.entries_dir()
     }
 
@@ -215,11 +209,14 @@ impl ChunkCache {
                         } else {
                             outcome.corrupt_rejects = 1;
                         }
-                        // The key is write-once, so the rejected file would
-                        // block its own replacement. Delete it and let the
-                        // source result republish.
-                        if self.store.remove_entry(coord).unwrap_or(false) {
-                            outcome.repairs = 1;
+                        // Delete before best-effort republish. A cleanup
+                        // failure must not lose the source result, but it must
+                        // be observable: otherwise one poisoned entry can
+                        // trigger a silent fallback forever.
+                        match self.store.remove_entry(coord) {
+                            Ok(true) => outcome.rejected_entries_removed = 1,
+                            Ok(false) => {}
+                            Err(_) => outcome.rejected_entry_delete_failures = 1,
                         }
                     }
                 }
@@ -397,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_entry_falls_back_to_the_source_and_is_repaired() {
+    fn a_corrupt_entry_falls_back_to_the_source_and_is_replaced() {
         let config = temp_config("corrupt");
         let (cache, _) = open(&config, 0x7777);
         let coord = ChunkCoord::new(0, 0, -1);
@@ -423,7 +420,11 @@ mod tests {
         assert!(consulted, "a corrupt entry must fall back to the source");
         assert_eq!(outcome.corrupt_rejects, 1);
         assert_eq!(outcome.stale_rejects, 0);
-        assert_eq!(outcome.repairs, 1, "the rejected entry must be removed");
+        assert_eq!(
+            outcome.rejected_entries_removed, 1,
+            "the rejected entry must be removed"
+        );
+        assert_eq!(outcome.rejected_entry_delete_failures, 0);
         assert_eq!(outcome.writes, 1, "the source result republishes it");
         assert!(matches!(value, SourceChunk::Present(_)));
 
@@ -458,7 +459,62 @@ mod tests {
         });
         assert!(consulted);
         assert_eq!(outcome.corrupt_rejects, 1);
-        assert_eq!(outcome.repairs, 1);
+        assert_eq!(outcome.rejected_entries_removed, 1);
+        let _ = fs::remove_dir_all(&config.root);
+    }
+
+    #[test]
+    fn a_rejected_entry_delete_failure_is_visible_and_never_loses_the_source_result() {
+        let config = temp_config("delete-failure");
+        let (mut cache, _) = open(&config, 0x8989);
+        let coord = ChunkCoord::new(0, 0, 0);
+        cache.load_with(coord, || DiagnosticChunkSource.load(coord));
+
+        let path = cache.entries_dir().join(CacheStore::entry_name(coord));
+        let mut bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("could not read the entry: {error}"),
+        };
+        bytes[0] ^= 0xff;
+        if let Err(error) = fs::write(&path, bytes) {
+            panic!("could not corrupt the entry: {error}");
+        }
+        cache.store.reject_removals();
+
+        for _ in 0..2 {
+            let (value, outcome) = cache.load_with(coord, || DiagnosticChunkSource.load(coord));
+            assert!(matches!(value, SourceChunk::Present(_)));
+            assert_eq!(outcome.corrupt_rejects, 1);
+            assert_eq!(outcome.rejected_entries_removed, 0);
+            assert_eq!(outcome.rejected_entry_delete_failures, 1);
+            assert_eq!(outcome.source_fallbacks, 1);
+            assert_eq!(outcome.writes_skipped, 1);
+            assert_eq!(outcome.writes, 0);
+        }
+        let _ = fs::remove_dir_all(&config.root);
+    }
+
+    #[test]
+    fn an_oversized_entry_is_read_with_a_hard_bound_then_replaced() {
+        let config = temp_config("oversized");
+        let (cache, _) = open(&config, 0x8a8a);
+        let coord = ChunkCoord::new(0, 0, 0);
+        if let Err(error) = fs::create_dir_all(cache.entries_dir()) {
+            panic!("could not create entry directory: {error}");
+        }
+        let path = cache.entries_dir().join(CacheStore::entry_name(coord));
+        if let Err(error) = fs::write(&path, vec![0_u8; format::MAX_ENTRY_BYTES + 4096]) {
+            panic!("could not create oversized entry: {error}");
+        }
+
+        let (value, outcome) = cache.load_with(coord, || DiagnosticChunkSource.load(coord));
+        assert!(matches!(value, SourceChunk::Present(_)));
+        assert_eq!(outcome.bytes_read, (format::MAX_ENTRY_BYTES + 1) as u64);
+        assert_eq!(outcome.corrupt_rejects, 1);
+        assert_eq!(outcome.rejected_entries_removed, 1);
+        assert_eq!(outcome.writes, 1);
+        let repaired_len = fs::metadata(&path).map(|metadata| metadata.len());
+        assert!(matches!(repaired_len, Ok(len) if len <= format::MAX_ENTRY_BYTES as u64));
         let _ = fs::remove_dir_all(&config.root);
     }
 
@@ -536,6 +592,30 @@ mod tests {
             sizes[1],
             sizes[0]
         );
+    }
+
+    #[test]
+    fn encoding_preference_only_affects_new_entries() {
+        let coord = ChunkCoord::new(-3, 0, 1);
+        for (written, reopened) in [
+            (PayloadEncoding::Raw, PayloadEncoding::Rle),
+            (PayloadEncoding::Rle, PayloadEncoding::Raw),
+        ] {
+            let config = temp_config("encoding-preference").with_payload_encoding(written);
+            let (cache, _) = open(&config, 0xbcbc);
+            cache.load_with(coord, || DiagnosticChunkSource.load(coord));
+            let before = cache.footprint().unwrap_or_default();
+
+            let reopened_config = config.clone().with_payload_encoding(reopened);
+            let (cache, _) = open(&reopened_config, 0xbcbc);
+            let (_, outcome) = cache.load_with(coord, || {
+                panic!("either supported on-disk encoding must remain readable")
+            });
+            assert_eq!(outcome.hits_present, 1, "written={written:?}");
+            assert_eq!(outcome.write_attempts, 0);
+            assert_eq!(cache.footprint().unwrap_or_default(), before);
+            let _ = fs::remove_dir_all(&config.root);
+        }
     }
 
     #[test]

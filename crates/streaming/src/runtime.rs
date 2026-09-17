@@ -78,13 +78,17 @@ pub struct CacheMetrics {
     pub corrupt_rejects: u64,
     /// The entry existed but could not be read at all.
     pub read_failures: u64,
-    /// Rejected entries deleted so the source result could republish them.
-    pub repairs: u64,
+    /// Rejected entries successfully deleted before best-effort republish.
+    /// Publication has its own counters; removal alone is not called repair.
+    pub rejected_entries_removed: u64,
+    /// Rejected entries that could not be deleted. Source fallback still
+    /// succeeds, but a future lookup may reject the same poisoned file again.
+    pub rejected_entry_delete_failures: u64,
     /// Loads answered by the source because the cache could not answer.
     pub source_fallbacks: u64,
     pub write_attempts: u64,
     pub writes: u64,
-    /// Publishes that found an entry already present for a write-once key.
+    /// Publishes skipped because an entry was already visible for the key.
     pub writes_skipped: u64,
     pub write_failures: u64,
     pub bytes_read: u64,
@@ -359,10 +363,11 @@ impl StreamingRuntime {
 
     /// Starts a runtime whose worker consults `cache` before the source.
     ///
-    /// The cache lives on the worker thread. Behaviour is otherwise identical
-    /// to [`Self::new`]: the same content reaches the runtime whether it came
-    /// from disk or from the source, and tokens, generations, and stale-result
-    /// rejection are unaffected.
+    /// The caller opens the cache before construction; all subsequent lookup
+    /// and publication work lives on the worker thread. Behaviour is otherwise
+    /// identical to [`Self::new`]: the same content reaches the runtime whether
+    /// it came from disk or from the source, and tokens, generations, and
+    /// stale-result rejection are unaffected.
     pub fn with_cache(
         config: StreamingConfig,
         center: ChunkCoord,
@@ -1369,7 +1374,8 @@ impl StreamingRuntime {
         cache.stale_rejects += outcome.stale_rejects;
         cache.corrupt_rejects += outcome.corrupt_rejects;
         cache.read_failures += outcome.read_failures;
-        cache.repairs += outcome.repairs;
+        cache.rejected_entries_removed += outcome.rejected_entries_removed;
+        cache.rejected_entry_delete_failures += outcome.rejected_entry_delete_failures;
         cache.source_fallbacks += outcome.source_fallbacks;
         cache.write_attempts += outcome.write_attempts;
         cache.writes += outcome.writes;
@@ -1801,7 +1807,19 @@ mod tests {
         let stale = RequestToken(current.0.saturating_sub(1));
         assert_ne!(stale, current);
         let before = runtime.metrics().stale_load_results;
-        runtime.integrate_load(coord, stale, SourceChunk::KnownAbsent)?;
+        let cache_before = runtime.metrics().cache.lookups;
+        runtime.integrate_result(WorkerResult::Load {
+            coord,
+            token: stale,
+            source: SourceChunk::KnownAbsent,
+            cache: CacheLoadOutcome {
+                lookups: 1,
+                hits_absent: 1,
+                bytes_read: 48,
+                decode_nanos: 1,
+                ..CacheLoadOutcome::default()
+            },
+        })?;
         assert_eq!(
             runtime.metrics().stale_load_results,
             before + 1,
@@ -1812,6 +1830,12 @@ mod tests {
             Some(ResidencyStatus::KnownAbsent),
             "the rejected result must not change residency"
         );
+        assert_eq!(
+            runtime.metrics().cache.lookups,
+            cache_before + 1,
+            "disk work is counted even when the load result is stale"
+        );
+        assert_eq!(runtime.metrics().cache.hits_absent, 1);
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())

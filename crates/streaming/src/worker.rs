@@ -78,9 +78,9 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    /// Starts the worker thread. The cache, when configured, lives entirely
-    /// on this thread: no filesystem access ever happens on the caller's
-    /// frame or render thread.
+    /// Starts the worker thread. A cache passed here has already completed its
+    /// cold open; every later lookup and publication happens on this thread,
+    /// never in the caller's frame path.
     pub(crate) fn spawn(
         source: DiagnosticChunkSource,
         cache: Option<ChunkCache>,

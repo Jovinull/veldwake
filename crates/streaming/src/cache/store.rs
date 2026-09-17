@@ -1,14 +1,17 @@
 //! Filesystem placement and publication for cache entries.
 //!
-//! Entries are write-once per key. The key is
+//! Entries have one logical value per key. The key is
 //! `(format version, source fingerprint, chunk coord)`, so a new source
 //! identity or format version writes to a different directory instead of
-//! overwriting anything. That removes overwrite races from the common path
-//! and leaves exactly one reason to delete a file: it was read and rejected.
+//! intentionally replacing content. Concurrent publishers may race: Windows
+//! rename normally preserves the winner while Unix rename may atomically
+//! replace it. Both bytes represent the same source result by contract, so
+//! correctness depends on semantic equivalence, not cross-platform
+//! "write-once" filesystem behavior.
 
 use std::{
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process,
     sync::atomic::{AtomicU64, Ordering},
@@ -16,7 +19,7 @@ use std::{
 
 use veldwake_voxel::ChunkCoord;
 
-use super::format::FORMAT_VERSION;
+use super::format::{FORMAT_VERSION, MAX_ENTRY_BYTES};
 
 /// Extension of a published entry. Only this extension is ever read.
 const ENTRY_EXTENSION: &str = "vwc";
@@ -33,7 +36,8 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum PublishOutcome {
     /// The entry was written and published under its final name.
     Written,
-    /// An entry already existed for this write-once key; nothing was changed.
+    /// An entry already existed at the preflight check or won a rename race on
+    /// a platform whose rename does not replace an existing target.
     AlreadyPresent,
 }
 
@@ -43,6 +47,8 @@ pub(crate) struct CacheStore {
     /// Directory holding every entry of one format version and source
     /// identity. The caller's root is never written to directly.
     entries: PathBuf,
+    #[cfg(test)]
+    reject_removals: bool,
 }
 
 impl CacheStore {
@@ -52,7 +58,16 @@ impl CacheStore {
             entries: root
                 .join(format!("v{FORMAT_VERSION}"))
                 .join(format!("{source_fingerprint:016x}")),
+            #[cfg(test)]
+            reject_removals: false,
         }
+    }
+
+    /// Narrow failure injection for the cache-policy recovery regression. It
+    /// is test-only so filesystem behavior is not abstracted in production.
+    #[cfg(test)]
+    pub(crate) fn reject_removals(&mut self) {
+        self.reject_removals = true;
     }
 
     pub(crate) fn entries_dir(&self) -> &Path {
@@ -82,17 +97,35 @@ impl CacheStore {
     /// Reads an entry. `Ok(None)` means the file is absent, which is a cache
     /// miss and never authoritative absence.
     pub(crate) fn read(&self, coord: ChunkCoord) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.entry_path(coord)) {
-            Ok(bytes) => Ok(Some(bytes)),
+        match File::open(self.entry_path(coord)) {
+            Ok(file) => {
+                // Read one byte beyond the largest legal entry. The decoder
+                // will reject that bounded prefix as malformed, after which
+                // policy removes the hostile file. `fs::read` would allocate
+                // according to an attacker-controlled file length first.
+                let limit = u64::try_from(MAX_ENTRY_BYTES)
+                    .map_err(|_| io::Error::other("cache entry bound does not fit u64"))?
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("cache entry read bound overflow"))?;
+                let mut reader = file.take(limit);
+                // Let the buffer grow with the actual entry. Reserving the
+                // worst case here would turn every tiny RLE/absence hit into
+                // a ~192 KiB allocation even though `take` already bounds it.
+                let mut bytes = Vec::new();
+                reader.read_to_end(&mut bytes)?;
+                Ok(Some(bytes))
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }
 
-    /// Publishes an entry without ever leaving a partially written file under
-    /// the final name: the bytes are written to a temporary file in the same
-    /// directory and then renamed, which is atomic for readers on the
-    /// filesystems this experiment targets.
+    /// Publishes an entry without exposing the temporary write under the final
+    /// name: bytes are written beside the target and then renamed. Same-volume
+    /// rename is atomic for the targeted filesystems during normal operation.
+    /// If concurrent publishers race, Windows commonly keeps the first target
+    /// while Unix may atomically replace it; callers must provide equivalent
+    /// bytes for one logical key and must not rely on which publisher wins.
     ///
     /// The temporary file is not flushed to stable storage before the rename.
     /// That is deliberate: this is a discardable cache whose entries carry a
@@ -120,8 +153,8 @@ impl CacheStore {
             Ok(()) => Ok(PublishOutcome::Written),
             Err(error) => {
                 remove_quietly(&temp);
-                // Another publisher won the race for this write-once key. The
-                // entry that exists is equivalent, so this is not a failure.
+                // Another publisher may have won on a non-replacing rename.
+                // The logical value is equivalent, so this is not a failure.
                 if path.exists() {
                     Ok(PublishOutcome::AlreadyPresent)
                 } else {
@@ -134,6 +167,13 @@ impl CacheStore {
     /// Removes an entry that was read and rejected, so the source result can
     /// republish it. This is the only reason a published entry is deleted.
     pub(crate) fn remove_entry(&self, coord: ChunkCoord) -> io::Result<bool> {
+        #[cfg(test)]
+        if self.reject_removals {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected rejected-entry deletion failure",
+            ));
+        }
         match fs::remove_file(self.entry_path(coord)) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -219,6 +259,7 @@ fn remove_quietly(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     fn published(store: &CacheStore, coord: ChunkCoord, bytes: &[u8]) -> PublishOutcome {
         match store.publish(coord, bytes) {
@@ -263,8 +304,8 @@ mod tests {
     }
 
     #[test]
-    fn a_published_entry_is_write_once_and_readable() {
-        let root = temp_root("write-once");
+    fn sequential_publication_preserves_an_existing_entry() {
+        let root = temp_root("existing-entry");
         let store = CacheStore::new(&root, 0xabcd);
         let coord = ChunkCoord::new(-2, 0, 3);
         assert_eq!(store.read(coord).ok().flatten(), None, "missing is a miss");
@@ -277,7 +318,7 @@ mod tests {
         assert_eq!(
             published(&store, coord, b"second"),
             PublishOutcome::AlreadyPresent,
-            "a write-once key is never overwritten"
+            "the preflight preserves an entry already visible to this publisher"
         );
         assert_eq!(
             store.read(coord).ok().flatten().as_deref(),
@@ -311,6 +352,41 @@ mod tests {
             second.read(coord).ok().flatten().as_deref(),
             Some(&b"b"[..])
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_publishers_leave_one_complete_value() {
+        let root = temp_root("concurrent");
+        let store = CacheStore::new(&root, 9);
+        let coord = ChunkCoord::new(3, -2, 1);
+        let barrier = Arc::new(Barrier::new(3));
+        let mut threads = Vec::new();
+        for bytes in [&b"publisher-a"[..], &b"publisher-b"[..]] {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.publish(coord, bytes)
+            }));
+        }
+        barrier.wait();
+
+        let mut written = 0;
+        for thread in threads {
+            match thread.join() {
+                Ok(Ok(PublishOutcome::Written)) => written += 1,
+                Ok(Ok(PublishOutcome::AlreadyPresent)) => {}
+                Ok(Err(error)) => panic!("concurrent publish failed: {error}"),
+                Err(_) => panic!("concurrent publisher panicked"),
+            }
+        }
+        assert!(written >= 1);
+        let final_bytes = store.read(coord).ok().flatten();
+        assert!(matches!(
+            final_bytes.as_deref(),
+            Some(b"publisher-a") | Some(b"publisher-b")
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 

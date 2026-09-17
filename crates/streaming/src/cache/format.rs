@@ -62,6 +62,10 @@ const OFFSET_CHECKSUM: usize = 40;
 
 /// Bytes per run in the run-length payload encoding: `u32` count, `u16` value.
 const RLE_RUN_BYTES: usize = 6;
+/// Largest valid entry under either current payload encoding. This bound is
+/// also enforced while reading so a hostile cache file cannot make a worker
+/// allocate an arbitrary amount before validation.
+pub(crate) const MAX_ENTRY_BYTES: usize = HEADER_BYTES + Chunk::VOLUME * RLE_RUN_BYTES;
 
 /// How the cell payload is stored.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -137,7 +141,7 @@ pub(crate) struct EntryIdentity {
 /// Why an entry could not be used. Every variant is a cache miss with a
 /// reason, never a panic and never an interpretation of the content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CacheFormatError {
+pub(crate) enum CacheFormatError {
     Truncated {
         len: usize,
         needed: usize,
@@ -163,6 +167,9 @@ pub enum CacheFormatError {
     PayloadLengthMismatch {
         declared: usize,
         actual: usize,
+    },
+    PayloadTooLarge {
+        len: usize,
     },
     TrailingBytes {
         extra: usize,
@@ -234,6 +241,9 @@ impl Display for CacheFormatError {
                 formatter,
                 "entry declares {declared} payload bytes but holds {actual}"
             ),
+            Self::PayloadTooLarge { len } => {
+                write!(formatter, "payload length {len} does not fit the format")
+            }
             Self::TrailingBytes { extra } => {
                 write!(formatter, "entry has {extra} trailing bytes")
             }
@@ -346,10 +356,10 @@ pub(crate) fn encode(
     put_i32(&mut bytes, OFFSET_COORD + 4, identity.coord.y);
     put_i32(&mut bytes, OFFSET_COORD + 8, identity.coord.z);
     put_u64(&mut bytes, OFFSET_FINGERPRINT, identity.source_fingerprint);
-    // A payload longer than `u32::MAX` cannot occur: the raw encoding is
-    // `CHUNK_VOLUME * 2` bytes and the run-length encoding is never larger
-    // than three times that.
-    let payload_len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+    // This is unreachable for today's bounded encodings, but the persistent
+    // format must fail explicitly if a future encoder violates that bound.
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| CacheFormatError::PayloadTooLarge { len: payload.len() })?;
     put_u32(&mut bytes, OFFSET_PAYLOAD_LEN, payload_len);
     bytes[HEADER_BYTES..].copy_from_slice(&payload);
 
@@ -376,6 +386,36 @@ pub(crate) fn decode(
     if bytes[..MAGIC.len()] != MAGIC {
         return Err(CacheFormatError::BadMagic);
     }
+    let declared = read_u32(bytes, OFFSET_PAYLOAD_LEN) as usize;
+    let available = bytes.len() - HEADER_BYTES;
+    if declared > available {
+        return Err(CacheFormatError::PayloadLengthMismatch {
+            declared,
+            actual: available,
+        });
+    }
+    if declared < available {
+        return Err(CacheFormatError::TrailingBytes {
+            extra: available - declared,
+        });
+    }
+    let payload = &bytes[HEADER_BYTES..];
+
+    let declared_checksum = read_u64(bytes, OFFSET_CHECKSUM);
+    let mut digest_input = Vec::with_capacity(OFFSET_CHECKSUM + payload.len());
+    digest_input.extend_from_slice(&bytes[..OFFSET_CHECKSUM]);
+    digest_input.extend_from_slice(payload);
+    let computed = checksum(&digest_input);
+    if declared_checksum != computed {
+        return Err(CacheFormatError::ChecksumMismatch {
+            declared: declared_checksum,
+            computed,
+        });
+    }
+
+    // Structural fields are interpreted only after integrity succeeds. This
+    // keeps an intact entry from an older identity classified as stale while
+    // a flipped version/encoding bit is classified as corruption.
     let version = read_u16(bytes, OFFSET_VERSION);
     if version != FORMAT_VERSION {
         return Err(CacheFormatError::UnknownFormatVersion { found: version });
@@ -404,33 +444,6 @@ pub(crate) fn decode(
             code: bytes[OFFSET_PAYLOAD_ENCODING],
         },
     )?;
-
-    let declared = read_u32(bytes, OFFSET_PAYLOAD_LEN) as usize;
-    let available = bytes.len() - HEADER_BYTES;
-    if declared > available {
-        return Err(CacheFormatError::PayloadLengthMismatch {
-            declared,
-            actual: available,
-        });
-    }
-    if declared < available {
-        return Err(CacheFormatError::TrailingBytes {
-            extra: available - declared,
-        });
-    }
-    let payload = &bytes[HEADER_BYTES..];
-
-    let declared_checksum = read_u64(bytes, OFFSET_CHECKSUM);
-    let mut digest_input = Vec::with_capacity(OFFSET_CHECKSUM + payload.len());
-    digest_input.extend_from_slice(&bytes[..OFFSET_CHECKSUM]);
-    digest_input.extend_from_slice(payload);
-    let computed = checksum(&digest_input);
-    if declared_checksum != computed {
-        return Err(CacheFormatError::ChecksumMismatch {
-            declared: declared_checksum,
-            computed,
-        });
-    }
 
     let found = ChunkCoord::new(
         read_i32(bytes, OFFSET_COORD),
@@ -711,23 +724,23 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_entry_is_rejected_at_every_length() {
+    fn every_short_header_and_truncated_payload_is_rejected() {
         let coord = ChunkCoord::default();
         let bytes = sealed(
             identity(coord),
             &SourceChunk::Present(sample_chunk()),
             PayloadEncoding::Rle,
         );
-        for len in [0, 1, HEADER_BYTES - 1, HEADER_BYTES, bytes.len() - 1] {
+        for len in 0..HEADER_BYTES {
             let error = rejected(&bytes[..len], identity(coord), "a truncated entry");
-            assert!(
-                matches!(
-                    error,
-                    CacheFormatError::Truncated { .. }
-                        | CacheFormatError::PayloadLengthMismatch { .. }
-                ),
-                "len {len} gave {error}"
-            );
+            assert!(matches!(error, CacheFormatError::Truncated { .. }));
+        }
+        for len in [HEADER_BYTES, bytes.len() - 1] {
+            let error = rejected(&bytes[..len], identity(coord), "a truncated payload");
+            assert!(matches!(
+                error,
+                CacheFormatError::PayloadLengthMismatch { .. }
+            ));
         }
     }
 
@@ -750,12 +763,14 @@ mod tests {
 
         let mut bad_version = good.clone();
         put_u16(&mut bad_version, OFFSET_VERSION, FORMAT_VERSION + 1);
+        reseal(&mut bad_version);
         let error = rejected(&bad_version, identity(coord), "an unknown version");
         assert_eq!(error, CacheFormatError::UnknownFormatVersion { found: 2 });
         assert!(error.is_stale());
 
         let mut bad_edge = good.clone();
         put_u16(&mut bad_edge, OFFSET_EDGE, 16);
+        reseal(&mut bad_edge);
         let error = rejected(&bad_edge, identity(coord), "a foreign chunk edge");
         assert!(matches!(
             error,
@@ -765,6 +780,7 @@ mod tests {
 
         let mut bad_cells = good.clone();
         put_u16(&mut bad_cells, OFFSET_VOXEL_ENCODING, 99);
+        reseal(&mut bad_cells);
         let error = rejected(&bad_cells, identity(coord), "a foreign cell encoding");
         assert!(matches!(
             error,
@@ -774,6 +790,7 @@ mod tests {
 
         let mut bad_kind = good.clone();
         bad_kind[OFFSET_ENTRY_KIND] = 7;
+        reseal(&mut bad_kind);
         assert_eq!(
             decode(&bad_kind, identity(coord)),
             Err(CacheFormatError::UnknownEntryKind { code: 7 })
@@ -781,6 +798,7 @@ mod tests {
 
         let mut bad_payload_encoding = good.clone();
         bad_payload_encoding[OFFSET_PAYLOAD_ENCODING] = 5;
+        reseal(&mut bad_payload_encoding);
         let error = rejected(
             &bad_payload_encoding,
             identity(coord),
@@ -788,6 +806,20 @@ mod tests {
         );
         assert_eq!(error, CacheFormatError::UnknownPayloadEncoding { code: 5 });
         assert!(error.is_stale());
+    }
+
+    #[test]
+    fn damaged_structural_field_is_corrupt_not_stale() {
+        let coord = ChunkCoord::new(1, 0, 1);
+        let mut damaged = sealed(
+            identity(coord),
+            &SourceChunk::Present(sample_chunk()),
+            PayloadEncoding::Raw,
+        );
+        put_u16(&mut damaged, OFFSET_VERSION, FORMAT_VERSION + 1);
+        let error = rejected(&damaged, identity(coord), "a damaged version field");
+        assert!(matches!(error, CacheFormatError::ChecksumMismatch { .. }));
+        assert!(!error.is_stale());
     }
 
     #[test]
@@ -885,6 +917,90 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn malformed_raw_and_rle_lengths_are_bounded_typed_errors() {
+        let coord = ChunkCoord::new(i32::MIN, i32::MAX, -17);
+
+        let mut short_raw = sealed(
+            identity(coord),
+            &SourceChunk::Present(Chunk::empty()),
+            PayloadEncoding::Raw,
+        );
+        short_raw.pop();
+        put_u32(
+            &mut short_raw,
+            OFFSET_PAYLOAD_LEN,
+            (Chunk::BYTES - 1) as u32,
+        );
+        reseal(&mut short_raw);
+        assert!(matches!(
+            decode(&short_raw, identity(coord)),
+            Err(CacheFormatError::PayloadCellCount { .. })
+        ));
+
+        let mut partial_run = sealed(
+            identity(coord),
+            &SourceChunk::Present(Chunk::empty()),
+            PayloadEncoding::Rle,
+        );
+        partial_run.push(0xaa);
+        put_u32(&mut partial_run, OFFSET_PAYLOAD_LEN, 7);
+        reseal(&mut partial_run);
+        assert!(matches!(
+            decode(&partial_run, identity(coord)),
+            Err(CacheFormatError::PayloadCellCount { .. })
+        ));
+
+        for hostile_count in [Chunk::VOLUME as u32 + 1, u32::MAX] {
+            let mut overrun = sealed(
+                identity(coord),
+                &SourceChunk::Present(Chunk::empty()),
+                PayloadEncoding::Rle,
+            );
+            put_u32(&mut overrun, HEADER_BYTES, hostile_count);
+            reseal(&mut overrun);
+            assert!(matches!(
+                decode(&overrun, identity(coord)),
+                Err(CacheFormatError::PayloadCellCount { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn arbitrary_coordinate_bits_and_voxel_ids_have_defined_behavior() {
+        let coord = ChunkCoord::new(-1, 2, -3);
+        let mut other_coord = sealed(
+            identity(coord),
+            &SourceChunk::KnownAbsent,
+            PayloadEncoding::Raw,
+        );
+        put_i32(&mut other_coord, OFFSET_COORD, i32::MAX);
+        put_i32(&mut other_coord, OFFSET_COORD + 4, i32::MIN);
+        put_i32(&mut other_coord, OFFSET_COORD + 8, -1);
+        reseal(&mut other_coord);
+        assert!(matches!(
+            decode(&other_coord, identity(coord)),
+            Err(CacheFormatError::CoordMismatch { .. })
+        ));
+
+        let mut all_max = sealed(
+            identity(coord),
+            &SourceChunk::Present(Chunk::empty()),
+            PayloadEncoding::Rle,
+        );
+        all_max[HEADER_BYTES + 4..HEADER_BYTES + 6].copy_from_slice(&u16::MAX.to_le_bytes());
+        reseal(&mut all_max);
+        let decoded = decode(&all_max, identity(coord));
+        match decoded {
+            Ok(SourceChunk::Present(chunk)) => {
+                assert_eq!(chunk.solid_count(), Chunk::VOLUME);
+                assert_eq!(cell(&chunk, 0), VoxelId(u16::MAX));
+                assert_eq!(cell(&chunk, Chunk::VOLUME - 1), VoxelId(u16::MAX));
+            }
+            other => panic!("valid arbitrary voxel id was not preserved: {other:?}"),
+        }
+    }
+
     /// Recomputes the checksum so a deliberately malformed body is tested for
     /// the property under test rather than for its stale checksum.
     fn reseal(bytes: &mut [u8]) {
@@ -915,5 +1031,31 @@ mod tests {
             rle.len(),
             raw.len()
         );
+    }
+
+    #[test]
+    fn run_length_worst_case_is_exact_and_bounded() {
+        let mut alternating = Chunk::empty();
+        for index in 0..Chunk::VOLUME {
+            let value = if index % 2 == 0 {
+                VoxelId(1)
+            } else {
+                VoxelId(2)
+            };
+            if let Err(error) = write_cell(&mut alternating, index, value) {
+                panic!("alternating fixture write failed at {index}: {error}");
+            }
+        }
+        let raw = encode_payload(&alternating, PayloadEncoding::Raw);
+        let rle = encode_payload(&alternating, PayloadEncoding::Rle);
+        match (raw, rle) {
+            (Ok(raw), Ok(rle)) => {
+                assert_eq!(raw.len(), Chunk::BYTES);
+                assert_eq!(rle.len(), Chunk::VOLUME * RLE_RUN_BYTES);
+                assert_eq!(rle.len(), raw.len() * 3);
+                assert_eq!(HEADER_BYTES + rle.len(), MAX_ENTRY_BYTES);
+            }
+            other => panic!("worst-case fixture did not encode: {other:?}"),
+        }
     }
 }
