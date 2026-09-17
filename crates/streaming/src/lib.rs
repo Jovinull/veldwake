@@ -18,7 +18,7 @@ pub use demand::{
 };
 pub use runtime::{
     InvalidationCause, MeshStatus, ResidencyStatus, ResidencySummary, RuntimeError, RuntimeMetrics,
-    StreamingRuntime, TimingStat,
+    StreamingRuntime, TimingStat, TrackedState,
 };
 pub use source::{DiagnosticChunkSource, SourceChunk};
 pub use types::{

@@ -39,6 +39,23 @@ pub enum MeshStatus {
     Committed,
 }
 
+/// One tracked record as an observer sees it, for debug visualization.
+///
+/// Every field is a state the runtime already owns; nothing here is derived
+/// by the renderer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrackedState {
+    pub coord: ChunkCoord,
+    pub residency: ResidencyStatus,
+    pub mesh: MeshStatus,
+    /// Presentation level assigned to the record, drawn or not.
+    pub lod: LodLevel,
+    /// A committed mesh exists, so the presentation may be drawing it.
+    pub committed: bool,
+    /// A replacement for the current target is meshed and waiting to commit.
+    pub pending: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeMetrics {
     pub load_jobs_dispatched: u64,
@@ -431,26 +448,27 @@ impl StreamingRuntime {
 
     #[must_use]
     pub fn residency_status(&self, coord: ChunkCoord) -> Option<ResidencyStatus> {
-        self.records
-            .get(&coord)
-            .map(|record| match record.residency {
-                ResidencyState::LoadQueued => ResidencyStatus::LoadQueued,
-                ResidencyState::Loading => ResidencyStatus::Loading,
-                ResidencyState::CpuResident { .. } => ResidencyStatus::CpuResident,
-                ResidencyState::KnownAbsent => ResidencyStatus::KnownAbsent,
-                ResidencyState::EvictPending(_) => ResidencyStatus::EvictPending,
-            })
+        self.records.get(&coord).map(residency_status_of)
     }
 
     #[must_use]
     pub fn mesh_status(&self, coord: ChunkCoord) -> Option<MeshStatus> {
-        self.records.get(&coord).map(|record| match record.mesh {
-            MeshState::NotRequired => MeshStatus::NotRequired,
-            MeshState::WaitingForNeighbors => MeshStatus::WaitingForNeighbors,
-            MeshState::Dirty(_) => MeshStatus::Dirty,
-            MeshState::Meshing(_) => MeshStatus::Meshing,
-            MeshState::CpuReady { .. } => MeshStatus::CpuReady,
-            MeshState::Committed => MeshStatus::Committed,
+        self.records.get(&coord).map(mesh_status_of)
+    }
+
+    /// Every tracked record with the states the runtime already owns.
+    ///
+    /// This exists so a debug visualization can show residency without
+    /// inventing or duplicating state: the caller reads what the runtime
+    /// decided, never a renderer-side guess.
+    pub fn tracked_states(&self) -> impl Iterator<Item = TrackedState> + '_ {
+        self.records.iter().map(|(coord, record)| TrackedState {
+            coord: *coord,
+            residency: residency_status_of(record),
+            mesh: mesh_status_of(record),
+            lod: record.lod,
+            committed: record.committed.is_some(),
+            pending: matches!(record.mesh, MeshState::CpuReady { .. }),
         })
     }
 
@@ -627,10 +645,18 @@ impl StreamingRuntime {
         })
     }
 
-    /// Moves every member's ready replacement into its committed slot. The
-    /// caller activates the matching staged presentation in the same frame.
-    /// Members that are not ready are left untouched and counted in the result.
+    /// Moves every member's ready replacement into its committed slot.
+    ///
+    /// All-or-nothing: a group with any member that is not ready for its
+    /// current target commits nothing and returns `0`. A group is the unit of
+    /// seam coherence, so a partial commit could leave a drawn pair mixing an
+    /// old and a new seam. The caller activates the matching staged
+    /// presentation in the same frame and must have proven, before calling,
+    /// that the presentation can swap every member.
     pub fn commit_group(&mut self, group: &[ChunkCoord]) -> usize {
+        if !self.group_is_ready(group) {
+            return 0;
+        }
         let mut committed = 0;
         for coord in group {
             let Some(target) = self.current_mesh_stamp(*coord) else {
@@ -1477,6 +1503,27 @@ fn chebyshev_distance(coord: ChunkCoord, center: ChunkCoord) -> u32 {
 fn axis_distance(left: i32, right: i32) -> u128 {
     let difference = i128::from(left) - i128::from(right);
     difference.unsigned_abs().pow(2)
+}
+
+const fn residency_status_of(record: &ChunkRecord) -> ResidencyStatus {
+    match record.residency {
+        ResidencyState::LoadQueued => ResidencyStatus::LoadQueued,
+        ResidencyState::Loading => ResidencyStatus::Loading,
+        ResidencyState::CpuResident { .. } => ResidencyStatus::CpuResident,
+        ResidencyState::KnownAbsent => ResidencyStatus::KnownAbsent,
+        ResidencyState::EvictPending(_) => ResidencyStatus::EvictPending,
+    }
+}
+
+const fn mesh_status_of(record: &ChunkRecord) -> MeshStatus {
+    match record.mesh {
+        MeshState::NotRequired => MeshStatus::NotRequired,
+        MeshState::WaitingForNeighbors => MeshStatus::WaitingForNeighbors,
+        MeshState::Dirty(_) => MeshStatus::Dirty,
+        MeshState::Meshing(_) => MeshStatus::Meshing,
+        MeshState::CpuReady { .. } => MeshStatus::CpuReady,
+        MeshState::Committed => MeshStatus::Committed,
+    }
 }
 
 #[cfg(test)]
@@ -2337,6 +2384,45 @@ mod tests {
             Err(RuntimeError::RequestTokenExhausted)
         ));
         assert_eq!(runtime.next_token, u64::MAX);
+        Ok(())
+    }
+
+    /// A group is the unit of seam coherence: one member that is not ready for
+    /// its current target commits nothing, so no drawn pair can end up mixing
+    /// an old and a new seam.
+    #[test]
+    fn a_group_with_one_unready_member_commits_nothing() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(StreamingConfig {
+            render_radius: 0,
+            dependency_halo: 1,
+            retention_radius: 1,
+            hard_resident_cap: 16,
+            ..StreamingConfig::default()
+        })?;
+        for _ in 0..10_000 {
+            runtime.poll()?;
+            if runtime.is_idle() {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        let center = ChunkCoord::default();
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::CpuReady));
+        // A dependency-only neighbor is never meshed, so it can never be ready.
+        let neighbor = ChunkCoord::new(1, 0, 0);
+        assert_eq!(runtime.mesh_status(neighbor), Some(MeshStatus::NotRequired));
+        assert!(!runtime.group_is_ready(&[center, neighbor]));
+
+        assert_eq!(runtime.commit_group(&[center, neighbor]), 0);
+        assert_eq!(
+            runtime.mesh_status(center),
+            Some(MeshStatus::CpuReady),
+            "the ready member must not be committed on its own"
+        );
+        assert!(runtime.committed_mesh(center).is_none());
+
+        assert_eq!(runtime.commit_group(&[center]), 1);
+        assert!(runtime.committed_mesh(center).is_some());
         Ok(())
     }
 

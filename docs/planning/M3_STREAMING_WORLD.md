@@ -579,7 +579,7 @@ Re-benchmark (2026-09-16, release client, Intel Iris Xe / D3D12, same driven pat
 | committed retained / dropped | — | 1,806 / 400 | 0 / 426 |
 | staged discarded / re-staged | — | 211 / 0 | 0 / 0 |
 | peak staged (undrawn) GPU bytes | — | 4,650,960 | 253,472 |
-| peak GPU bytes | 5,206,128 | 4,954,960 | 12,101,888 |
+| peak GPU bytes (committed only; see the correction below) | 5,206,128 | 4,954,960 | 12,101,888 |
 | CPU mesh time on the path (snapshot + derivation + worker) | 386,583 µs | 380,377 µs | 164,698 µs |
 | time to idle coverage | 13.21 s | 13.31 s | 13.23 s |
 | render-submit max | 55.0 ms | 17.8 ms | 18.0 ms |
@@ -589,9 +589,87 @@ Acceptance: zero LOD holes after initial coverage (0 gaps, 0 ready-but-undrawn u
 
 What the model does not change is the swap churn. Uploads and mesh jobs on the moving path are at the M3C2 level (the intermediate run's lower numbers were starvation), so the recorded decision rule still fails on upload bytes (+85% against the same-day baseline) and on CPU mesh time, and LOD stays behind `VELDWAKE_PROFILE=m3c-banded`. Baseline CPU mesh totals varied between 164,698 and 274,069 µs across this milestone's baseline runs (single worker, timing jitter), so the CPU ratio is evidence of direction, not a precise factor.
 
+**Correction (M3C2 hardening).** The `4,954,960` above counts only committed meshes. The transition model adds a second GPU component — replacements staged but not drawn — which was reported as its own peak (`4,650,960`) and never added to the committed peak. The real high-water mark is the simultaneous sum, measured below: `9,800,128` against a `12,101,888` baseline, so LOD's GPU saving is **−19%**, not the −57/−59% previously claimed. The M3C2 row is unaffected: before the transition model a replacement was uploaded and drawn in one step, so there was no staged component to miss.
+
 Remaining risks: transition groups are unbounded by design (a connected set of changing seams; 78 chunks observed at the corridor start), and while the camera keeps moving the `Lod0` ring's own switch can be deferred by re-dirtying. That costs stale-but-coherent levels on drawn chunks, never a hole, and converges at rest (KI-011). Source-empty layers still take a mesh job and a group slot each.
 
 Gates on the audited host: `cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets -- -D warnings` PASS, `cargo nextest run --workspace` PASS (120 tests; one `LNK1104` retry under the KI-008 policy), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS after fixing a pre-existing private intra-doc link to `CoarseTally` left by M3C2, `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. The Windows/D3D12 smoke is the driven benchmark above (exit code 0, 0 GPU validation errors) with mid-movement and burst captures inspected; it remains one integrated-GPU host (KI-003, KI-006).
+
+### M3C2 hardening — atomic presentation commit and the real GPU high-water mark (implemented)
+
+Two defects found in review of the transition model, both fixed before M3C3.
+
+**1. The atomic commit was not atomic end to end.** The bridge called `StreamingRuntime::commit_group`, then `ChunkPresentation::commit_staged` once per coordinate and ignored every result. The runtime and the bridge therefore recorded a commit the presentation might not have performed: a member whose GPU staging was missing kept drawing its old mesh while the runtime considered the new one committed, which is exactly the mixed-seam state the group rule exists to prevent.
+
+The contract is now all-or-nothing on both sides and the presentation answers first:
+
+- `ChunkPresentation::commit_staged_group(&[ChunkCoord]) -> Result<(), PresentationCommitError>` replaces `commit_staged`. The implementation verifies that *every* member has a staged replacement before touching any slot and returns the first offender without changing anything. The error names the coordinate and the group size; it is a value, never a panic.
+- `StreamingRuntime::commit_group` returns `0` without mutating anything unless `group_is_ready` holds for the whole group.
+- The bridge asks the presentation first. Only on `Ok` does it commit the runtime and update its presented map. A refusal counts `presentation_commit_failures`, is logged, and leaves the group blocked, so the old meshes keep drawing and the drawn set stays coherent. A runtime that then committed fewer chunks than the presentation swapped would be a broken invariant, counted as `commit_invariant_failures` and logged at error level; it is unreachable because both checks happen in the same update with nothing in between, and both benchmark profiles report `0`.
+
+Tests: `a_group_missing_one_staged_member_commits_no_member_at_all` drives the presentation double directly (one member's staging is dropped, the group is refused, no member is drawn, the untouched members keep their staging, and the same group commits fully once the member is restaged); `a_refused_group_commit_leaves_runtime_and_bridge_uncommitted` runs the real runtime and worker while stripping staging behind the bridge's back and proves that no refused replacement is ever drawn or committed; `a_group_with_one_unready_member_commits_nothing` proves the runtime side in isolation.
+
+**2. GPU memory was reported as two independent peaks.** The bridge now samples what the presentation actually holds at the end of every update (`GpuBytes { committed, staged }`) and keeps three peaks: committed, staged, and the highest simultaneous `committed + staged`. Adding two peaks observed in different frames would overstate the high-water mark, so the total peak is taken on the sum in a single sample. Active and staged remain reported separately. `the_gpu_byte_peak_is_the_highest_simultaneous_total` proves the sample comes from the presentation and that the recorded peak equals the maximum total observed across a settle, a band crossing, and a second settle.
+
+Re-benchmark (2026-09-16, release client, Intel Iris Xe / D3D12, debug views off, same driven path, both profiles performed ~390 CPU evictions):
+
+| Metric | `m3c-baseline` | `m3c-banded` | Change |
+|---|---:|---:|---:|
+| peak committed GPU bytes | 12,101,888 | 5,640,752 | −53.4% |
+| peak staged (undrawn) GPU bytes | 0 | 4,650,960 | — |
+| **peak total GPU bytes (simultaneous)** | **12,101,888** | **9,800,128** | **−19.0%** |
+| sum of the two component peaks | 12,101,888 | 10,291,712 | (they never peak in the same frame) |
+| uploads / upload bytes | 167 / 41,275,744 | 543 / 74,770,896 | +81.1% bytes |
+| mesh jobs | 501 | 1,376 | +174.7% |
+| `lod_swaps` / `stale_lod` | 0 / 0 | 654 / 0 | — |
+| gaps opened / max simultaneous | 0 / 0 | 0 / 0 | — |
+| ready-but-undrawn max / updates / chunk-frames | 0 / 0 / 0 | 5 / 19 / 52 (of 7,318 updates) | — |
+| transition commits / chunks | 501 / 501 | 509 / 1,156 | — |
+| committed retained / dropped | 0 / 411 | 1,774 / 399 | — |
+| staged discarded / re-staged | 0 / 0 | 219 / 0 | — |
+| largest transition group | 1 | 78 | — |
+| `presentation_commit_failures` / `commit_invariant_failures` | 0 / 0 | 0 / 0 | — |
+| CPU mesh time on the path | 171,199 µs | 408,525 µs | +138.6% |
+| time to idle coverage | 13.43 s | 13.20 s | −2% |
+| observed FPS / avg frame | 60.0 / 16.671 ms | 60.0 / 16.670 ms | vsync-bound |
+| render-submit max | 17,875 µs | 17,935 µs | — |
+| GPU validation errors | 0 | 0 | — |
+
+The per-update `residency()` sample costs nothing measurable: both profiles stay at 16.67 ms and the submit maxima are within 60 µs of each other.
+
+This changes the standing conclusion about what LOD buys. The recorded decision rule asked for at least half the GPU bytes and half the upload bytes at no CPU cost; the honest numbers are −19% GPU bytes, +81% upload bytes, and +139% CPU mesh time. LOD stays behind `VELDWAKE_PROFILE=m3c-banded`, and the memory argument for it is now much weaker than the M3C2 table suggested, because atomic transitions must hold the replacement and the original at the same time.
+
+`ready_undrawn` was non-zero for the first time on this path (max 5 chunks, 19 of 7,318 updates, 52 chunk-frames). This is the upload budget, not the group-starvation pattern that motivated the counter (665 updates and 5,885 chunk-frames): a mesh becomes CPU-ready before the two-uploads-per-frame budget can stage it, so it is ready and undrawn for a few frames. The mid-movement captures of the same path show a continuous floor. It is recorded here because the rule is that a non-zero `ready_undrawn` is investigated, never assumed benign.
+
+### M3C3 — streaming debug visualization (implemented)
+
+No UI framework, no new dependency, no instancing, no render graph. `F1` cycles `Off -> Lod -> Residency -> Boundaries` and `F2` toggles the boxes in the two modes that draw them; both are logged on change and reported in the five-second interval line (`debug_mode`, `debug_boxes`, `debug_draws`, `debug_slots`).
+
+The `debug` module of the client answers one question: given what the runtime and the bridge already know, which primitives should be drawn? It invents no state. Record states come from `StreamingRuntime::tracked_states` (a new query returning each record's residency status, mesh status, level, whether a committed mesh exists, and whether a replacement is pending), presented levels from the bridge's committed stamps, and transition groups from `StreamingRuntime::transition_groups`. The renderer receives placed, colored primitives and draws lines.
+
+- **Lod** tints `Lod1` meshes toward a cool blue in the vertex shader, blending 55% so the diagnostic checkerboard stays readable. The strength travels in the existing camera uniform (`debug.x`) and the level is read from the model uniform's cell size, so no new bind group and no new draw. `Off` sets it to `0.0`, which is a no-op `mix`.
+- **Residency** draws one wireframe box per tracked coordinate, colored by record state (`LoadQueued`, `Loading`, `KnownAbsent`, `EvictPending`, `Waiting`, `Dirty`, `Meshing`, `CpuReady`, `Committed`, `NotRequired`) and inset by demand ring (render 0, dependency-only 3, retention-only 6 world units), so the box set equals the tracked set exactly and both facts are visible without a second box per chunk.
+- **Boundaries** draws a box on every presented chunk colored by its drawn level, a face outline on the fine side of every mixed-level seam (drawn once, from `Lod0`), an inset box on every chunk whose replacement is meshed (a lighter color once it is also staged on the GPU), and an inset box on every member of an uncommitted transition group, in violet, switching to red at 16 members or more so KI-011 is visible while it happens.
+
+Renderer: one extra `LineList` pipeline sharing the camera bind group, one 72-vertex unit-line buffer (12 cube edges, then six face outlines in `Face::ALL` order), and one 32-byte uniform plus bind group per primitive, pooled and reused across frames. Lines are depth-tested and never write depth. With the views off the renderer writes no uniform, issues no draw, and the pool stays empty; the mesh upload budget is untouched in every mode.
+
+**Cost of one bind group per box, measured (2026-09-16, no screen capture, idle camera, banded profile, 12-second windows):**
+
+| View | Boxes drawn | Average frame | Observed FPS |
+|---|---:|---:|---:|
+| `Off` | 0 | 16.66–16.67 ms | 60.0 |
+| `Lod` | 0 | 16.66 ms | 60.0 |
+| `Residency` | 637 | 26.6 ms, then 64.8 ms | 37.6, then 15.4 |
+| `Boundaries` | 180 | 20.9 ms, 21.4 ms | 47.9, 46.7 |
+| `Off` again | 0 | 16.67 ms | 60.0 |
+
+The diagnostic pattern is expensive exactly as the plan warned: hundreds of one-draw, one-bind-group primitives cost tens of milliseconds per frame on the audited host, and `Residency` at 637 boxes drops the client well below 60 FPS. The evidence is recorded (KI-012) and nothing was changed in response: instancing, batching, and a render graph stay out of M3C. `Off` returns to exactly 60 FPS, which is the property the benchmark depends on.
+
+Driven Windows/D3D12 smoke of the views (banded profile, exit code 0, zero GPU validation errors, 11 logged view changes): every mode was entered at rest and during movement; the `Lod` band and its hysteresis are legible while crossing; `F2` visibly clears and restores the boxes in both box modes; `Boundaries` shows mixed seams, pending replacements, and large violet/red transition groups during traversal into negative chunks and back through positives; no hole of the kind recorded before the transition model appeared at any point; resize, minimize/restore, focus loss with a key held, and Escape behave as before with a debug view active. The first residency capture was visually empty because the state colors were too dark against the sky and the floor; they were brightened and re-captured. Residency boxes are depth-tested world-space wireframes, so the diagnostic floor occludes everything below it: residency is read by pitching up or moving, and a non-occluded overlay was deliberately not added.
+
+During the smoke `ready_undrawn` reached 13 over 293 updates, higher than the 5/19 of the benchmark, because the debug views cost frame time and the upload budget is per frame: at 15–47 FPS fewer meshes are staged per second, so replacements stay ready-but-undrawn longer. `gaps_closed` and `gap_max_simultaneous` stayed `0`, so nothing that was drawn ever stopped being drawn.
+
+Gates for the hardenings and M3C3 on the audited host: `cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets --all-features -- -D warnings` PASS, `cargo nextest run --workspace` PASS (138 tests: 38 voxel, 50 streaming, 50 client; one `LNK1104` retry under the KI-008 policy), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS, `cargo test --workspace --doc` PASS (no doc tests), `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. The Windows/D3D12 evidence is the two benchmark runs and the driven debug smoke above, all exit code 0 with zero GPU validation errors, on one integrated-GPU host (KI-003, KI-006).
 
 ### Jobs, stamps, residency, and stale rejection (plan, now implemented as above)
 
@@ -641,6 +719,8 @@ No UI framework. A keyboard toggle (`F1` cycles modes; `F2` toggles boxes) chang
 
 Implementation: one additional `LineList` pipeline with a shared unit-cube edge buffer and one model uniform per box (translation, scale, color), the same diagnostic one-bind-group-per-chunk pattern as meshes; no instancing, batching, render graph, or text rendering. Box data comes from `ResidencySummary`-style queries (`tracked_coords_with_state()`) added to the runtime and from the bridge's presented map. Box counts are bounded by retention size; box uploads are budgeted like mesh uploads. Debug state is testable headlessly (mode cycling, color mapping per state, box set equals tracked set).
 
+Implemented in M3C3 as planned, with these deviations, all recorded above: the runtime query is `tracked_states()`; box uniforms are a reused pool of 32-byte writes that never interact with the mesh upload budget rather than being budgeted like mesh uploads; residency rings are distinguished by inset instead of dashed edges (the `LineList` pipeline has no dash pattern); and `Boundaries` also draws pending replacements and transition groups, which the plan did not anticipate because KI-011 did not exist yet.
+
 ### Metrics to decide whether LOD is worth keeping
 
 Reported per five-second interval and captured for the milestone document, for both configurations (`Lod0` only at a wide radius; `Lod0` + `Lod1` at the same visible distance):
@@ -668,7 +748,7 @@ The decision rule is recorded before measuring: LOD stays enabled by default onl
 - `Lod1` renders the diagnostic corridor ring with the coarse-occupancy seam rule and the driven smoke shows no persistent crack or hole at any mixed-level seam, in positive and negative chunks.
 - Zero `stale_lod` acceptance; every swap follows mesh → stage → atomic group commit while the old mesh stays drawn, and data invalidations still deactivate first.
 - The baseline and LOD configurations are measured and the decision rule is applied and recorded.
-- Debug modes make chunk boundaries, levels, demand rings, and record states visible, toggled by keyboard, with no new dependency.
+- Debug modes make chunk boundaries, levels, demand rings, and record states visible, toggled by keyboard, with no new dependency. Met in M3C3; the boxes are depth-tested, so the diagnostic floor occludes the rings below it.
 - All M1–M3B tests pass unchanged apart from names that gain a level parameter.
 
 ### M3C non-goals

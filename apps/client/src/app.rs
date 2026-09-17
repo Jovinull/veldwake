@@ -18,6 +18,7 @@ use winit::{
 
 use crate::{
     camera::{Camera, CameraController},
+    debug::{DebugMode, debug_primitives},
     input::{CameraAction, InputState},
     renderer::{RenderOutcome, Renderer},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
@@ -62,6 +63,10 @@ struct App {
     frame_stats: FrameStats,
     occluded: bool,
     fatal_error: Option<String>,
+    /// Active debug view, cycled by `F1`. `Off` is the shipped rendering.
+    debug_mode: DebugMode,
+    /// Whether the box-drawing views draw their boxes, toggled by `F2`.
+    debug_boxes: bool,
 }
 
 impl Default for App {
@@ -76,6 +81,8 @@ impl Default for App {
             frame_stats: FrameStats::new(),
             occluded: false,
             fatal_error: None,
+            debug_mode: DebugMode::Off,
+            debug_boxes: true,
         }
     }
 }
@@ -127,7 +134,9 @@ impl App {
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
+            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
+             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, \
+             Escape exits"
         );
         Ok(())
     }
@@ -148,6 +157,20 @@ impl App {
         if code == KeyCode::Escape && pressed {
             info!("clean shutdown requested by Escape");
             event_loop.exit();
+            return;
+        }
+
+        if pressed && let Some(action) = debug_action(code) {
+            match action {
+                DebugAction::CycleMode => self.debug_mode = self.debug_mode.next(),
+                DebugAction::ToggleBoxes => self.debug_boxes = !self.debug_boxes,
+            }
+            info!(
+                mode = self.debug_mode.name(),
+                boxes = self.debug_boxes,
+                boxes_apply = self.debug_mode.uses_boxes(),
+                "debug view changed"
+            );
             return;
         }
 
@@ -182,7 +205,10 @@ impl App {
                 return;
             }
         };
-        renderer.update_camera(&self.camera);
+        // Off computes nothing, uploads nothing, and draws nothing.
+        let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
+        renderer.set_debug_primitives(&primitives);
+        renderer.update_camera(&self.camera, self.debug_mode.lod_tint());
         let submit_started = Instant::now();
         let outcome = renderer.render();
         let submit_time = submit_started.elapsed();
@@ -190,7 +216,13 @@ impl App {
             RenderOutcome::Rendered => {
                 self.frame_stats
                     .record(now, elapsed, submit_time, report, streaming);
-                self.frame_stats.report_if_due(now, streaming, renderer);
+                self.frame_stats.report_if_due(
+                    now,
+                    streaming,
+                    renderer,
+                    self.debug_mode,
+                    self.debug_boxes,
+                );
                 true
             }
             RenderOutcome::Retry => true,
@@ -297,6 +329,22 @@ impl ApplicationHandler for App {
         if let DeviceEvent::MouseMotion { delta } = event {
             self.input.add_look_delta(delta.0, delta.1);
         }
+    }
+}
+
+/// Keyboard control of the debug views. Separate from camera actions so the
+/// mapping is testable without a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DebugAction {
+    CycleMode,
+    ToggleBoxes,
+}
+
+const fn debug_action(key: KeyCode) -> Option<DebugAction> {
+    match key {
+        KeyCode::F1 => Some(DebugAction::CycleMode),
+        KeyCode::F2 => Some(DebugAction::ToggleBoxes),
+        _ => None,
     }
 }
 
@@ -435,7 +483,14 @@ impl FrameStats {
     }
 
     /// One aggregate line per interval; never one line per chunk per frame.
-    fn report_if_due(&mut self, now: Instant, streaming: &StreamingBridge, renderer: &Renderer) {
+    fn report_if_due(
+        &mut self,
+        now: Instant,
+        streaming: &StreamingBridge,
+        renderer: &Renderer,
+        debug_mode: DebugMode,
+        debug_boxes: bool,
+    ) {
         let report_span = now.saturating_duration_since(self.report_started);
         if report_span < FRAME_REPORT_INTERVAL || self.frames == 0 {
             return;
@@ -450,6 +505,7 @@ impl FrameStats {
         let totals = streaming.totals();
         let gaps = streaming.gaps();
         let gpu = renderer.residency();
+        let gpu_bytes = streaming.gpu_bytes();
         info!(
             frames = self.frames,
             report_seconds = report_span.as_secs_f64(),
@@ -554,6 +610,16 @@ impl FrameStats {
             transition_pending = summary.transition_pending,
             gpu_staged = gpu.staged(),
             gpu_staged_bytes = gpu.staged_bytes(),
+            gpu_committed_bytes = gpu_bytes.committed,
+            gpu_total_bytes = gpu_bytes.total(),
+            peak_gpu_committed_bytes = totals.peak_gpu_committed_bytes,
+            peak_gpu_total_bytes = totals.peak_gpu_total_bytes,
+            presentation_commit_failures = totals.presentation_commit_failures,
+            commit_invariant_failures = totals.commit_invariant_failures,
+            debug_mode = debug_mode.name(),
+            debug_boxes,
+            debug_draws = renderer.debug_draw_count(),
+            debug_slots = renderer.debug_slot_count(),
             snapshot_build_total_us = metrics.snapshot_build.total_us,
             snapshot_build_max_us = metrics.snapshot_build.max_us,
             lod1_derivation_total_us = metrics.lod1_derivation.total_us,
@@ -583,9 +649,27 @@ impl FrameStats {
 
 #[cfg(test)]
 mod tests {
-    use super::camera_action;
+    use super::{DebugAction, camera_action, debug_action};
+    use crate::debug::DebugMode;
     use crate::input::CameraAction;
     use winit::keyboard::KeyCode;
+
+    #[test]
+    fn function_keys_drive_the_debug_views_and_nothing_else_does() {
+        assert_eq!(debug_action(KeyCode::F1), Some(DebugAction::CycleMode));
+        assert_eq!(debug_action(KeyCode::F2), Some(DebugAction::ToggleBoxes));
+        assert_eq!(debug_action(KeyCode::F3), None);
+        assert_eq!(debug_action(KeyCode::KeyW), None);
+        assert_eq!(camera_action(KeyCode::F1), None);
+        assert_eq!(camera_action(KeyCode::F2), None);
+
+        // Four presses of F1 return to the shipped rendering.
+        let mut mode = DebugMode::Off;
+        for _ in 0..4 {
+            mode = mode.next();
+        }
+        assert_eq!(mode, DebugMode::Off);
+    }
 
     #[test]
     fn streaming_profile_parses_documented_names_only() {
