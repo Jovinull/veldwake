@@ -1,7 +1,6 @@
 # M3 — Streaming World
 
-Status: **M3A–M3C complete and merged; M3D implemented and independently QA-hardened on `feat/m3d-cache-persistence`, ready for external review; LOD remains opt-in**
-Planning branch: `feat/m3c-lod-debug`
+Status: **complete and merged — M3A, M3B, M3C, and M3D are all in `main`; LOD remains opt-in**
 
 ## Completed submilestone: M3A — Multi-chunk Correctness
 
