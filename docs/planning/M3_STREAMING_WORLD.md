@@ -650,6 +650,7 @@ Release client, Intel Iris Xe / D3D12, 1600×900, debug `Off`, the same 12 s set
 | peak committed chunk-mesh bytes | 12,101,888 | 5,838,128 | −51.8% |
 | peak staged chunk-mesh bytes | 253,472 | 4,470,864 | — |
 | **peak simultaneous chunk-mesh bytes** | **12,101,888** | **10,053,696** | **−16.9%** |
+| peak simultaneous chunk-mesh bytes, five later runs | 12,101,888 | 9,734,816 to 9,800,128 | −19.0% to −19.6% |
 | uploads / upload bytes | 167 / 41,275,744 | 546 / 74,961,072 | +81.6% bytes |
 | mesh jobs / level swaps | 501 / 0 | 1,394 / 654 | — |
 | ready-undrawn max / updates / chunk-frames | 0 / 0 / 0 | 2 / 15 / 21 | actual short-lived coverage deficits |
@@ -662,6 +663,37 @@ Release client, Intel Iris Xe / D3D12, 1600×900, debug `Off`, the same 12 s set
 | observed FPS / average frame | 60.0 / 16.67 ms | 60.0 / 16.67 ms | vsync-bound |
 
 The banded run's two ready-undrawn chunks were staged members held by a transition group, not upload-budget wait; `committed_missing_max = 0` proves the bridge never omitted a mesh the runtime had already committed. This demonstrates seam-safe atomicity but also proves that “zero holes” is too broad: the implementation prevents mixed seams and prevents previously drawn presentation-only meshes from blinking, while bounded first-presentation deficits can still occur at the moving frontier (KI-014).
+
+### M3C2 hardening — restage allocation order (implemented)
+
+External review found the last accounting gap in the staging lifecycle. `Renderer::stage_chunk` created the new vertex, index, and model buffers **before** replacing `slot.staged`. When a coordinate was restaged, three things coexisted for the duration of that call: the committed mesh, the obsolete staged replacement, and the new buffers still local to the function. The bridge samples after the call returns, so no counter could ever see that overlap.
+
+**The precondition was checked first, not assumed.** `stage_chunk` has exactly two production call sites, both inside `stage_ready_meshes`, whose candidate list is `render_ready_meshes()` filtered by `self.staged.get(coord).map(|(staged, _)| staged) != Some(*stamp)`. So the method is reached over an existing staging only when the bridge's staged stamp is no longer that chunk's target. Such a replacement can never be committed: `commit_ready_groups` requires `staged == target` for every member of a group. `discard_obsolete_staging` runs earlier in the same update and removes staging for chunks that left render demand or lost their pending target, so a surviving mismatch is only ever a changed target. The obsolete replacement is therefore provably dead, and releasing it before the new allocation is safe.
+
+The order is now: reject, release, acquire, install.
+
+1. An empty mesh clears the staging and marks the commit as a removal, with no allocation at all.
+2. `u32::try_from` on the index count rejects before any state is touched, so an early rejection can never destroy valid staging.
+3. The obsolete replacement is taken out of the slot and dropped before the new buffers exist.
+4. The new replacement is installed into an empty staging position.
+
+`slot.active` and `slot.drawable` are not touched anywhere in this path: the committed mesh keeps drawing across a restage, exactly as before. The ordering is now part of the `ChunkPresentation::stage_chunk` contract and the in-memory double mirrors it, including an observation between release and acquire so the double's independent peak oracle passes through the same instants.
+
+Three regression tests pin the contract: a restage releases before acquiring and the peak staged bytes equal one replacement rather than the sum of two, with an empty restage still replacing correctly and not raising the peak; a restage never activates the previous replacement and leaves the committed mesh drawn, with the later commit swapping in the newest replacement; and an injected rejection before allocation leaves valid staging intact and still committable.
+
+**Measurement: the benchmark path never restages.** Five driven runs across the audited binary and the fixed one report `restaged = 0` in both profiles, so the corrected branch is never taken there and the high-water figures are unchanged by this fix. The reason is structural rather than lucky: a target change re-dirties the record, `ready_mesh` becomes `None`, and `discard_obsolete_staging` releases the staging before the new mesh is ready. A restage needs the replacement to become CPU-ready in the same update that invalidated it, which one worker and a mesh job of hundreds of microseconds make rare. The path is real and reachable, which is why it is covered by unit tests rather than by the benchmark.
+
+**The documented peak is one sample, not a constant.** Re-validating exposed that the banded peak varies between runs of the identical path:
+
+| Binary | `restaged` | peak simultaneous chunk-mesh bytes |
+|---|---:|---:|
+| audited `c877130` | 0 | 9,800,128 and 9,734,816 |
+| with the restage fix | 0 | 9,800,128, three runs |
+| QA run recorded below | 0 | 10,053,696 |
+
+Against the stable 12,101,888 baseline that is a saving between 16.9% and 19.6% depending on the run, not a fixed 16.9%. The peak depends on which chunks happen to be staged when the worker and the upload budget line up, and the driven path is time-based. Quote the range, or quote a number with its run; do not treat a single draw as reproducible. The baseline profile is stable at 12,101,888 across every run because its peak is the full resident committed set.
+
+Gates for the restage hardening on the audited host: `cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets --all-features -- -D warnings` PASS, `cargo nextest run --workspace` PASS (144 tests; one `LNK1104` retry under the KI-008 policy), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS, `cargo test --workspace --doc` PASS (no doc tests), `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. No separate driven smoke was run: the diff is confined to the staging lifecycle and leaves the presented state of every path identical, and the four driven benchmark runs above exercised the real renderer on D3D12 with exit code 0 and zero GPU validation errors.
 
 ### M3C3 — streaming debug visualization (implemented)
 

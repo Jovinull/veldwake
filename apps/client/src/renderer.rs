@@ -869,16 +869,35 @@ impl ChunkPresentation for Renderer {
         mesh: &Mesh,
     ) -> Result<usize, ChunkUploadError> {
         if mesh.indices().is_empty() {
+            // Releasing first here too: a staged empty mesh holds no buffers,
+            // and the commit it schedules removes the chunk.
             let slot = self.chunks.entry(coord).or_default();
             slot.staged = None;
             slot.staged_empty = true;
             return Ok(0);
         }
+        // Reject before touching the slot. An early rejection must never
+        // destroy staging that is still valid.
         let index_count =
             u32::try_from(mesh.indices().len()).map_err(|_| ChunkUploadError::TooManyIndices {
                 coord,
                 indices: mesh.indices().len(),
             })?;
+        // Release the obsolete replacement before allocating its successor.
+        //
+        // The bridge restages a coordinate only when the staged stamp is no
+        // longer that chunk's target, and a staged mesh whose stamp differs
+        // from the target can never be committed, so what is dropped here is
+        // provably dead. Taking it out of the map before the new buffers exist
+        // is what keeps presentation-owned chunk-mesh bytes from ever holding
+        // two replacements of one chunk at the same instant, which the bridge
+        // could not observe from outside the call. The committed mesh is not
+        // touched and keeps drawing.
+        let obsolete = self.chunks.get_mut(&coord).and_then(|slot| {
+            slot.staged_empty = false;
+            slot.staged.take()
+        });
+        drop(obsolete);
         let vertices = mesh
             .vertices()
             .iter()
@@ -917,8 +936,8 @@ impl ChunkPresentation for Renderer {
             }],
         });
         let bytes = gpu_payload_bytes(mesh);
-        // Replacing a staged entry drops the previous staged buffers; wgpu
-        // keeps them alive for any already-submitted work.
+        // The slot's previous replacement was already released above, so this
+        // installs into an empty staging position.
         let slot = self.chunks.entry(coord).or_default();
         slot.staged = Some(GpuMeshBuffers {
             vertex_buffer,

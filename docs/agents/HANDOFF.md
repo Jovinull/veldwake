@@ -10,6 +10,8 @@ M1, M2, M3A, and M3B are merged into `main`; M3C0–M3C3 are implemented and ind
 
 Submit `feat/m3c-lod-debug` for external review/PR. Do not begin the swap-churn investigation, M3D, or M4 in this handoff. Any later LOD policy work must re-run the documented baseline/banded path and keep LOD opt-in unless the recorded decision rule passes.
 
+External review then closed one more accounting gap: `Renderer::stage_chunk` now rejects, releases the obsolete replacement, allocates, and installs, in that order, so a restage never holds two replacements of one chunk inside a call the bridge cannot sample. The benchmark path reports `restaged = 0` in every run, so the figures are unchanged and the path is covered by unit tests. Re-validation also showed the banded peak is run-dependent (9,734,816 to 10,053,696 across runs of the identical path); quote the range or quote a number with its run.
+
 ## Read before continuing
 
 - [`../../AGENTS.md`](../../AGENTS.md)

@@ -241,6 +241,15 @@ pub trait ChunkPresentation {
     /// only streaming fact the presentation learns; it never sees tokens,
     /// generations, or the full stamp. Staging an empty mesh holds no buffers
     /// and returns `Ok(0)`; committing it later removes the old mesh.
+    ///
+    /// Ordering contract, because the caller cannot observe the inside of this
+    /// call: reject before touching any state, then release the coordinate's
+    /// previous replacement, then acquire the new one. An implementation must
+    /// never hold two replacements of one chunk at the same instant, and must
+    /// never release valid staging on a rejected call. The bridge restages a
+    /// coordinate only when its staged stamp is no longer that chunk's target,
+    /// and such a replacement can never be committed, so releasing it first is
+    /// always safe. The committed mesh is never touched here.
     fn stage_chunk(
         &mut self,
         coord: ChunkCoord,
@@ -1109,6 +1118,13 @@ pub(crate) mod tests {
         refused_groups: usize,
         /// Independent mutation-boundary oracle for chunk-mesh byte peaks.
         observed_peak: GpuPeakObservations,
+        /// Restages that released an obsolete replacement before acquiring the
+        /// new one, as the ordering contract requires.
+        released_before_restage: usize,
+        /// Makes the next `stage_chunk` reject before touching any state, the
+        /// way the renderer rejects an unrepresentable index count before it
+        /// releases or allocates anything.
+        reject_next_stage: bool,
     }
 
     impl FakePresentation {
@@ -1118,6 +1134,30 @@ pub(crate) mod tests {
             let removed = self.staged.remove(&coord).is_some();
             self.observe_bytes();
             removed
+        }
+
+        /// Held bytes of the staged replacement of `coord`, if any.
+        fn staged_bytes_of(&self, coord: ChunkCoord) -> Option<usize> {
+            self.staged
+                .get(&coord)
+                .map(|held| held.map_or(0, |held| held.bytes))
+        }
+
+        /// Held bytes of the committed mesh of `coord`, if any.
+        fn committed_bytes_of(&self, coord: ChunkCoord) -> Option<usize> {
+            self.chunks.get(&coord).map(|held| held.bytes)
+        }
+
+        const fn released_before_restage(&self) -> usize {
+            self.released_before_restage
+        }
+
+        const fn reject_next_stage(&mut self) {
+            self.reject_next_stage = true;
+        }
+
+        const fn observed_peak(&self) -> GpuPeakObservations {
+            self.observed_peak
         }
 
         fn observe_bytes(&mut self) {
@@ -1142,6 +1182,14 @@ pub(crate) mod tests {
             lod: LodLevel,
             mesh: &Mesh,
         ) -> Result<usize, ChunkUploadError> {
+            // Rejection comes first, before any state is touched.
+            if self.reject_next_stage {
+                self.reject_next_stage = false;
+                return Err(ChunkUploadError::TooManyIndices {
+                    coord,
+                    indices: mesh.indices().len(),
+                });
+            }
             self.upserts += 1;
             self.levels_sent.push((coord, lod));
             if mesh.indices().is_empty() {
@@ -1150,6 +1198,13 @@ pub(crate) mod tests {
                 return Ok(0);
             }
             let bytes = self.gpu_payload_bytes(mesh);
+            // Release the obsolete replacement before accounting for its
+            // successor, mirroring the renderer so the peak oracle sees the
+            // same instants the real presentation passes through.
+            if self.staged.remove(&coord).is_some() {
+                self.released_before_restage += 1;
+                self.observe_bytes();
+            }
             self.staged.insert(
                 coord,
                 Some(Held {
@@ -1740,13 +1795,21 @@ pub(crate) mod tests {
 
     /// One solid voxel meshed on its own: enough to occupy presentation slots.
     fn single_voxel_mesh() -> Mesh {
+        voxel_mesh(&[(0, 0, 0)])
+    }
+
+    /// A mesh of isolated voxels: every extra voxel adds six quads, so two
+    /// calls with different counts give reliably different payload sizes.
+    fn voxel_mesh(voxels: &[(usize, usize, usize)]) -> Mesh {
         let mut chunk = Chunk::empty();
-        let local = match veldwake_voxel::LocalCoord::new(0, 0, 0) {
-            Ok(local) => local,
-            Err(error) => panic!("local coordinate rejected: {error}"),
-        };
-        let previous = chunk.write_local(local, veldwake_voxel::VoxelId(1));
-        assert!(previous.is_air());
+        for &(x, y, z) in voxels {
+            let local = match veldwake_voxel::LocalCoord::new(x, y, z) {
+                Ok(local) => local,
+                Err(error) => panic!("local coordinate rejected: {error}"),
+            };
+            let previous = chunk.write_local(local, veldwake_voxel::VoxelId(1));
+            assert!(previous.is_air());
+        }
         veldwake_voxel::mesh_exposed_faces(&chunk)
     }
 
@@ -2022,6 +2085,145 @@ pub(crate) mod tests {
                 <= fake.observed_peak.committed + fake.observed_peak.staged,
             "the real peak can never exceed the sum of the component peaks"
         );
+    }
+
+    /// Restaging releases the obsolete replacement before acquiring its
+    /// successor, so presentation-owned chunk-mesh bytes never hold two
+    /// replacements of one chunk at the same instant. The bridge cannot see
+    /// inside the call, so the contract is proven here.
+    #[test]
+    fn restaging_releases_the_obsolete_replacement_before_acquiring_the_new_one() {
+        let small = voxel_mesh(&[(0, 0, 0)]);
+        let large = voxel_mesh(&[(0, 0, 0), (4, 0, 0), (8, 0, 0), (12, 0, 0)]);
+        let coord = ChunkCoord::new(0, 0, 0);
+        let mut fake = FakePresentation::default();
+
+        let small_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &small) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("staging failed: {error}"),
+        };
+        let large_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &large) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("restaging failed: {error}"),
+        };
+        assert!(small_bytes > 0 && large_bytes > small_bytes);
+        assert_eq!(
+            fake.released_before_restage(),
+            1,
+            "the restage must release the obsolete replacement"
+        );
+
+        // Exactly one logical replacement is staged, and it is the new one.
+        assert_eq!(fake.staged_bytes_of(coord), Some(large_bytes));
+        assert_eq!(fake.residency().staged(), 1);
+        assert_eq!(fake.residency().staged_bytes(), large_bytes);
+        assert_eq!(
+            fake.observed_peak().staged,
+            large_bytes,
+            "two replacements of one chunk were held at once"
+        );
+        assert!(fake.observed_peak().staged < small_bytes + large_bytes);
+
+        // An empty restage still replaces the staged mesh and releases it.
+        let empty = Mesh::default();
+        match fake.stage_chunk(coord, LodLevel::Lod0, &empty) {
+            Ok(bytes) => assert_eq!(bytes, 0, "an empty mesh holds no buffers"),
+            Err(error) => panic!("empty restage failed: {error}"),
+        }
+        assert_eq!(fake.staged_bytes_of(coord), Some(0));
+        assert_eq!(fake.residency().staged_bytes(), 0);
+        assert_eq!(
+            fake.observed_peak().staged,
+            large_bytes,
+            "an empty restage cannot raise the staged peak"
+        );
+    }
+
+    /// A restage never activates what was staged before and never disturbs the
+    /// committed mesh, which keeps drawing throughout.
+    #[test]
+    fn restaging_never_activates_the_previous_replacement_or_the_committed_mesh() {
+        let committed = voxel_mesh(&[(0, 0, 0)]);
+        let first = voxel_mesh(&[(0, 0, 0), (4, 0, 0)]);
+        let second = voxel_mesh(&[(0, 0, 0), (4, 0, 0), (8, 0, 0)]);
+        let coord = ChunkCoord::new(-1, 0, 2);
+        let mut fake = FakePresentation::default();
+
+        let committed_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &committed) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("staging failed: {error}"),
+        };
+        if let Err(error) = fake.commit_staged_group(&[coord]) {
+            panic!("commit failed: {error}");
+        }
+        assert_eq!(fake.active(), vec![coord]);
+        assert_eq!(fake.committed_bytes_of(coord), Some(committed_bytes));
+
+        let first_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &first) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("staging failed: {error}"),
+        };
+        let second_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &second) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("restaging failed: {error}"),
+        };
+        assert!(first_bytes != second_bytes);
+        assert_eq!(fake.released_before_restage(), 1);
+
+        // The drawn mesh is still the committed one, never a staged one.
+        assert_eq!(fake.active(), vec![coord]);
+        assert_eq!(fake.committed_bytes_of(coord), Some(committed_bytes));
+        assert_eq!(fake.residency().bytes(), committed_bytes);
+        assert_eq!(fake.staged_bytes_of(coord), Some(second_bytes));
+        assert_eq!(fake.residency().staged(), 1);
+        assert_eq!(
+            fake.observed_peak().total,
+            committed_bytes + second_bytes.max(first_bytes),
+            "the peak must never include both replacements"
+        );
+
+        // Committing swaps in the newest replacement, not the released one.
+        if let Err(error) = fake.commit_staged_group(&[coord]) {
+            panic!("commit failed: {error}");
+        }
+        assert_eq!(fake.committed_bytes_of(coord), Some(second_bytes));
+        assert_eq!(fake.residency().staged(), 0);
+    }
+
+    /// A stage rejected before any allocation must leave valid staging alone.
+    #[test]
+    fn a_stage_rejected_before_allocation_keeps_the_previous_staging() {
+        let staged = voxel_mesh(&[(0, 0, 0), (4, 0, 0)]);
+        let rejected = voxel_mesh(&[(0, 0, 0), (4, 0, 0), (8, 0, 0)]);
+        let coord = ChunkCoord::new(3, 1, -2);
+        let mut fake = FakePresentation::default();
+
+        let staged_bytes = match fake.stage_chunk(coord, LodLevel::Lod0, &staged) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("staging failed: {error}"),
+        };
+        fake.reject_next_stage();
+        match fake.stage_chunk(coord, LodLevel::Lod0, &rejected) {
+            Err(ChunkUploadError::TooManyIndices {
+                coord: rejected, ..
+            }) => {
+                assert_eq!(rejected, coord);
+            }
+            Ok(_) => panic!("the injected rejection did not fire"),
+        }
+
+        assert_eq!(
+            fake.staged_bytes_of(coord),
+            Some(staged_bytes),
+            "a rejected stage must not destroy valid staging"
+        );
+        assert_eq!(fake.released_before_restage(), 0);
+        assert_eq!(fake.residency().staged(), 1);
+        // The still-valid staging commits normally afterwards.
+        if let Err(error) = fake.commit_staged_group(&[coord]) {
+            panic!("commit failed: {error}");
+        }
+        assert_eq!(fake.committed_bytes_of(coord), Some(staged_bytes));
     }
 
     /// The presentation answers for a whole group or not at all: one member
