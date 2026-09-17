@@ -1,6 +1,8 @@
 # Art direction as a system
 
-Status: **Accepted direction; style specifics TBD**.
+Status: **Accepted direction; the first checkable style specifics are in [`STYLE_BIBLE.md`](STYLE_BIBLE.md), authored for M4.**
+
+This document states the direction. The style bible states the constraints it implies as numbers a test can check: shape language, detail frequency by distance, proportions, value and contrast bands, the base palette, material rules, cliff readability, foreground-to-background separation, sun position and colour, shadow behaviour, fog, sky, water, the two weather states, and the visual-noise limits that are rejection criteria in a screenshot review. It carries a style contract version that participates in the terrain generator fingerprint, so a rule that moves a voxel invalidates cached chunks.
 
 The target is **stylized high-quality voxel fantasy**. Voxel structure remains visible and intentional. The target is not photorealism and not “Minecraft with a shader.” Beauty should come from coherent silhouettes, composition, palette, light, atmosphere, movement, material response, and controlled detail.
 
