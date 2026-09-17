@@ -282,14 +282,19 @@ impl VegetationSystem {
         // height band, and keeps the two-voxel trunk on the tall trees the
         // style bible allows it on.
         let tall = height >= 10;
-        Some(TreeDescriptor {
+        let tree = TreeDescriptor {
             base_x,
             base_y: sample.surface_y() + 1,
             base_z,
             height,
             canopy_radius: if tall { 3 } else { 2 },
             trunk_edge: if tall { 2 } else { 1 },
-        })
+        };
+        let (low, high) = tree.bounds();
+        if !self.bounds_horizontally_inside(low[0], high[0], low[2], high[2]) {
+            return None;
+        }
+        Some(tree)
     }
 
     /// The shrub anchored in one lattice cell, if that cell carries one.
@@ -322,12 +327,21 @@ impl VegetationSystem {
             return None;
         }
         let span = MAX_SHRUB_HEIGHT.cast_unsigned();
-        Some(ShrubDescriptor {
+        let shrub = ShrubDescriptor {
             base_x,
             base_y: sample.surface_y() + 1,
             base_z,
             height: 1 + (sub_hash(hash, DRAW_SHRUB_HEIGHT) % span) as i64,
-        })
+        };
+        if !self.bounds_horizontally_inside(
+            shrub.base_x,
+            shrub.base_x + MAX_SHRUB_REACH,
+            shrub.base_z,
+            shrub.base_z + MAX_SHRUB_REACH,
+        ) {
+            return None;
+        }
+        Some(shrub)
     }
 
     /// Every tree that can write a voxel into the given chunk.
@@ -426,14 +440,23 @@ impl VegetationSystem {
     /// generated region would have nothing under it once the neighbouring
     /// chunk reports authoritative absence.
     fn horizontally_inside(&self, x: i64, z: i64) -> bool {
+        self.bounds_horizontally_inside(x, x, z, z)
+    }
+
+    /// Whether the complete horizontal bounds of a plant fit the finite
+    /// region. Plants are world geometry, so accepting only an anchor would
+    /// let a canopy or shrub footprint be silently clipped by `KnownAbsent`.
+    fn bounds_horizontally_inside(&self, min_x: i64, max_x: i64, min_z: i64, max_z: i64) -> bool {
         let edge = CHUNK_EDGE as i64;
         let extent = self.config.extent;
-        let chunk_x = x.div_euclid(edge);
-        let chunk_z = z.div_euclid(edge);
-        chunk_x >= i64::from(extent.min_chunk_x)
-            && chunk_x <= i64::from(extent.max_chunk_x)
-            && chunk_z >= i64::from(extent.min_chunk_z)
-            && chunk_z <= i64::from(extent.max_chunk_z)
+        let region_min_x = i64::from(extent.min_chunk_x) * edge;
+        let region_max_x = (i64::from(extent.max_chunk_x) + 1) * edge - 1;
+        let region_min_z = i64::from(extent.min_chunk_z) * edge;
+        let region_max_z = (i64::from(extent.max_chunk_z) + 1) * edge - 1;
+        min_x >= region_min_x
+            && max_x <= region_max_x
+            && min_z >= region_min_z
+            && max_z <= region_max_z
     }
 }
 
@@ -783,6 +806,14 @@ mod tests {
                 trees += 1;
                 let (low, high) = tree.bounds();
                 assert!(
+                    low[0] >= min_x && high[0] <= max_x && low[2] >= min_z && high[2] <= max_z,
+                    "tree {tree:?} reaches x={}..={} z={}..={} outside finite region x={min_x}..={max_x} z={min_z}..={max_z} before chunk clipping",
+                    low[0],
+                    high[0],
+                    low[2],
+                    high[2]
+                );
+                assert!(
                     low[1] >= min_y && high[1] < max_y_exclusive,
                     "tree {tree:?} reaches y={}..={} outside [{min_y}, {max_y_exclusive}) before chunk clipping",
                     low[1],
@@ -802,6 +833,17 @@ mod tests {
                 };
                 shrubs += 1;
                 let top = shrub.base_y + shrub.height - 1;
+                let shrub_max_x = shrub.base_x + MAX_SHRUB_REACH;
+                let shrub_max_z = shrub.base_z + MAX_SHRUB_REACH;
+                assert!(
+                    shrub.base_x >= min_x
+                        && shrub_max_x <= max_x
+                        && shrub.base_z >= min_z
+                        && shrub_max_z <= max_z,
+                    "shrub {shrub:?} reaches x={}..={shrub_max_x} z={}..={shrub_max_z} outside finite region x={min_x}..={max_x} z={min_z}..={max_z} before chunk clipping",
+                    shrub.base_x,
+                    shrub.base_z
+                );
                 assert!(
                     shrub.base_y >= min_y && top < max_y_exclusive,
                     "shrub {shrub:?} reaches y={}..={top} outside [{min_y}, {max_y_exclusive}) before chunk clipping",

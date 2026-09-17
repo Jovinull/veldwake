@@ -102,7 +102,7 @@ pub const STYLE_CONTRACT_VERSION: u32 = 1;
 /// which invalidates cache entries without making every cache lookup generate
 /// terrain. It is not a universal multi-seed proof; general algorithm changes
 /// still require the explicit [`TERRAIN_GENERATOR_VERSION`] contract bump.
-pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
+pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x2d88_497f_a6d6_d4b5;
 
 /// The seed a world is generated from.
 ///

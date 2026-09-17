@@ -176,7 +176,7 @@ pub const GOLDEN_REGION_SIGNATURE: u64 = 0x1285_7799_1516_4f6a;
 /// fingerprinting cost. It does not prove output equivalence for arbitrary
 /// seeds; an intentional general algorithm change still bumps
 /// `TERRAIN_GENERATOR_VERSION`.
-pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x6f13_74ab_a505_8961;
+pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x2d88_497f_a6d6_d4b5;
 
 /// Folds the locked chunks into one value.
 ///

@@ -12,7 +12,7 @@ M1, M2, and all of M3 are merged into `main`. M3D landed through PR #7 at merge 
 
 The three things most worth an adversarial eye:
 
-1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The compact regional signature `0x1285_7799_1516_4f6a`, named probes, and exhaustive behavioural signature `0x6f13_74ab_a505_8961` in `procedural::region` are the tripwires; the latter is folded into the cache fingerprint.
+1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The compact regional signature `0x1285_7799_1516_4f6a`, named probes, and exhaustive behavioural signature `0x2d88_497f_a6d6_d4b5` in `procedural::region` are the tripwires; the latter is folded into the cache fingerprint.
 2. **The cache default change.** Run-length replaced raw as the default payload encoding on M4 evidence: 107,904 bytes against 4,132,656 for the same eighty-one terrain chunks, encoding six times faster. The worst case is unchanged and still bounded by `MAX_ENTRY_BYTES`, but the decision reverses an M3D one and deserves scrutiny.
 3. **The visual assessment.** It is written in the milestone document as a judgement, with its weaknesses named. Disagreeing with it is a legitimate QA result.
 
