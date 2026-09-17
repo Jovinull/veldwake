@@ -414,6 +414,7 @@ impl FrameStats {
         if self.idle_reached.is_none()
             && streaming.runtime().is_idle()
             && streaming.pending_removal_count() == 0
+            && streaming.staged_count() == 0
             && report.uploads == 0
         {
             let elapsed = now.saturating_duration_since(self.started);
@@ -533,6 +534,26 @@ impl FrameStats {
             gap_max_simultaneous = gaps.max_simultaneous_missing,
             gap_current_missing = gaps.current_missing,
             gap_frames_with_missing = gaps.frames_with_missing,
+            ready_undrawn_now = gaps.ready_undrawn_now,
+            ready_undrawn_max = gaps.ready_undrawn_max,
+            ready_undrawn_frames = gaps.ready_undrawn_frames,
+            ready_undrawn_chunk_frames = gaps.ready_undrawn_chunk_frames,
+            blocked_groups_now = gaps.blocked_groups_now,
+            blocked_group_max = gaps.blocked_group_max,
+            constrained_undrawn_now = gaps.constrained_undrawn_now,
+            constrained_undrawn_max = gaps.constrained_undrawn_max,
+            transition_commits = totals.transition_commits,
+            transition_chunks = totals.transition_chunks,
+            restaged = totals.restaged,
+            staged_discarded = totals.staged_discarded,
+            staged_now = streaming.staged_count(),
+            staged_bytes = streaming.staged_bytes(),
+            peak_staged_bytes = totals.peak_staged_bytes,
+            committed_retained = metrics.committed_retained,
+            committed_dropped = metrics.committed_dropped,
+            transition_pending = summary.transition_pending,
+            gpu_staged = gpu.staged(),
+            gpu_staged_bytes = gpu.staged_bytes(),
             snapshot_build_total_us = metrics.snapshot_build.total_us,
             snapshot_build_max_us = metrics.snapshot_build.max_us,
             lod1_derivation_total_us = metrics.lod1_derivation.total_us,

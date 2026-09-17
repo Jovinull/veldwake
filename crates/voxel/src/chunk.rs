@@ -226,7 +226,7 @@ impl CoarseTally {
 
 impl Chunk {
     /// Derives the coarse grid: each coarse cell covers `2×2×2` chunk voxels
-    /// under the [`CoarseTally`] rule. The result depends only on local
+    /// under the `CoarseTally` rule. The result depends only on local
     /// content, never on the chunk's world coordinate.
     #[must_use]
     pub fn downsample_2x(&self) -> CoarseGrid {

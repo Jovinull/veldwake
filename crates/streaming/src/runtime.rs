@@ -13,7 +13,7 @@ use veldwake_voxel::{
 use crate::{
     demand::{DemandError, DemandSets, StreamingConfig},
     source::{DiagnosticChunkSource, SourceChunk},
-    types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken},
+    types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken, SeamContract},
     worker::{MeshJob, MeshSnapshot, Worker, WorkerJob, WorkerResult},
 };
 
@@ -35,6 +35,8 @@ pub enum MeshStatus {
     Dirty,
     Meshing,
     CpuReady,
+    /// Nothing pending: the committed mesh is the current target.
+    Committed,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -52,6 +54,14 @@ pub struct RuntimeMetrics {
     pub eviction_budget_hits: u64,
     /// Render-demand chunks whose desired level changed.
     pub lod_swaps: u64,
+    /// Presentation-only invalidations that kept the committed mesh drawable
+    /// while a replacement was prepared.
+    pub committed_retained: u64,
+    /// Committed meshes dropped immediately for a data reason.
+    pub committed_dropped: u64,
+    /// Transition groups committed atomically, and chunks committed by them.
+    pub transition_commits: u64,
+    pub transition_chunks_committed: u64,
     /// Stale mesh results attributable to a level change of the center or of
     /// a neighbor's presentation; a subset of `stale_mesh_results`, classified
     /// after the same validation. A neighbor that is no longer resident cannot
@@ -114,9 +124,14 @@ pub struct ResidencySummary {
     pub lod1_desired: usize,
     /// Render-demand chunks the source confirmed absent (never presented).
     pub render_known_absent: usize,
-    /// Ready meshes at each level.
+    /// Pending (not yet committed) ready meshes at each level.
     pub lod0_ready: usize,
     pub lod1_ready: usize,
+    /// Committed (drawable) meshes at each level.
+    pub lod0_committed: usize,
+    pub lod1_committed: usize,
+    /// Committed meshes whose target differs (a replacement is in progress).
+    pub transition_pending: usize,
 }
 
 #[derive(Debug)]
@@ -175,7 +190,21 @@ enum MeshState {
     WaitingForNeighbors,
     Dirty(MeshStamp),
     Meshing(MeshStamp),
-    CpuReady { stamp: MeshStamp, mesh: Mesh },
+    CpuReady {
+        stamp: MeshStamp,
+        mesh: Mesh,
+    },
+    /// The committed mesh already matches the target; nothing to build.
+    Committed,
+}
+
+/// The mesh presentation may draw: built for a stamp that was the target when
+/// it was committed, and still correct for its data even if the target level
+/// or a neighbor's seam contract moved on since.
+#[derive(Debug)]
+struct CommittedMesh {
+    stamp: MeshStamp,
+    mesh: Mesh,
 }
 
 #[derive(Debug)]
@@ -188,6 +217,8 @@ struct ChunkRecord {
     lod: LodLevel,
     /// Why the last invalidation happened, for gap attribution.
     last_invalidation: Option<InvalidationCause>,
+    /// Drawable mesh; survives presentation-only invalidations.
+    committed: Option<CommittedMesh>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -313,6 +344,7 @@ impl StreamingRuntime {
                 let previous =
                     std::mem::replace(&mut record.residency, ResidencyState::EvictPending(None));
                 record.mesh = MeshState::NotRequired;
+                record.committed = None;
                 match previous {
                     ResidencyState::CpuResident { chunk, .. } => Some(chunk),
                     ResidencyState::EvictPending(chunk) => chunk,
@@ -418,9 +450,11 @@ impl StreamingRuntime {
             MeshState::Dirty(_) => MeshStatus::Dirty,
             MeshState::Meshing(_) => MeshStatus::Meshing,
             MeshState::CpuReady { .. } => MeshStatus::CpuReady,
+            MeshState::Committed => MeshStatus::Committed,
         })
     }
 
+    /// The pending replacement for `coord`, built for the current target.
     #[must_use]
     pub fn ready_mesh(&self, coord: ChunkCoord) -> Option<(&MeshStamp, &Mesh)> {
         let record = self.records.get(&coord)?;
@@ -430,10 +464,18 @@ impl StreamingRuntime {
         }
     }
 
-    /// Ready meshes that the render-demand set currently asks to display.
-    ///
-    /// Retention-only and dependency-halo chunks are excluded: being CPU
-    /// resident never by itself makes a chunk drawable.
+    /// The mesh presentation may draw for `coord` right now.
+    #[must_use]
+    pub fn committed_mesh(&self, coord: ChunkCoord) -> Option<(&MeshStamp, &Mesh)> {
+        let record = self.records.get(&coord)?;
+        record
+            .committed
+            .as_ref()
+            .map(|committed| (&committed.stamp, &committed.mesh))
+    }
+
+    /// Pending replacements (CPU-ready, not yet committed) for render-demand
+    /// chunks. Presentation stages these without drawing them.
     pub fn render_ready_meshes(&self) -> impl Iterator<Item = (ChunkCoord, &MeshStamp, &Mesh)> {
         self.records.iter().filter_map(|(coord, record)| {
             if !self.demand.render.contains(coord) {
@@ -444,6 +486,209 @@ impl StreamingRuntime {
                 _ => None,
             }
         })
+    }
+
+    /// Committed meshes of render-demand chunks: the drawable set.
+    pub fn render_committed_meshes(&self) -> impl Iterator<Item = (ChunkCoord, &MeshStamp, &Mesh)> {
+        self.records.iter().filter_map(|(coord, record)| {
+            if !self.demand.render.contains(coord) {
+                return None;
+            }
+            record
+                .committed
+                .as_ref()
+                .map(|committed| (*coord, &committed.stamp, &committed.mesh))
+        })
+    }
+
+    /// A render-demand record whose committed mesh is absent or no longer the
+    /// target geometry; it needs a replacement before the target is shown.
+    fn needs_transition(&self, coord: ChunkCoord) -> bool {
+        let Some(record) = self.records.get(&coord) else {
+            return false;
+        };
+        if !self.demand.render.contains(&coord)
+            || !matches!(record.residency, ResidencyState::CpuResident { .. })
+        {
+            return false;
+        }
+        match (&record.committed, self.current_mesh_stamp(coord)) {
+            (Some(committed), Some(target)) => {
+                committed.stamp.geometry_key() != target.geometry_key()
+            }
+            (Some(_), None) => true,
+            (None, _) => true,
+        }
+    }
+
+    /// Per face, whether switching `coord` from its committed mesh to its
+    /// target changes the seam shared with the neighbor across that face: the
+    /// presented level changes, or the dependency stamp captured toward that
+    /// neighbor (its seam contract, token, or content) does. An undrawn chunk
+    /// changes no seam; a drawn chunk without a target changes all of them.
+    fn seam_changes_by_face(&self, coord: ChunkCoord) -> [bool; 6] {
+        let Some(committed) = self
+            .records
+            .get(&coord)
+            .and_then(|record| record.committed.as_ref())
+        else {
+            return [false; 6];
+        };
+        let Some(target) = self.current_mesh_stamp(coord) else {
+            return [true; 6];
+        };
+        if committed.stamp.lod != target.lod {
+            return [true; 6];
+        }
+        Face::ALL.map(|face| committed.stamp.neighbor(face) != target.neighbor(face))
+    }
+
+    /// Whether the seam `coord` shares with its neighbor across `face` changes
+    /// when `coord` switches from its committed mesh to its target (see
+    /// [`Self::transition_groups`]).
+    #[must_use]
+    pub fn seam_changes(&self, coord: ChunkCoord, face: Face) -> bool {
+        self.seam_changes_by_face(coord)[face as usize]
+    }
+
+    /// Atomic transition groups: connected sets of render-demand chunks that
+    /// must switch to their target meshes in the same frame so that no drawn
+    /// pair ever shows an incompatible seam.
+    ///
+    /// Two adjacent chunks that both need a transition are joined only when a
+    /// drawn side's seam toward the other changes: its presented level, or the
+    /// contract it applies across that face. A drawn chunk that is dirty for
+    /// another face's sake does not pull its neighbor along; an entrant next
+    /// to a drawn neighbor whose seam toward it stays the same appears on its
+    /// own, and two undrawn entrants constrain nothing. Joining every dirty
+    /// adjacency instead chained the whole moving frontier to the Lod0 ring,
+    /// which continuous movement re-dirties before it can commit.
+    #[must_use]
+    pub fn transition_groups(&self) -> Vec<Vec<ChunkCoord>> {
+        let dirty: BTreeSet<ChunkCoord> = self
+            .demand
+            .render
+            .iter()
+            .copied()
+            .filter(|coord| self.needs_transition(*coord))
+            .collect();
+        let changes: BTreeMap<ChunkCoord, [bool; 6]> = dirty
+            .iter()
+            .map(|&coord| (coord, self.seam_changes_by_face(coord)))
+            .collect();
+        let joined = |coord: ChunkCoord, face: Face, neighbor: ChunkCoord| {
+            changes
+                .get(&coord)
+                .is_some_and(|faces| faces[face as usize])
+                || changes
+                    .get(&neighbor)
+                    .is_some_and(|faces| faces[face.opposite() as usize])
+        };
+        let mut seen = BTreeSet::new();
+        let mut groups = Vec::new();
+        for &start in &dirty {
+            if !seen.insert(start) {
+                continue;
+            }
+            let mut group = vec![start];
+            let mut stack = vec![start];
+            while let Some(coord) = stack.pop() {
+                for face in Face::ALL {
+                    let Some(neighbor) = coord.neighbor(face) else {
+                        continue;
+                    };
+                    if !dirty.contains(&neighbor) || seen.contains(&neighbor) {
+                        continue;
+                    }
+                    if joined(coord, face, neighbor) {
+                        seen.insert(neighbor);
+                        group.push(neighbor);
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            group.sort();
+            groups.push(group);
+        }
+        groups
+    }
+
+    /// Every member of `group` has a ready replacement for its current target.
+    #[must_use]
+    pub fn group_is_ready(&self, group: &[ChunkCoord]) -> bool {
+        group.iter().all(|coord| {
+            let Some(record) = self.records.get(coord) else {
+                return false;
+            };
+            match (&record.mesh, self.current_mesh_stamp(*coord)) {
+                (MeshState::CpuReady { stamp, .. }, Some(target)) => *stamp == target,
+                _ => false,
+            }
+        })
+    }
+
+    /// Moves every member's ready replacement into its committed slot. The
+    /// caller activates the matching staged presentation in the same frame.
+    /// Members that are not ready are left untouched and counted in the result.
+    pub fn commit_group(&mut self, group: &[ChunkCoord]) -> usize {
+        let mut committed = 0;
+        for coord in group {
+            let Some(target) = self.current_mesh_stamp(*coord) else {
+                continue;
+            };
+            let Some(record) = self.records.get_mut(coord) else {
+                continue;
+            };
+            let ready =
+                matches!(&record.mesh, MeshState::CpuReady { stamp, .. } if *stamp == target);
+            if !ready {
+                continue;
+            }
+            let MeshState::CpuReady { stamp, mesh } =
+                std::mem::replace(&mut record.mesh, MeshState::Committed)
+            else {
+                continue;
+            };
+            record.committed = Some(CommittedMesh { stamp, mesh });
+            committed += 1;
+        }
+        if committed > 0 {
+            self.metrics.transition_commits += 1;
+            self.metrics.transition_chunks_committed += committed as u64;
+        }
+        committed
+    }
+
+    /// Replaces the resident content of `coord`, bumping its content
+    /// generation: every mesh built from the old content, including the
+    /// committed one, is invalid immediately (a data change, never a
+    /// presentation change).
+    pub fn replace_content(
+        &mut self,
+        coord: ChunkCoord,
+        chunk: Chunk,
+    ) -> Result<bool, RuntimeError> {
+        let Some(record) = self.records.get_mut(&coord) else {
+            return Ok(false);
+        };
+        let ResidencyState::CpuResident {
+            chunk: resident,
+            content_generation,
+        } = &mut record.residency
+        else {
+            return Ok(false);
+        };
+        *content_generation =
+            content_generation
+                .checked_add(1)
+                .ok_or(RuntimeError::GenerationExhausted {
+                    coord,
+                    kind: "content",
+                })?;
+        *resident = chunk;
+        self.invalidate_mesh(coord, InvalidationCause::Data)?;
+        self.invalidate_neighbors(coord, InvalidationCause::Data)?;
+        Ok(true)
     }
 
     /// Retired records still waiting for their bounded release.
@@ -514,6 +759,17 @@ impl StreamingRuntime {
                         LodLevel::Lod1 => summary.lod1_ready += 1,
                     }
                 }
+                MeshState::Committed => {}
+            }
+            if let Some(committed) = &record.committed {
+                summary.cpu_mesh_bytes += committed.mesh.payload_bytes();
+                match committed.stamp.lod {
+                    LodLevel::Lod0 => summary.lod0_committed += 1,
+                    LodLevel::Lod1 => summary.lod1_committed += 1,
+                }
+                if !matches!(record.mesh, MeshState::Committed) {
+                    summary.transition_pending += 1;
+                }
             }
         }
         summary
@@ -560,13 +816,24 @@ impl StreamingRuntime {
     }
 
     #[must_use]
+    pub fn committed_mesh_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|record| record.committed.is_some())
+            .count()
+    }
+
+    #[must_use]
     pub fn is_idle(&self) -> bool {
         self.in_flight.is_none()
             && !self.records.values().any(|record| {
                 matches!(
                     record.residency,
                     ResidencyState::LoadQueued | ResidencyState::Loading
-                ) || matches!(record.mesh, MeshState::Dirty(_) | MeshState::Meshing(_))
+                ) || matches!(
+                    record.mesh,
+                    MeshState::Dirty(_) | MeshState::Meshing(_) | MeshState::WaitingForNeighbors
+                )
             })
     }
 
@@ -605,6 +872,7 @@ impl StreamingRuntime {
                     mesh: MeshState::NotRequired,
                     lod,
                     last_invalidation: None,
+                    committed: None,
                 },
             );
             self.load_queue.push(LoadQueueEntry {
@@ -676,6 +944,15 @@ impl StreamingRuntime {
         }
     }
 
+    const fn cause_is_presentation_only(cause: InvalidationCause) -> bool {
+        matches!(
+            cause,
+            InvalidationCause::LodChange
+                | InvalidationCause::NeighborPresentation
+                | InvalidationCause::Membership
+        )
+    }
+
     fn invalidate_neighbors(
         &mut self,
         coord: ChunkCoord,
@@ -717,6 +994,12 @@ impl StreamingRuntime {
         if !self.demand.render.contains(&coord)
             || !matches!(record.residency, ResidencyState::CpuResident { .. })
         {
+            // Leaving render demand, or losing resident content, ends the
+            // committed mesh: nothing outside the visible set is drawn, and a
+            // mesh of data that is gone is wrong.
+            if record.committed.take().is_some() {
+                self.metrics.committed_dropped += 1;
+            }
             // A source-confirmed absence has nothing to mesh, ever; only data
             // that is still arriving is genuinely waiting.
             let waiting_for_data = self.demand.render.contains(&coord)
@@ -733,11 +1016,35 @@ impl StreamingRuntime {
         }
 
         record.mesh = MeshState::WaitingForNeighbors;
-        if let Some(stamp) = self.current_mesh_stamp(coord) {
-            let record = self
-                .records
-                .get_mut(&coord)
-                .ok_or(RuntimeError::WorkerDisconnected)?;
+        let target = self.current_mesh_stamp(coord);
+        let record = self
+            .records
+            .get_mut(&coord)
+            .ok_or(RuntimeError::WorkerDisconnected)?;
+        // The committed mesh survives only a presentation-only change whose
+        // stamp still describes the same data; anything else drops it now.
+        if let Some(committed) = &record.committed {
+            let safe = Self::cause_is_presentation_only(cause)
+                && target
+                    .as_ref()
+                    .is_some_and(|target| committed.stamp.differs_only_by_presentation(target));
+            if safe {
+                self.metrics.committed_retained += 1;
+            } else {
+                record.committed = None;
+                self.metrics.committed_dropped += 1;
+            }
+        }
+        if let Some(stamp) = target {
+            if record
+                .committed
+                .as_ref()
+                .is_some_and(|committed| committed.stamp.geometry_key() == stamp.geometry_key())
+            {
+                // The target is what is already drawn; no replacement needed.
+                record.mesh = MeshState::Committed;
+                return Ok(());
+            }
             record.mesh = MeshState::Dirty(stamp);
             self.mesh_queue.push(MeshQueueEntry {
                 priority: self.mesh_priority(coord, stamp.lod),
@@ -777,6 +1084,7 @@ impl StreamingRuntime {
     }
 
     fn neighbor_stamp(&self, coord: ChunkCoord, face: Face) -> Option<NeighborStamp> {
+        let record = self.records.get(&coord)?;
         let neighbor_coord = coord.neighbor(face)?;
         let neighbor = self.records.get(&neighbor_coord)?;
         match neighbor.residency {
@@ -786,11 +1094,14 @@ impl StreamingRuntime {
                 coord: neighbor_coord,
                 token: neighbor.token,
                 content_generation,
-                presentation: if self.demand.render.contains(&neighbor_coord) {
-                    NeighborPresentation::Rendered(neighbor.lod)
-                } else {
-                    NeighborPresentation::ContentOnly
-                },
+                seam: SeamContract::derive(
+                    record.lod,
+                    if self.demand.render.contains(&neighbor_coord) {
+                        NeighborPresentation::Rendered(neighbor.lod)
+                    } else {
+                        NeighborPresentation::ContentOnly
+                    },
+                ),
             }),
             ResidencyState::KnownAbsent => Some(NeighborStamp::KnownAbsent {
                 coord: neighbor_coord,
@@ -823,16 +1134,17 @@ impl StreamingRuntime {
         let ResidencyState::CpuResident { chunk: center, .. } = &center_record.residency else {
             return None;
         };
+        // Slabs follow the stamp's seam contracts, so the job reproduces
+        // exactly the target presentation it was issued for.
         let neighbor_of = |face: Face| {
             let neighbor_coord = stamp.coord.neighbor(face)?;
             let record = self.records.get(&neighbor_coord)?;
-            let presented = self
-                .demand
-                .render
-                .contains(&neighbor_coord)
-                .then_some(record.lod);
+            let seam = match stamp.neighbors[face as usize] {
+                NeighborStamp::Resident { seam, .. } => seam,
+                NeighborStamp::KnownAbsent { .. } => SeamContract::Same,
+            };
             match &record.residency {
-                ResidencyState::CpuResident { chunk, .. } => Some(Some((chunk, presented))),
+                ResidencyState::CpuResident { chunk, .. } => Some(Some((chunk, seam))),
                 ResidencyState::KnownAbsent => Some(None),
                 _ => None,
             }
@@ -842,7 +1154,7 @@ impl StreamingRuntime {
                 let mut slab = |face: Face| -> Option<FaceSlab<CHUNK_EDGE>> {
                     Some(match neighbor_of(face)? {
                         None => FaceSlab::known_air(),
-                        Some((chunk, Some(LodLevel::Lod1))) => {
+                        Some((chunk, SeamContract::CoarseNeighbor)) => {
                             match derive(&mut || {
                                 MeshSnapshotSlab::Fine(FaceSlab::coarse_occupancy_of(face, chunk))
                             }) {
@@ -874,7 +1186,7 @@ impl StreamingRuntime {
                             None => FaceSlab::known_air(),
                             // Toward a fine neighbor the coarse quad stays unless
                             // the fine seam layer covers it completely.
-                            Some((chunk, Some(LodLevel::Lod0))) => {
+                            Some((chunk, SeamContract::FineNeighbor)) => {
                                 FaceSlab::fine_coverage_of(face, chunk)
                             }
                             Some((chunk, _)) => FaceSlab::downsampled_from(face, chunk),
@@ -990,14 +1302,8 @@ impl StreamingRuntime {
         }
         Face::ALL.into_iter().any(|face| {
             let (
-                Some(NeighborStamp::Resident {
-                    presentation: current,
-                    ..
-                }),
-                NeighborStamp::Resident {
-                    presentation: previous,
-                    ..
-                },
+                Some(NeighborStamp::Resident { seam: current, .. }),
+                NeighborStamp::Resident { seam: previous, .. },
             ) = (
                 self.neighbor_stamp(stamp.coord, face),
                 stamp.neighbors[face as usize],
@@ -1808,7 +2114,7 @@ mod tests {
         assert!(before.neighbors.iter().all(|stamp| matches!(
             stamp,
             NeighborStamp::Resident {
-                presentation: NeighborPresentation::Rendered(LodLevel::Lod0),
+                seam: SeamContract::Same,
                 ..
             }
         )));
@@ -1826,7 +2132,7 @@ mod tests {
         assert!(matches!(
             after.neighbors[Face::PositiveX as usize],
             NeighborStamp::Resident {
-                presentation: NeighborPresentation::Rendered(LodLevel::Lod1),
+                seam: SeamContract::CoarseNeighbor,
                 ..
             }
         ));
@@ -1848,7 +2154,7 @@ mod tests {
         assert!(matches!(
             stamp,
             NeighborStamp::Resident {
-                presentation: NeighborPresentation::ContentOnly,
+                seam: SeamContract::Same,
                 ..
             }
         ));

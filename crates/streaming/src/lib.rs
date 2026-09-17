@@ -21,4 +21,6 @@ pub use runtime::{
     StreamingRuntime, TimingStat,
 };
 pub use source::{DiagnosticChunkSource, SourceChunk};
-pub use types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken};
+pub use types::{
+    LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken, SeamContract,
+};

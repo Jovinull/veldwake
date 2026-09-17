@@ -112,10 +112,14 @@ pub struct LevelResidency {
     pub resident: usize,
     /// Chunks in the current draw set.
     pub active: usize,
-    /// Exact bytes of vertex, index, and model data held on the GPU.
+    /// Exact bytes of vertex, index, and model data held on the GPU by
+    /// active (committed) meshes.
     pub bytes: usize,
-    /// Quads held, drawable or not.
+    /// Quads held by active meshes.
     pub quads: usize,
+    /// Replacement meshes staged but not yet drawable, and their bytes.
+    pub staged: usize,
+    pub staged_bytes: usize,
 }
 
 /// Presentation-side chunk residency per level, as observed by the bridge.
@@ -145,6 +149,16 @@ impl GpuResidency {
     pub const fn quads(&self) -> usize {
         self.lod0.quads + self.lod1.quads
     }
+
+    #[must_use]
+    pub const fn staged(&self) -> usize {
+        self.lod0.staged + self.lod1.staged
+    }
+
+    #[must_use]
+    pub const fn staged_bytes(&self) -> usize {
+        self.lod0.staged_bytes + self.lod1.staged_bytes
+    }
 }
 
 /// Minimal GPU-side operations the streaming bridge needs.
@@ -155,16 +169,24 @@ pub trait ChunkPresentation {
     /// Exact GPU bytes `mesh` would occupy, computed before any upload.
     fn gpu_payload_bytes(&self, mesh: &Mesh) -> usize;
 
-    /// Uploads or replaces `coord` at presentation level `lod` and makes it
-    /// drawable. The level is the only streaming fact the presentation learns;
-    /// it never sees tokens, generations, or the full stamp. An empty mesh
-    /// releases any previous buffers and returns `Ok(0)`.
-    fn upsert_chunk(
+    /// Uploads a replacement for `coord` at presentation level `lod` without
+    /// drawing it; the current mesh, if any, keeps drawing. The level is the
+    /// only streaming fact the presentation learns; it never sees tokens,
+    /// generations, or the full stamp. Staging an empty mesh holds no buffers
+    /// and returns `Ok(0)`; committing it later removes the old mesh.
+    fn stage_chunk(
         &mut self,
         coord: ChunkCoord,
         lod: LodLevel,
         mesh: &Mesh,
     ) -> Result<usize, ChunkUploadError>;
+
+    /// Makes the staged replacement of `coord` the drawn mesh and releases the
+    /// previous one. Returns false when nothing was staged.
+    fn commit_staged(&mut self, coord: ChunkCoord) -> bool;
+
+    /// Drops a staged replacement that will never be committed.
+    fn discard_staged(&mut self, coord: ChunkCoord) -> bool;
 
     /// Removes `coord` from the draw set immediately while keeping its buffers.
     fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool;
@@ -248,6 +270,15 @@ pub struct BridgeTotals {
     pub deactivations: u64,
     pub removals: u64,
     pub removal_budget_hits: u64,
+    /// Atomic transition commits and the chunks they switched.
+    pub transition_commits: u64,
+    pub transition_chunks: u64,
+    /// Staged replacements re-staged because their target moved on.
+    pub restaged: u64,
+    /// Staged replacements discarded because their chunk no longer needed one.
+    pub staged_discarded: u64,
+    /// Highest bytes held by staged (undrawn) replacements at one time.
+    pub peak_staged_bytes: usize,
 }
 
 /// Presentation gaps: render-demand chunks that were drawn, stopped being
@@ -274,6 +305,25 @@ pub struct GapStats {
     pub current_missing: usize,
     /// Update frames in which at least one chunk was missing.
     pub frames_with_missing: u64,
+    /// Render-demand chunks whose replacement is CPU-ready but not drawn this
+    /// update because its transition group has not committed: never drawn
+    /// before (a frontier entrant) or waiting on a neighbor. These are not
+    /// gaps by the definition above; they are the holes that definition misses.
+    pub ready_undrawn_now: usize,
+    /// Highest `ready_undrawn_now` observed in one update.
+    pub ready_undrawn_max: usize,
+    /// Update frames with at least one ready-but-undrawn chunk.
+    pub ready_undrawn_frames: u64,
+    /// Sum over updates of `ready_undrawn_now`.
+    pub ready_undrawn_chunk_frames: u64,
+    /// Transition groups that could not commit this update, and the largest.
+    pub blocked_groups_now: usize,
+    pub blocked_group_max: usize,
+    /// Undrawn members of blocked groups that also hold a drawn member: the
+    /// entrants legitimately waiting for a drawn neighbor whose seam toward
+    /// them changes. Anything else undrawn waits only for its own pipeline.
+    pub constrained_undrawn_now: usize,
+    pub constrained_undrawn_max: usize,
 }
 
 impl GapStats {
@@ -291,11 +341,15 @@ impl GapStats {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrameStreamingReport {
     pub demand_changed: bool,
+    /// Meshes staged this frame (uploads under budget).
     pub uploads: usize,
     pub upload_bytes: usize,
     pub deactivations: usize,
     pub removals: usize,
     pub deferred_uploads: usize,
+    /// Transition groups committed this frame and chunks they switched.
+    pub commits: usize,
+    pub committed_chunks: usize,
 }
 
 /// Owns the streaming runtime and the map of what is currently presented.
@@ -304,6 +358,9 @@ pub struct StreamingBridge {
     desired_center: ChunkCoord,
     /// Chunks whose GPU mesh matches this exact stamp and is drawable.
     presented: BTreeMap<ChunkCoord, MeshStamp>,
+    /// Replacements uploaded but not drawn: the stamp they were built for and
+    /// their GPU bytes.
+    staged: BTreeMap<ChunkCoord, (MeshStamp, usize)>,
     /// Deactivated chunks still holding buffers, released under budget.
     pending_removal: BTreeSet<ChunkCoord>,
     budget: UploadBudget,
@@ -328,6 +385,7 @@ impl StreamingBridge {
             runtime,
             desired_center: center,
             presented: BTreeMap::new(),
+            staged: BTreeMap::new(),
             pending_removal: BTreeSet::new(),
             budget,
             totals: BridgeTotals::default(),
@@ -370,7 +428,8 @@ impl StreamingBridge {
     }
 
     /// One bounded frame step: demand, runtime poll, draw-set reconciliation,
-    /// budgeted uploads, budgeted releases.
+    /// budgeted staging of replacements, atomic group commits, budgeted
+    /// releases.
     pub fn update<P: ChunkPresentation>(
         &mut self,
         presentation: &mut P,
@@ -386,13 +445,95 @@ impl StreamingBridge {
         self.runtime.poll()?;
 
         report.deactivations = self.reconcile_draw_set(presentation);
-        let (uploads, upload_bytes, deferred) = self.upload_ready_meshes(presentation);
+        self.discard_obsolete_staging(presentation);
+        let (uploads, upload_bytes, deferred) = self.stage_ready_meshes(presentation);
         report.uploads = uploads;
         report.upload_bytes = upload_bytes;
         report.deferred_uploads = deferred;
+        let (commits, committed_chunks) = self.commit_ready_groups(presentation);
+        report.commits = commits;
+        report.committed_chunks = committed_chunks;
         report.removals = self.release_pending(presentation);
         self.account_gaps();
         Ok(report)
+    }
+
+    /// Staged replacements whose chunk no longer has a pending target (its
+    /// committed mesh became the target again, it left render demand, or it
+    /// was dropped) are released; a staged stamp that no longer matches the
+    /// pending target is left to be re-staged.
+    fn discard_obsolete_staging<P: ChunkPresentation>(&mut self, presentation: &mut P) {
+        let obsolete: Vec<ChunkCoord> = self
+            .staged
+            .keys()
+            .copied()
+            .filter(|coord| {
+                !self.runtime.demand().render.contains(coord)
+                    || self.runtime.ready_mesh(*coord).is_none()
+            })
+            .collect();
+        for coord in obsolete {
+            self.staged.remove(&coord);
+            presentation.discard_staged(coord);
+            self.totals.staged_discarded += 1;
+        }
+    }
+
+    /// Commits every transition group whose members are all CPU-ready and
+    /// staged: the runtime commits their meshes and the presentation swaps
+    /// them in the same update, so no drawn pair ever mixes old and new seams.
+    fn commit_ready_groups<P: ChunkPresentation>(
+        &mut self,
+        presentation: &mut P,
+    ) -> (usize, usize) {
+        let groups = self.runtime.transition_groups();
+        let mut commits = 0;
+        let mut chunks = 0;
+        let mut blocked_groups = 0;
+        let mut blocked_group_max = 0;
+        let mut constrained_undrawn = 0;
+        for group in groups {
+            let fully_staged = group.iter().all(|coord| {
+                match (self.staged.get(coord), self.runtime.ready_mesh(*coord)) {
+                    (Some((staged, _)), Some((target, _))) => staged == target,
+                    _ => false,
+                }
+            });
+            if !fully_staged || !self.runtime.group_is_ready(&group) {
+                blocked_groups += 1;
+                blocked_group_max = blocked_group_max.max(group.len());
+                let (drawn, undrawn) = group.iter().fold((0, 0), |(drawn, undrawn), coord| {
+                    if self.runtime.committed_mesh(*coord).is_some() {
+                        (drawn + 1, undrawn)
+                    } else {
+                        (drawn, undrawn + 1)
+                    }
+                });
+                if drawn > 0 {
+                    constrained_undrawn += undrawn;
+                }
+                continue;
+            }
+            let committed = self.runtime.commit_group(&group);
+            debug_assert_eq!(committed, group.len(), "group readiness was checked");
+            for coord in &group {
+                if let Some((stamp, _)) = self.staged.remove(coord) {
+                    presentation.commit_staged(*coord);
+                    self.presented.insert(*coord, stamp);
+                    self.pending_removal.remove(coord);
+                }
+            }
+            commits += 1;
+            chunks += group.len();
+        }
+        self.totals.transition_commits += commits as u64;
+        self.totals.transition_chunks += chunks as u64;
+        self.gaps.blocked_groups_now = blocked_groups;
+        self.gaps.blocked_group_max = self.gaps.blocked_group_max.max(blocked_group_max);
+        self.gaps.constrained_undrawn_now = constrained_undrawn;
+        self.gaps.constrained_undrawn_max =
+            self.gaps.constrained_undrawn_max.max(constrained_undrawn);
+        (commits, chunks)
     }
 
     /// Closes gaps for chunks that draw again, forgets chunks that left render
@@ -432,10 +573,23 @@ impl StreamingBridge {
         if self.gaps.current_missing > 0 {
             self.gaps.frames_with_missing += 1;
         }
+        let ready_undrawn = self
+            .runtime
+            .render_ready_meshes()
+            .filter(|(coord, _, _)| !self.presented.contains_key(coord))
+            .count();
+        self.gaps.ready_undrawn_now = ready_undrawn;
+        self.gaps.ready_undrawn_max = self.gaps.ready_undrawn_max.max(ready_undrawn);
+        if ready_undrawn > 0 {
+            self.gaps.ready_undrawn_frames += 1;
+            self.gaps.ready_undrawn_chunk_frames += ready_undrawn as u64;
+        }
     }
 
-    /// Any presented mesh whose stamp is no longer the current render-demand
-    /// ready mesh stops drawing now, regardless of release budget.
+    /// Any presented mesh that the runtime no longer commits (a data change,
+    /// an unload, or leaving render demand) stops drawing now, regardless of
+    /// release budget. A presentation-only target change keeps it drawn until
+    /// its transition group commits.
     fn reconcile_draw_set<P: ChunkPresentation>(&mut self, presentation: &mut P) -> usize {
         let render = &self.runtime.demand().render;
         let stale: Vec<ChunkCoord> = self
@@ -445,7 +599,7 @@ impl StreamingBridge {
                 !render.contains(*coord)
                     || self
                         .runtime
-                        .ready_mesh(**coord)
+                        .committed_mesh(**coord)
                         .is_none_or(|(current, _)| current != *stamp)
             })
             .map(|(coord, _)| *coord)
@@ -468,7 +622,9 @@ impl StreamingBridge {
         stale.len()
     }
 
-    fn upload_ready_meshes<P: ChunkPresentation>(
+    /// Stages (uploads without drawing) every pending replacement whose
+    /// target stamp is not staged yet, nearest first, under the upload budget.
+    fn stage_ready_meshes<P: ChunkPresentation>(
         &mut self,
         presentation: &mut P,
     ) -> (usize, usize, usize) {
@@ -476,7 +632,9 @@ impl StreamingBridge {
         let mut candidates: Vec<(u128, ChunkCoord, MeshStamp, &Mesh)> = self
             .runtime
             .render_ready_meshes()
-            .filter(|(coord, stamp, _)| self.presented.get(coord) != Some(*stamp))
+            .filter(|(coord, stamp, _)| {
+                self.staged.get(coord).map(|(staged, _)| staged) != Some(*stamp)
+            })
             .map(|(coord, stamp, mesh)| (squared_distance(coord, center), coord, *stamp, mesh))
             .collect();
         candidates.sort_by_key(|(distance, coord, _, _)| (*distance, *coord));
@@ -484,14 +642,15 @@ impl StreamingBridge {
         let mut uploads = 0;
         let mut bytes_done = 0;
         let mut deferred = 0;
-        let mut presented_now = Vec::new();
+        let mut staged_now = Vec::new();
         for (_, coord, stamp, mesh) in candidates {
+            let restage = self.staged.contains_key(&coord);
             if mesh.indices().is_empty() {
-                // Nothing reaches the GPU; presenting it only clears stale buffers.
-                match presentation.upsert_chunk(coord, stamp.lod, mesh) {
+                // Nothing reaches the GPU; committing it later only clears buffers.
+                match presentation.stage_chunk(coord, stamp.lod, mesh) {
                     Ok(_) => {
                         self.totals.empty_meshes_presented += 1;
-                        presented_now.push((coord, stamp));
+                        staged_now.push((coord, stamp, 0, restage));
                     }
                     Err(error) => {
                         self.totals.upload_failures += 1;
@@ -510,7 +669,7 @@ impl StreamingBridge {
                 UploadAdmission::AdmitOversized => self.totals.oversized_uploads += 1,
                 UploadAdmission::Admit => {}
             }
-            match presentation.upsert_chunk(coord, stamp.lod, mesh) {
+            match presentation.stage_chunk(coord, stamp.lod, mesh) {
                 Ok(uploaded) => {
                     uploads += 1;
                     bytes_done += uploaded;
@@ -524,7 +683,7 @@ impl StreamingBridge {
                             self.totals.upload_bytes_lod1 += uploaded as u64;
                         }
                     }
-                    presented_now.push((coord, stamp));
+                    staged_now.push((coord, stamp, uploaded, restage));
                 }
                 Err(error) => {
                     self.totals.upload_failures += 1;
@@ -532,10 +691,14 @@ impl StreamingBridge {
                 }
             }
         }
-        for (coord, stamp) in presented_now {
-            self.presented.insert(coord, stamp);
-            self.pending_removal.remove(&coord);
+        for (coord, stamp, bytes, restage) in staged_now {
+            self.staged.insert(coord, (stamp, bytes));
+            if restage {
+                self.totals.restaged += 1;
+            }
         }
+        let staged_bytes: usize = self.staged.values().map(|(_, bytes)| *bytes).sum();
+        self.totals.peak_staged_bytes = self.totals.peak_staged_bytes.max(staged_bytes);
         self.totals.uploads += uploads as u64;
         self.totals.upload_bytes += bytes_done as u64;
         self.totals.upload_budget_deferrals += deferred as u64;
@@ -581,6 +744,16 @@ impl StreamingBridge {
         self.pending_removal.len()
     }
 
+    #[must_use]
+    pub fn staged_count(&self) -> usize {
+        self.staged.len()
+    }
+
+    #[must_use]
+    pub fn staged_bytes(&self) -> usize {
+        self.staged.values().map(|(_, bytes)| *bytes).sum()
+    }
+
     #[cfg(test)]
     pub fn presented_stamp(&self, coord: ChunkCoord) -> Option<&MeshStamp> {
         self.presented.get(&coord)
@@ -616,11 +789,17 @@ fn squared_distance(coord: ChunkCoord, center: ChunkCoord) -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, thread, time::Duration};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        thread,
+        time::Duration,
+    };
 
     use glam::Vec3;
-    use veldwake_streaming::{LodLevel, StreamingConfig};
-    use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, WorldVoxelCoord};
+    use veldwake_streaming::{
+        LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, SeamContract, StreamingConfig,
+    };
+    use veldwake_voxel::{CHUNK_EDGE, Chunk, ChunkCoord, Face, Mesh, WorldVoxelCoord};
 
     use super::{
         CameraAnchor, CameraAnchorError, ChunkPresentation, ChunkUploadError, GpuResidency,
@@ -639,6 +818,8 @@ mod tests {
     #[derive(Default)]
     struct FakePresentation {
         chunks: BTreeMap<ChunkCoord, Held>,
+        /// Staged replacements: `None` marks a staged empty mesh.
+        staged: BTreeMap<ChunkCoord, Option<Held>>,
         upserts: usize,
         removals: usize,
         /// Every level the bridge sent, in order, including empty meshes.
@@ -650,7 +831,7 @@ mod tests {
             mesh.vertices().len() * 24 + mesh.indices().len() * 4 + 32
         }
 
-        fn upsert_chunk(
+        fn stage_chunk(
             &mut self,
             coord: ChunkCoord,
             lod: LodLevel,
@@ -659,20 +840,38 @@ mod tests {
             self.upserts += 1;
             self.levels_sent.push((coord, lod));
             if mesh.indices().is_empty() {
-                self.chunks.remove(&coord);
+                self.staged.insert(coord, None);
                 return Ok(0);
             }
             let bytes = self.gpu_payload_bytes(mesh);
-            self.chunks.insert(
+            self.staged.insert(
                 coord,
-                Held {
+                Some(Held {
                     bytes,
                     quads: mesh.quad_count(),
                     lod,
                     active: true,
-                },
+                }),
             );
             Ok(bytes)
+        }
+
+        fn commit_staged(&mut self, coord: ChunkCoord) -> bool {
+            match self.staged.remove(&coord) {
+                Some(Some(held)) => {
+                    self.chunks.insert(coord, held);
+                    true
+                }
+                Some(None) => {
+                    self.chunks.remove(&coord);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn discard_staged(&mut self, coord: ChunkCoord) -> bool {
+            self.staged.remove(&coord).is_some()
         }
 
         fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
@@ -684,6 +883,7 @@ mod tests {
 
         fn remove_chunk(&mut self, coord: ChunkCoord) -> bool {
             self.removals += 1;
+            self.staged.remove(&coord);
             self.chunks.remove(&coord).is_some()
         }
 
@@ -701,7 +901,70 @@ mod tests {
                     level.active += 1;
                 }
             }
+            for held in self.staged.values().flatten() {
+                let level = match held.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.staged += 1;
+                level.staged_bytes += held.bytes;
+            }
             residency
+        }
+    }
+
+    /// Every drawn pair must agree on its seam: each presented stamp's
+    /// contract toward a presented neighbor equals the contract derived from
+    /// the neighbor's presented level. Toward an undrawn neighbor still in
+    /// render demand it equals the contract for that neighbor's target level,
+    /// so the pair is coherent the moment the neighbor appears, unless the
+    /// drawn chunk's own replacement toward that face is pending: it then
+    /// keeps its old mesh and commits together with the neighbor. This is the
+    /// definition of "no mixed committed/target seam".
+    fn assert_presented_seams_coherent(bridge: &StreamingBridge, fake: &FakePresentation) {
+        let presented: BTreeMap<ChunkCoord, MeshStamp> = bridge
+            .runtime()
+            .render_committed_meshes()
+            .filter(|(coord, _, _)| bridge.presented_stamp(*coord).is_some())
+            .map(|(coord, stamp, _)| (coord, *stamp))
+            .collect();
+        for (coord, stamp) in &presented {
+            assert_eq!(bridge.presented_stamp(*coord), Some(stamp), "{coord:?}");
+            for face in Face::ALL {
+                let Some(neighbor) = coord.neighbor(face) else {
+                    continue;
+                };
+                let NeighborStamp::Resident { seam, .. } = stamp.neighbors[face as usize] else {
+                    continue;
+                };
+                let expected = match presented.get(&neighbor) {
+                    Some(other) => {
+                        SeamContract::derive(stamp.lod, NeighborPresentation::Rendered(other.lod))
+                    }
+                    // A neighbor that left render demand is beyond the visible
+                    // radius: the committed mesh may still carry its old contract
+                    // until its own transition commits (boundary edge effect).
+                    None if !bridge.runtime().demand().render.contains(&neighbor) => continue,
+                    None if bridge.runtime().seam_changes(*coord, face) => continue,
+                    None => match bridge.runtime().desired_lod(neighbor) {
+                        Some(level) => {
+                            SeamContract::derive(stamp.lod, NeighborPresentation::Rendered(level))
+                        }
+                        None => SeamContract::Same,
+                    },
+                };
+                assert_eq!(
+                    seam, expected,
+                    "{coord:?} toward {face:?} ({neighbor:?}) drawn with an incompatible seam"
+                );
+            }
+        }
+        // The double's draw set is exactly the presented non-empty set.
+        for coord in fake.active() {
+            assert!(
+                presented.contains_key(&coord),
+                "{coord:?} drawn but not committed"
+            );
         }
     }
 
@@ -858,9 +1121,14 @@ mod tests {
 
         let render = &bridge.runtime().demand().render;
         assert_eq!(bridge.presented_count(), render.len());
-        let ready: Vec<_> = bridge.runtime().render_ready_meshes().collect();
-        assert_eq!(ready.len(), render.len());
-        for (coord, stamp, mesh) in ready {
+        assert_eq!(
+            bridge.runtime().render_ready_meshes().count(),
+            0,
+            "all committed"
+        );
+        let committed: Vec<_> = bridge.runtime().render_committed_meshes().collect();
+        assert_eq!(committed.len(), render.len());
+        for (coord, stamp, mesh) in committed {
             assert!(render.contains(&coord));
             assert_eq!(bridge.presented_stamp(coord), Some(stamp));
             let held = fake.chunks.get(&coord);
@@ -999,7 +1267,12 @@ mod tests {
         settle(&mut bridge, &mut fake);
 
         let summary = bridge.runtime().summary();
-        assert!(summary.lod1_ready > 0 && summary.lod0_ready > 0);
+        assert!(summary.lod1_committed > 0 && summary.lod0_committed > 0);
+        assert_eq!(
+            summary.lod0_ready + summary.lod1_ready,
+            0,
+            "everything committed"
+        );
         let residency = fake.residency();
         assert!(residency.lod0.resident > 0 && residency.lod1.resident > 0);
         assert_eq!(
@@ -1016,8 +1289,8 @@ mod tests {
             residency.lod0.bytes + residency.lod1.bytes
         );
         assert!(residency.quads() > 0);
-        // The level sent to the presentation matches the ready mesh's stamp.
-        for (coord, stamp, mesh) in bridge.runtime().render_ready_meshes() {
+        // The level sent to the presentation matches the committed mesh's stamp.
+        for (coord, stamp, mesh) in bridge.runtime().render_committed_meshes() {
             if mesh.indices().is_empty() {
                 continue;
             }
@@ -1044,6 +1317,304 @@ mod tests {
             totals.upload_bytes,
             "nothing re-uploaded"
         );
+        assert_presented_seams_coherent(&bridge, &fake);
+    }
+
+    /// Drives one camera move from a settled state and proves that no chunk
+    /// which stayed in render demand and was drawn before the move is undrawn
+    /// in any update, and that every update's drawn set is seam-coherent.
+    fn move_without_gaps(
+        bridge: &mut StreamingBridge,
+        fake: &mut FakePresentation,
+        position: Vec3,
+    ) -> usize {
+        let before: Vec<ChunkCoord> = fake.active();
+        assert!(matches!(
+            bridge.track_camera(position),
+            CameraAnchor::Moved(_)
+        ));
+        let mut commits = 0;
+        for _ in 0..20_000 {
+            let report = match bridge.update(fake) {
+                Ok(report) => report,
+                Err(error) => panic!("update failed: {error}"),
+            };
+            commits += report.commits;
+            let render = &bridge.runtime().demand().render;
+            let active: BTreeSet<ChunkCoord> = fake.active().into_iter().collect();
+            for coord in before.iter().filter(|coord| render.contains(coord)) {
+                assert!(
+                    active.contains(coord),
+                    "{coord:?} lost its mesh during a level transition"
+                );
+            }
+            assert_presented_seams_coherent(bridge, fake);
+            let quiet = report.uploads == 0
+                && report.deactivations == 0
+                && report.removals == 0
+                && report.deferred_uploads == 0
+                && report.commits == 0;
+            if quiet && bridge.runtime().is_idle() && bridge.pending_removal_count() == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert!(bridge.runtime().is_idle(), "did not settle");
+        assert_eq!(
+            bridge.gaps().closed_gaps(),
+            0,
+            "a gap opened: {:?}",
+            bridge.gaps()
+        );
+        assert_eq!(bridge.runtime().render_ready_meshes().count(), 0);
+        commits
+    }
+
+    fn banded_bridge_at(position: Vec3) -> StreamingBridge {
+        match StreamingBridge::new(
+            StreamingConfig::m3c_diagnostic(),
+            UploadBudget::default(),
+            position,
+        ) {
+            Ok(bridge) => bridge,
+            Err(error) => panic!("bridge failed to start: {error}"),
+        }
+    }
+
+    #[test]
+    fn level_transitions_in_every_axial_direction_open_no_gap() {
+        // Start inside the corridor so both levels and both signs are exercised.
+        let start = Vec3::new(5.0, 5.0, 5.0);
+        let steps: [(Vec3, &str); 6] = [
+            (Vec3::new(37.0, 5.0, 5.0), "+x"),
+            (Vec3::new(-27.0, 5.0, 5.0), "-x"),
+            (Vec3::new(5.0, 37.0, 5.0), "+y"),
+            (Vec3::new(5.0, -27.0, 5.0), "-y"),
+            (Vec3::new(5.0, 5.0, 37.0), "+z"),
+            (Vec3::new(5.0, 5.0, -27.0), "-z"),
+        ];
+        for (target, name) in steps {
+            let mut fake = FakePresentation::default();
+            let mut bridge = banded_bridge_at(start);
+            settle(&mut bridge, &mut fake);
+            let swaps_before = bridge.runtime().metrics().lod_swaps;
+            let commits = move_without_gaps(&mut bridge, &mut fake, target);
+            assert!(
+                bridge.runtime().metrics().lod_swaps > swaps_before,
+                "{name}: the move must swap levels"
+            );
+            // Vertical moves swap levels only on source-absent layers, which
+            // have no mesh to transition; horizontal moves must commit groups.
+            if name.ends_with('x') || name.ends_with('z') {
+                assert!(
+                    commits > 0,
+                    "{name}: swaps must commit through transition groups"
+                );
+            }
+            // Back again: Lod1 -> Lod0 promotions and Lod0 -> Lod1 demotions reversed.
+            move_without_gaps(&mut bridge, &mut fake, start);
+            assert!(bridge.totals().transition_commits > 0, "{name}");
+        }
+    }
+
+    /// Continuous diagonal movement under pipeline pressure: a bounded number
+    /// of updates per step, never settling, so the frontier keeps entering
+    /// while the Lod0 core keeps re-dirtying its ring. A drawn chunk that stays
+    /// in render demand keeps drawing, the drawn set stays seam-coherent, and
+    /// an undrawn chunk waits on a drawn neighbor only when that neighbor's
+    /// seam toward it changes; joining every dirty adjacency chained entrants
+    /// to the ring and left the floor missing for seconds (KI-009).
+    #[test]
+    fn continuous_diagonal_movement_never_starves_unconstrained_entrants() {
+        let mut fake = FakePresentation::default();
+        let start = Vec3::new(-120.0, 40.0, -120.0);
+        let mut bridge = banded_bridge_at(start);
+        settle(&mut bridge, &mut fake);
+        let mut previous: BTreeSet<ChunkCoord> = fake.active().into_iter().collect();
+        for step in 1..=60 {
+            let offset = step as f32 * 4.0;
+            bridge.track_camera(start + Vec3::new(offset, 0.0, offset));
+            for _ in 0..8 {
+                if let Err(error) = bridge.update(&mut fake) {
+                    panic!("update failed: {error}");
+                }
+                let runtime = bridge.runtime();
+                let render = &runtime.demand().render;
+                let active: BTreeSet<ChunkCoord> = fake.active().into_iter().collect();
+                for coord in previous.iter().filter(|coord| render.contains(coord)) {
+                    assert!(
+                        active.contains(coord),
+                        "{coord:?} vanished while still in render demand"
+                    );
+                }
+                assert_presented_seams_coherent(&bridge, &fake);
+                for group in runtime.transition_groups() {
+                    let any_drawn = group
+                        .iter()
+                        .any(|&other| runtime.committed_mesh(other).is_some());
+                    for &member in &group {
+                        if !any_drawn || runtime.committed_mesh(member).is_some() {
+                            continue;
+                        }
+                        let justified = Face::ALL.iter().any(|&face| {
+                            member.neighbor(face).is_some_and(|neighbor| {
+                                group.contains(&neighbor)
+                                    && runtime.seam_changes(neighbor, face.opposite())
+                            })
+                        });
+                        assert!(
+                            justified,
+                            "{member:?} waits on drawn chunks whose seams toward it do not change: {group:?}"
+                        );
+                    }
+                }
+                previous = active;
+                thread::sleep(Duration::from_micros(50));
+            }
+        }
+        settle(&mut bridge, &mut fake);
+        assert_eq!(bridge.gaps().closed_gaps(), 0, "{:?}", bridge.gaps());
+        assert_presented_seams_coherent(&bridge, &fake);
+    }
+
+    #[test]
+    fn repeated_swaps_on_the_same_crossing_open_no_gap() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
+        settle(&mut bridge, &mut fake);
+        for _ in 0..3 {
+            move_without_gaps(&mut bridge, &mut fake, Vec3::new(37.0, 5.0, 5.0));
+            move_without_gaps(&mut bridge, &mut fake, Vec3::new(5.0, 5.0, 5.0));
+        }
+        assert!(bridge.totals().transition_commits > 0);
+    }
+
+    #[test]
+    fn camera_change_before_commit_coalesces_the_target_and_never_activates_stale_staging() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
+        settle(&mut bridge, &mut fake);
+        let before: Vec<ChunkCoord> = fake.active();
+
+        // First move: run only a few updates so replacements are in flight.
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
+            CameraAnchor::Moved(_)
+        ));
+        for _ in 0..40 {
+            if let Err(error) = bridge.update(&mut fake) {
+                panic!("update failed: {error}");
+            }
+            thread::sleep(Duration::from_micros(200));
+        }
+        assert!(
+            bridge.runtime().summary().transition_pending > 0 || bridge.staged_count() > 0,
+            "the first move must still be in transition"
+        );
+        // Second move before the first commits: the old target is abandoned.
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(69.0, 5.0, 5.0)),
+            CameraAnchor::Moved(_)
+        ));
+        for _ in 0..20_000 {
+            let report = match bridge.update(&mut fake) {
+                Ok(report) => report,
+                Err(error) => panic!("update failed: {error}"),
+            };
+            let render = &bridge.runtime().demand().render;
+            let active: BTreeSet<ChunkCoord> = fake.active().into_iter().collect();
+            for coord in before.iter().filter(|coord| render.contains(coord)) {
+                assert!(
+                    active.contains(coord),
+                    "{coord:?} lost its mesh across coalesced moves"
+                );
+            }
+            assert_presented_seams_coherent(&bridge, &fake);
+            // Whatever is presented is exactly what the runtime commits: a stale
+            // staged replacement can never become drawable.
+            for (coord, stamp) in bridge
+                .runtime()
+                .render_committed_meshes()
+                .map(|(c, s, _)| (c, *s))
+            {
+                if let Some(presented) = bridge.presented_stamp(coord) {
+                    assert_eq!(
+                        *presented, stamp,
+                        "{coord:?} draws a stamp the runtime did not commit"
+                    );
+                }
+            }
+            if report.uploads == 0
+                && report.commits == 0
+                && report.deactivations == 0
+                && bridge.runtime().is_idle()
+                && bridge.pending_removal_count() == 0
+            {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert!(bridge.runtime().is_idle());
+        assert_eq!(bridge.gaps().closed_gaps(), 0, "{:?}", bridge.gaps());
+        assert_eq!(bridge.runtime().center(), ChunkCoord::new(2, 0, 0));
+        assert!(
+            bridge.totals().restaged > 0 || bridge.totals().staged_discarded > 0,
+            "the abandoned target must have been coalesced away"
+        );
+        assert_presented_seams_coherent(&bridge, &fake);
+    }
+
+    #[test]
+    fn content_change_still_invalidates_immediately() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
+        settle(&mut bridge, &mut fake);
+        let origin = ChunkCoord::new(0, 0, 0);
+        assert!(fake.active().contains(&origin));
+        let replaced = match bridge.runtime_mut().replace_content(origin, Chunk::empty()) {
+            Ok(replaced) => replaced,
+            Err(error) => panic!("replace failed: {error}"),
+        };
+        assert!(replaced);
+        let report = match bridge.update(&mut fake) {
+            Ok(report) => report,
+            Err(error) => panic!("update failed: {error}"),
+        };
+        assert!(
+            report.deactivations >= 1,
+            "content change must deactivate now"
+        );
+        assert!(
+            !fake.active().contains(&origin),
+            "stale content must not stay drawn"
+        );
+        assert!(bridge.presented_stamp(origin).is_none());
+        settle(&mut bridge, &mut fake);
+        assert_presented_seams_coherent(&bridge, &fake);
+    }
+
+    #[test]
+    fn unload_still_invalidates_immediately() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
+        settle(&mut bridge, &mut fake);
+        assert!(fake.residency().active() > 0);
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(900.0, 5.0, 900.0)),
+            CameraAnchor::Moved(_)
+        ));
+        let report = match bridge.update(&mut fake) {
+            Ok(report) => report,
+            Err(error) => panic!("update failed: {error}"),
+        };
+        assert!(report.demand_changed);
+        assert_eq!(
+            fake.residency().active(),
+            0,
+            "unloaded chunks must stop drawing now"
+        );
+        assert_eq!(bridge.presented_count(), 0);
+        assert_eq!(bridge.staged_count(), 0);
     }
 
     #[test]
@@ -1128,5 +1699,6 @@ mod tests {
             bridge.presented_count(),
             bridge.runtime().demand().render.len()
         );
+        assert_eq!(bridge.staged_count(), 0);
     }
 }

@@ -4,7 +4,7 @@
 
 Veldwake is a planned 3D voxel action RPG about exploration in a persistent, systemic procedural world. Geography, creatures, settlements, economies, and events can evolve, while player actions leave observable consequences. Its audiovisual identity is intended to be produced predominantly through code and constrained generators rather than a traditional manual asset pipeline.
 
-Current status: **M3B streaming runtime is merged; M3C initial LOD is implemented on its feature branch and measured — one coarse level cuts resident GPU bytes 57% but costs 74% more upload bytes on a moving camera, so it stays opt-in; streaming debug visualization is next**. The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets. It is an engineering proof, not a playable world: there is no world generation, persistence, LOD, or gameplay.
+Current status: **M3B streaming runtime is merged; M3C initial LOD is implemented on its feature branch and measured — one coarse level cuts resident GPU bytes 57–59% but costs 74–85% more upload bytes on a moving camera, so it stays opt-in; level transitions no longer open holes; streaming debug visualization is next**. The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets. It is an engineering proof, not a playable world: there is no world generation, persistence, LOD, or gameplay.
 
 ## Principles
 

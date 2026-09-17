@@ -544,6 +544,55 @@ Driven smoke of the banded profile on the same run (screenshots at every leg plu
 
 Not yet done (M3C3): keyboard-toggled debug views.
 
+### M3C2 follow-up — LOD transitions without holes (implemented)
+
+The M3C2 visual review found the KI-009 blink unacceptable at LOD scale: the floor disappeared in whole bands while the camera crossed the `Lod0`/`Lod1` band. This step removes the holes caused by presentation changes alone, without ever drawing an incorrect seam. Debug views (M3C3) were deliberately not started.
+
+**Diagnosis first.** The bridge gained gap accounting (`GapStats`): a render-demand chunk that was drawn, stopped drawing while still in render demand, and has not returned is a gap, attributed to the runtime's last invalidation cause (`InvalidationCause::{LodChange, NeighborPresentation, Membership, Data}`) and measured in update frames. On the M3C2 path with the M3C2 policy (every invalidation deactivates immediately): `m3c-banded` opened 909 gaps, all attributed to presentation causes and none to data, mean ≈84 frames, longest 232 frames (≈3.9 s at 60 Hz), up to 62 chunks missing at once; `m3c-baseline` opened none. The blink was a pure presentation-transition problem, not a data or availability one.
+
+**Transition model.** A render record now separates its *committed* mesh (what the presentation draws) from its *target* (the stamp the current levels and neighbor presentations demand) and a *pending* replacement (`MeshState::CpuReady`). `MeshStamp::geometry_key()` is the stamp without `mesh_generation`; `differs_only_by_presentation()` holds when two stamps describe the same tokens and content generations and differ only in levels or seam contracts. `NeighborStamp::Resident` records a `SeamContract` (`Same`, `CoarseNeighbor`, `FineNeighbor`) derived from the center's level and the neighbor's presentation instead of the raw presentation, so a neighbor entering render demand at the center's own level never invalidates a seam that would not change. `invalidate_mesh(coord, cause)` keeps the committed mesh only for a presentation-only cause (`LodChange`, `NeighborPresentation`, `Membership` while the chunk stays in render demand) whose target differs only by presentation (`committed_retained`); a `Data` cause (content change, eviction, a neighbor unloaded or reloaded), leaving render demand, or losing resident content drops it at once (`committed_dropped`), and an unavailable neighbor is never turned into AIR. A target equal to the committed geometry (a change reverted before it built) restores `MeshState::Committed` without a job.
+
+**Atomic groups.** `transition_groups()` returns connected sets of render-demand chunks whose committed mesh is not their target. Two adjacent dirty chunks are joined only when a drawn side's seam toward the other changes: its presented level, or the dependency stamp it captured toward that face (`seam_changes`). A drawn chunk that is dirty for another face's sake does not pull its neighbor along, two undrawn entrants constrain nothing, and an undrawn entrant next to a drawn neighbor whose seam toward it stays the same appears on its own. The bridge stages every pending replacement (uploads it without drawing, nearest first, under the unchanged upload budget) and commits a group only when every member is CPU-ready for its current target and staged for that exact stamp; the runtime moves the meshes into their committed slots and the presentation swaps the staged buffers in the same update. `ChunkPresentation::{stage_chunk, commit_staged, discard_staged}` replace `upsert_chunk`; the renderer keeps a `GpuChunkSlot { active, drawable, staged, staged_empty }` per chunk and draws only active drawable slots. No drawn pair ever mixes an old and a new seam: the committed set is always mutually coherent.
+
+**Coalescing.** A newer camera change rewrites targets through the stamps: a pending mesh whose stamp no longer matches is re-dirtied by the runtime, a staged replacement whose chunk no longer has a pending target is discarded (`staged_discarded`), and a staged stamp that no longer matches its target is re-staged when the new mesh arrives (`restaged`). Only the latest target is ever built, and a stale staged buffer is never activated.
+
+**GPU accounting.** Staged replacements are counted per level (`LevelResidency::{staged, staged_bytes}`), the bridge records `peak_staged_bytes`, and the five-second reports carry `staged_now`/`staged_bytes`, `gpu_staged`, `transition_commits`, `transition_chunks`, `restaged`, `staged_discarded`, `committed_retained`, `committed_dropped`, `transition_pending`, the gap counters, and the ready-but-undrawn and blocked-group counters below.
+
+**The first group rule starved the frontier.** The first implementation joined every adjacent dirty pair as soon as one side was drawn. Its benchmark reported zero gaps, fewer uploads (325 / 41,998,400 bytes) and fewer mesh jobs (842) than M3C2, yet the mid-movement captures still showed the floor missing in a diagonal band for about four seconds on the −X leg and a void hugging the camera on re-entry. The gap counter could not see it: it counts only chunks that had been drawn, and these were entrants that had never been drawn. Two counters close that blind spot: `ready_undrawn_*` (render-demand chunks whose replacement is CPU-ready but not drawn: now, max, updates, chunk-frames) and `blocked_groups_now`/`blocked_group_max`/`constrained_undrawn_*` (undrawn members of uncommitted groups that also hold a drawn member). Burst captures every 300 ms assembled into contact sheets per leg made the hole visible and datable: `ready_undrawn_max = 21`, 665 updates with a ready-but-undrawn chunk, 5,885 chunk-frames. The cause was the join rule: frontier entrants were joined, through drawn chunks dirtied by the moving `Lod0` ring, to the ring's own group, and diagonal movement re-dirties that ring every ≈1.35 s (one chunk crossing per axis at 12 voxels/s), before the group can mesh and stage every member; the group never committed and the entrants never appeared. The apparent upload saving was that starvation, not coalescing. With the seam-change join rule the same path reports `ready_undrawn_max = 0` over 7,805 updates and `constrained_undrawn_max = 0`.
+
+**Headless tests.** Six new client tests plus the coherence checker: `banded_profile_presents_both_levels_with_per_level_accounting` (committed counts per level, nothing pending at idle), `level_transitions_in_every_axial_direction_open_no_gap` (`Lod0`→`Lod1` and back in ±x, ±y, ±z with no update in which a chunk that stayed in render demand lost its mesh, and a seam-coherent drawn set in every update), `repeated_swaps_on_the_same_crossing_open_no_gap`, `camera_change_before_commit_coalesces_the_target_and_never_activates_stale_staging`, `content_change_still_invalidates_immediately` (`replace_content` bumps the content generation and drops the drawn mesh at once), `unload_still_invalidates_immediately`, and `continuous_diagonal_movement_never_starves_unconstrained_entrants` (a bounded number of updates per step, never settling: every drawn chunk that stays in render demand keeps drawing, every update is seam-coherent, and an undrawn chunk waits on a drawn neighbor only when that neighbor's seam toward it changes). `assert_presented_seams_coherent` is the definition of "no mixed committed/target seam": toward a presented neighbor the contract must match the neighbor's presented level; toward an undrawn neighbor still in render demand it must match the neighbor's target level unless the drawn chunk's own replacement toward that face is pending (they commit together); toward a neighbor outside render demand the old contract may persist (boundary edge effect).
+
+Re-benchmark (2026-09-16, release client, Intel Iris Xe / D3D12, same driven path, lifecycle captures, no burst captures):
+
+| Metric | M3C2 policy, `m3c-banded` | transition model, `m3c-banded` | `m3c-baseline`, same day |
+|---|---:|---:|---:|
+| gaps opened (drawn chunk lost while in render demand) | 909 (all presentation, 0 data) | 0 | 0 |
+| gap length mean / max (update frames) | ≈84 / 232 | — | — |
+| max chunks missing at once | 62 | 0 | 0 |
+| ready-but-undrawn: max / updates / chunk-frames | not measured | 0 / 0 / 0 | 0 / 0 / 0 |
+| largest transition group | — | 78 chunks | 1 |
+| `lod_swaps` / `stale_lod` | 618 / 2 | 648 / 0 | 0 / 0 |
+| mesh jobs | 1,262 | 1,388 | 501 |
+| uploads (total) | 494 | 548 (`Lod0` 226, `Lod1` 322) | 167 |
+| upload bytes (total) | 67,864,768 | 76,214,896 (`Lod0` 55,837,472, `Lod1` 20,377,424) | 41,275,744 |
+| transition commits / chunks committed | — | 505 / 1,177 | 501 / 501 |
+| committed retained / dropped | — | 1,806 / 400 | 0 / 426 |
+| staged discarded / re-staged | — | 211 / 0 | 0 / 0 |
+| peak staged (undrawn) GPU bytes | — | 4,650,960 | 253,472 |
+| peak GPU bytes | 5,206,128 | 4,954,960 | 12,101,888 |
+| CPU mesh time on the path (snapshot + derivation + worker) | 386,583 µs | 380,377 µs | 164,698 µs |
+| time to idle coverage | 13.21 s | 13.31 s | 13.23 s |
+| render-submit max | 55.0 ms | 17.8 ms | 18.0 ms |
+| GPU validation errors | 0 | 0 | 0 |
+
+Acceptance: zero LOD holes after initial coverage (0 gaps, 0 ready-but-undrawn updates), no persistent crack at rest (two captures three seconds apart identical, `transition_pending = 0`, 12 `Lod0` + 13 `Lod1` chunks active), no incorrect stale mesh (every drawn set is seam-coherent by construction and by test), and the camera crosses the band in every direction without the floor disappearing: the mid-movement captures of every leg show a continuous floor, the −X capture that showed the missing band under the first rule shows a full floor at the same instant, and the only cuts visible during movement are the world edge and the radius-3 render frontier, identical in the baseline captures of the same leg. Lifecycle (resize, minimize/restore, focus loss with a key held, Escape → exit code 0) unchanged; no GPU validation error.
+
+What the model does not change is the swap churn. Uploads and mesh jobs on the moving path are at the M3C2 level (the intermediate run's lower numbers were starvation), so the recorded decision rule still fails on upload bytes (+85% against the same-day baseline) and on CPU mesh time, and LOD stays behind `VELDWAKE_PROFILE=m3c-banded`. Baseline CPU mesh totals varied between 164,698 and 274,069 µs across this milestone's baseline runs (single worker, timing jitter), so the CPU ratio is evidence of direction, not a precise factor.
+
+Remaining risks: transition groups are unbounded by design (a connected set of changing seams; 78 chunks observed at the corridor start), and while the camera keeps moving the `Lod0` ring's own switch can be deferred by re-dirtying. That costs stale-but-coherent levels on drawn chunks, never a hole, and converges at rest (KI-011). Source-empty layers still take a mesh job and a group slot each.
+
+Gates on the audited host: `cargo fmt --all -- --check` PASS, `cargo clippy --workspace --all-targets -- -D warnings` PASS, `cargo nextest run --workspace` PASS (120 tests; one `LNK1104` retry under the KI-008 policy), `cargo build --workspace --release` PASS, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` PASS after fixing a pre-existing private intra-doc link to `CoarseTally` left by M3C2, `cargo metadata --locked` PASS, `cargo deny check` PASS, `cargo audit` PASS, `git diff --check` PASS, CRLF and relative-link scans PASS. The Windows/D3D12 smoke is the driven benchmark above (exit code 0, 0 GPU validation errors) with mid-movement and burst captures inspected; it remains one integrated-GPU host (KI-003, KI-006).
+
 ### Jobs, stamps, residency, and stale rejection (plan, now implemented as above)
 
 - `MeshStamp` gains `lod: LodLevel` and each `NeighborStamp::Resident` gains the neighbor's **current desired** `lod`. The record stores its desired `lod` next to `mesh_generation`.
@@ -568,7 +617,7 @@ Unavailable neighbors still block meshing (`WaitingForNeighbors`); source-confir
 
 ### Transitions without incorrect geometry
 
-M3C keeps the M3B policy: a presented mesh whose stamp is no longer current stops drawing in the same update, and the replacement appears after it is meshed and uploaded. A LOD swap therefore blinks the swapped chunk and, when the seam rule changes for a neighbor, that neighbor too. To keep the gap short without weakening correctness, swap work for a chunk and its dirtied neighbors is queued contiguously at the head of the mesh queue, and `lod_swap_gap_frames` (frames between deactivation and re-presentation) is measured per swap. Holding the old mesh during a swap would require proving that its seams remain correct against the new neighbor level; that proof does not exist for the coarse-occupancy rule, so it is not attempted in M3C. KI-009 stays accepted and gains the LOD case.
+Planned as the M3B policy (every stale mesh stops drawing in the same update, with `lod_swap_gap_frames` measured per swap) and superseded by the M3C2 follow-up above after measurement: a presentation-only change (level of the chunk or of a neighbor, render-membership churn) keeps the committed mesh drawn until its transition group commits atomically, and a data change, unload, or unavailable neighbor still deactivates immediately. The proof that the old mesh exposes no incorrect seam is the group rule itself: every drawn pair whose seam changes switches in the same update, so the committed set is coherent at every instant. KI-009 is split accordingly.
 
 ### CPU/GPU memory and upload implications
 
@@ -598,7 +647,7 @@ Reported per five-second interval and captured for the milestone document, for b
 
 - chunks, quads, CPU mesh bytes, GPU bytes, uploads, and upload bytes per level;
 - mesh job CPU time per level (measured in the worker) and downsample time;
-- LOD swaps, `stale_lod` drops, `lod_swap_gap_frames` (max and mean);
+- LOD swaps, `stale_lod` drops, presentation gaps by cause with mean/max length and peak simultaneous count, ready-but-undrawn chunks, blocked transition groups (implemented in the M3C2 follow-up in place of the planned `lod_swap_gap_frames`);
 - time to full coverage after a teleport and after a boundary crossing;
 - wall frame time (existing) plus, if it fits in one small step, GPU frame time from `TIMESTAMP_QUERY` (the adapter reports it); otherwise a CPU-side render-submit timing;
 - resident payload bytes, snapshot bytes, eviction and cap counters (existing).
@@ -617,7 +666,7 @@ The decision rule is recorded before measuring: LOD stays enabled by default onl
 ### Acceptance
 
 - `Lod1` renders the diagnostic corridor ring with the coarse-occupancy seam rule and the driven smoke shows no persistent crack or hole at any mixed-level seam, in positive and negative chunks.
-- Zero `stale_lod` acceptance; every swap follows deactivate → mesh → upload.
+- Zero `stale_lod` acceptance; every swap follows mesh → stage → atomic group commit while the old mesh stays drawn, and data invalidations still deactivate first.
 - The baseline and LOD configurations are measured and the decision rule is applied and recorded.
 - Debug modes make chunk boundaries, levels, demand rings, and record states visible, toggled by keyboard, with no new dependency.
 - All M1–M3B tests pass unchanged apart from names that gain a level parameter.
@@ -630,7 +679,7 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 
 - The occupancy-conservative downsample visibly thickens thin features at the ring; acceptable for a diagnostic, but a real terrain will need a material-aware rule and this must be recorded as debt, not hidden.
 - Retention at radius 4 (729 chunks) and a cap of 810 multiply resident memory and eviction churn; the eviction budget needs new evidence, not a silent bump.
-- Blink on LOD swap is more frequent than on neighbor arrival; if measured gaps are long, the fix is scheduling, never drawing a stale mesh. Measured in M3C2: 618 swaps and 1,262 mesh jobs on the benchmark path, which is why LOD is not default.
+- Blink on LOD swap was measured in M3C2 (909 presentation gaps, up to 232 frames) and removed by the transition model (0 gaps, 0 ready-but-undrawn updates); the churn remains (648 swaps, 1,388 mesh jobs), which is why LOD is not default. Transition groups are unbounded (78 chunks observed) and continuous movement can defer the ring's own switch (KI-011).
 - The seam rule is proven only for axial neighbors at a 2× ratio; a third level or diagonal dependence would need a new proof.
 - Debug boxes add up to one draw per tracked coordinate; keep the mode off by default and count the draws.
 - M3C0 kept the 32-edge topology byte-identical; the remaining risk is that later LOD work re-introduces edge-specific assumptions instead of using `EDGE`.

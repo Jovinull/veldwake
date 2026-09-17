@@ -106,8 +106,9 @@ impl CameraUniform {
     }
 }
 
-/// Disposable GPU state for one streamed chunk. Holds no streaming stamps.
-struct GpuChunkMesh {
+/// Disposable GPU buffers of one chunk mesh at one level. Holds no
+/// streaming stamps.
+struct GpuMeshBuffers {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -117,8 +118,18 @@ struct GpuChunkMesh {
     quads: usize,
     /// Presentation level this mesh was uploaded at.
     lod: LodLevel,
+}
+
+/// The drawn mesh of a chunk plus an optional staged replacement that is
+/// uploaded but not drawn until the bridge commits its transition group.
+/// `None` in `staged` with `staged_empty` set means "replace with nothing".
+#[derive(Default)]
+struct GpuChunkSlot {
+    active: Option<GpuMeshBuffers>,
     /// Drawable this frame. Cleared immediately when the bridge revokes it.
-    active: bool,
+    drawable: bool,
+    staged: Option<GpuMeshBuffers>,
+    staged_empty: bool,
 }
 
 /// Exact GPU bytes a mesh occupies: converted vertices, `u32` indices, model uniform.
@@ -174,7 +185,7 @@ pub struct Renderer {
     configured: bool,
     pipeline: wgpu::RenderPipeline,
     model_layout: wgpu::BindGroupLayout,
-    chunks: BTreeMap<ChunkCoord, GpuChunkMesh>,
+    chunks: BTreeMap<ChunkCoord, GpuChunkSlot>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
@@ -451,7 +462,12 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for chunk in self.chunks.values().filter(|chunk| chunk.active) {
+            for chunk in self
+                .chunks
+                .values()
+                .filter(|slot| slot.drawable)
+                .filter_map(|slot| slot.active.as_ref())
+            {
                 pass.set_bind_group(1, &chunk.model_bind_group, &[]);
                 pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -530,14 +546,16 @@ impl ChunkPresentation for Renderer {
         gpu_payload_bytes(mesh)
     }
 
-    fn upsert_chunk(
+    fn stage_chunk(
         &mut self,
         coord: ChunkCoord,
         lod: LodLevel,
         mesh: &Mesh,
     ) -> Result<usize, ChunkUploadError> {
         if mesh.indices().is_empty() {
-            self.chunks.remove(&coord);
+            let slot = self.chunks.entry(coord).or_default();
+            slot.staged = None;
+            slot.staged_empty = true;
             return Ok(0);
         }
         let index_count =
@@ -583,48 +601,87 @@ impl ChunkPresentation for Renderer {
             }],
         });
         let bytes = gpu_payload_bytes(mesh);
-        // Replacing an entry drops the previous buffers; wgpu keeps them alive
-        // for any already-submitted work.
-        self.chunks.insert(
-            coord,
-            GpuChunkMesh {
-                vertex_buffer,
-                index_buffer,
-                index_count,
-                model_bind_group,
-                _model_buffer: model_buffer,
-                bytes,
-                quads: mesh.quad_count(),
-                lod,
-                active: true,
-            },
-        );
+        // Replacing a staged entry drops the previous staged buffers; wgpu
+        // keeps them alive for any already-submitted work.
+        let slot = self.chunks.entry(coord).or_default();
+        slot.staged = Some(GpuMeshBuffers {
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            model_bind_group,
+            _model_buffer: model_buffer,
+            bytes,
+            quads: mesh.quad_count(),
+            lod,
+        });
+        slot.staged_empty = false;
         Ok(bytes)
+    }
+
+    fn commit_staged(&mut self, coord: ChunkCoord) -> bool {
+        let Some(slot) = self.chunks.get_mut(&coord) else {
+            return false;
+        };
+        if slot.staged.is_none() && !slot.staged_empty {
+            return false;
+        }
+        slot.active = slot.staged.take();
+        slot.staged_empty = false;
+        slot.drawable = slot.active.is_some();
+        if slot.active.is_none() {
+            self.chunks.remove(&coord);
+        }
+        true
+    }
+
+    fn discard_staged(&mut self, coord: ChunkCoord) -> bool {
+        let Some(slot) = self.chunks.get_mut(&coord) else {
+            return false;
+        };
+        let had = slot.staged.take().is_some() || slot.staged_empty;
+        slot.staged_empty = false;
+        if slot.active.is_none() {
+            self.chunks.remove(&coord);
+        }
+        had
     }
 
     fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
         self.chunks
             .get_mut(&coord)
-            .map(|chunk| chunk.active = false)
+            .filter(|slot| slot.active.is_some())
+            .map(|slot| slot.drawable = false)
             .is_some()
     }
 
     fn remove_chunk(&mut self, coord: ChunkCoord) -> bool {
-        self.chunks.remove(&coord).is_some()
+        self.chunks
+            .remove(&coord)
+            .is_some_and(|slot| slot.active.is_some())
     }
 
     fn residency(&self) -> GpuResidency {
         let mut residency = GpuResidency::default();
-        for chunk in self.chunks.values() {
-            let level = match chunk.lod {
-                LodLevel::Lod0 => &mut residency.lod0,
-                LodLevel::Lod1 => &mut residency.lod1,
-            };
-            level.resident += 1;
-            level.bytes += chunk.bytes;
-            level.quads += chunk.quads;
-            if chunk.active {
-                level.active += 1;
+        for slot in self.chunks.values() {
+            if let Some(chunk) = &slot.active {
+                let level = match chunk.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.resident += 1;
+                level.bytes += chunk.bytes;
+                level.quads += chunk.quads;
+                if slot.drawable {
+                    level.active += 1;
+                }
+            }
+            if let Some(chunk) = &slot.staged {
+                let level = match chunk.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.staged += 1;
+                level.staged_bytes += chunk.bytes;
             }
         }
         residency
