@@ -11,6 +11,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
+use veldwake_procedural::TerrainMaterial;
 use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
@@ -19,21 +20,30 @@ use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 use crate::{
     camera::Camera,
     debug::{DebugPrimitive, DebugShape},
+    lighting::{Lighting, SHADOW_MAP_EDGE, Weather, shadow_centre, shadow_view_projection},
     streaming::{ChunkPresentation, ChunkUploadError, GpuResidency, PresentationCommitError},
 };
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// What the GPU needs about one meshed voxel face corner.
+///
+/// The normal comes from the mesher and the colour from the material table, so
+/// the renderer neither derives geometry nor invents a palette. `specular` is
+/// the only material property the shading model needs beyond colour, which is
+/// why there is no material index and no lookup table on the GPU.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Vertex {
     position: [f32; 3],
+    normal: [f32; 3],
     color: [f32; 3],
+    specular: f32,
 }
 
 impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -44,13 +54,35 @@ impl Vertex {
     }
 }
 
+/// Everything every shader needs about the frame: where the camera is, where
+/// the sun is, and what the weather is doing.
+///
+/// The layout is mirrored in `scene.wgsl`, which every shader in the client
+/// concatenates. Scalars ride in the `w` lane of a vector because a uniform
+/// buffer aligns each member to sixteen bytes anyway.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct CameraUniform {
+struct SceneUniform {
     view_projection: [[f32; 4]; 4],
-    /// `x` is how far a `Lod1` mesh is blended toward the debug tint; the rest
-    /// is WGSL alignment padding.
-    debug: [f32; 4],
+    inverse_view_projection: [[f32; 4]; 4],
+    light_view_projection: [[f32; 4]; 4],
+    camera_position: [f32; 4],
+    /// `xyz` toward the sun, `w` sun intensity.
+    sun: [f32; 4],
+    /// `rgb` sun colour, `a` the fraction of the lit value a shadow keeps.
+    sun_color: [f32; 4],
+    /// `rgb` ambient from above, `a` ambient intensity.
+    sky_ambient: [f32; 4],
+    /// `rgb` ambient from below, `a` how much specular water keeps.
+    ground_bounce: [f32; 4],
+    sky_zenith: [f32; 4],
+    sky_mid: [f32; 4],
+    sky_horizon: [f32; 4],
+    /// `rgb` fog colour at the horizon, `a` fog density per voxel.
+    fog: [f32; 4],
+    /// `x` fog height falloff, `y` fog reference height, `z` shadow texel size,
+    /// `w` `Lod1` debug tint strength.
+    params: [f32; 4],
 }
 
 /// One debug wireframe primitive: where to place the unit geometry and what
@@ -268,13 +300,45 @@ const fn level_scale(lod: LodLevel) -> f32 {
     }
 }
 
-impl CameraUniform {
-    fn from_camera(camera: &Camera, lod_tint: f32) -> Self {
+impl SceneUniform {
+    fn build(camera: &Camera, weather: Weather, lod_tint: f32) -> Self {
+        let lighting = Lighting::for_weather(weather);
+        let view_projection = camera.view_projection();
+        let position = camera.position();
+        let light = shadow_view_projection(
+            shadow_centre(position, camera.forward()),
+            lighting.sun_direction,
+        );
         Self {
-            view_projection: camera.view_projection().to_cols_array_2d(),
-            debug: [lod_tint, 0.0, 0.0, 0.0],
+            view_projection: view_projection.to_cols_array_2d(),
+            inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
+            light_view_projection: light.to_cols_array_2d(),
+            camera_position: [position.x, position.y, position.z, 0.0],
+            sun: [
+                lighting.sun_direction.x,
+                lighting.sun_direction.y,
+                lighting.sun_direction.z,
+                lighting.sun_intensity,
+            ],
+            sun_color: rgba(lighting.sun_color, lighting.shadow_floor),
+            sky_ambient: rgba(lighting.sky_ambient, lighting.ambient_intensity),
+            ground_bounce: rgba(lighting.ground_bounce, lighting.water_specular),
+            sky_zenith: rgba(lighting.sky_zenith, 0.0),
+            sky_mid: rgba(lighting.sky_mid, 0.0),
+            sky_horizon: rgba(lighting.sky_horizon, 0.0),
+            fog: rgba(lighting.fog_color, lighting.fog_density),
+            params: [
+                lighting.fog_height_falloff,
+                lighting.fog_reference_height,
+                1.0 / SHADOW_MAP_EDGE as f32,
+                lod_tint,
+            ],
         }
     }
+}
+
+const fn rgba(color: [f32; 3], alpha: f32) -> [f32; 4] {
+    [color[0], color[1], color[2], alpha]
 }
 
 /// Disposable GPU buffers of one chunk mesh at one level. Holds no
@@ -355,10 +419,19 @@ pub struct Renderer {
     size: PhysicalSize<u32>,
     configured: bool,
     pipeline: wgpu::RenderPipeline,
+    /// Depth-only pass that fills the shadow map from the sun.
+    shadow_pipeline: wgpu::RenderPipeline,
+    /// Full-screen procedural sky, drawn before the world and writing no depth.
+    sky_pipeline: wgpu::RenderPipeline,
     model_layout: wgpu::BindGroupLayout,
     chunks: BTreeMap<ChunkCoord, GpuChunkSlot>,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    scene_buffer: wgpu::Buffer,
+    /// Scene state plus the shadow map, for everything that reads shadows.
+    scene_bind_group: wgpu::BindGroup,
+    /// Scene state alone, for the shadow and debug passes. The shadow pass
+    /// cannot bind the map it is writing, and a line has nothing to shade.
+    scene_only_bind_group: wgpu::BindGroup,
+    shadow_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     fatal_gpu_error: Arc<AtomicBool>,
     /// Separate `LineList` pipeline for the debug views. Nothing below is
@@ -425,31 +498,87 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
-        let camera_uniform = CameraUniform::from_camera(camera, 0.0);
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("diagnostic camera uniform"),
-            contents: bytemuck::bytes_of(&camera_uniform),
+        let scene_uniform = SceneUniform::build(camera, Weather::default(), 0.0);
+        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("M4 scene uniform"),
+            contents: bytemuck::bytes_of(&scene_uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("diagnostic camera bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(size_of::<CameraUniform>() as u64),
+        let scene_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(size_of::<SceneUniform>() as u64),
+            },
+            count: None,
+        };
+        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("M4 scene bind group layout"),
+            entries: &[
+                scene_entry,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("diagnostic camera bind group"),
-            layout: &camera_layout,
+        let scene_only_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("M4 scene-only bind group layout"),
+            entries: &[scene_entry],
+        });
+        let shadow_view = create_shadow_view(&device);
+        // Comparison sampling with linear filtering is what turns each of the
+        // nine taps into a bilinear comparison, so a three-by-three kernel
+        // gives a soft edge instead of nine hard steps.
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("M4 shadow comparison sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("M4 scene bind group"),
+            layout: &scene_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: scene_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
+        });
+        let scene_only_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("M4 scene-only bind group"),
+            layout: &scene_only_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: camera_buffer.as_entire_binding(),
+                resource: scene_buffer.as_entire_binding(),
             }],
         });
         let model_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -465,14 +594,14 @@ impl Renderer {
                 count: None,
             }],
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("diagnostic.wgsl"));
+        let shader = shader_module(&device, "M4 world shader", include_str!("world.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("M3B diagnostic pipeline layout"),
-            bind_group_layouts: &[Some(&camera_layout), Some(&model_layout)],
+            label: Some("M4 world pipeline layout"),
+            bind_group_layouts: &[Some(&scene_layout), Some(&model_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("M3B diagnostic voxel pipeline"),
+            label: Some("M4 world pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -506,6 +635,91 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let shadow_shader = shader_module(&device, "M4 shadow shader", include_str!("shadow.wgsl"));
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("M4 shadow pipeline layout"),
+                bind_group_layouts: &[Some(&scene_only_layout), Some(&model_layout)],
+                immediate_size: 0,
+            });
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("M4 shadow pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shadow_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(Vertex::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                // Casting from back faces moves the acne to surfaces the camera
+                // cannot see, which is cheaper and steadier than fighting it
+                // with bias alone.
+                cull_mode: Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: Default::default(),
+            // No fragment stage: the pass exists only to write depth.
+            fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sky_shader = shader_module(&device, "M4 sky shader", include_str!("sky.wgsl"));
+        let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("M4 sky pipeline layout"),
+            bind_group_layouts: &[Some(&scene_layout)],
+            immediate_size: 0,
+        });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("M4 sky pipeline"),
+            layout: Some(&sky_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            // The sky is behind everything: it never writes depth and never
+            // rejects a pixel, so the world simply draws over it.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("M3C debug primitive bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -521,11 +735,15 @@ impl Renderer {
                 count: None,
             }],
         });
-        let debug_shader = device.create_shader_module(wgpu::include_wgsl!("debug_line.wgsl"));
+        let debug_shader = shader_module(
+            &device,
+            "M3C debug line shader",
+            include_str!("debug_line.wgsl"),
+        );
         let debug_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("M3C debug line pipeline layout"),
-                bind_group_layouts: &[Some(&camera_layout), Some(&debug_layout)],
+                bind_group_layouts: &[Some(&scene_only_layout), Some(&debug_layout)],
                 immediate_size: 0,
             });
         let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -583,10 +801,14 @@ impl Renderer {
             size,
             configured: false,
             pipeline,
+            shadow_pipeline,
+            sky_pipeline,
             model_layout,
             chunks: BTreeMap::new(),
-            camera_buffer,
-            camera_bind_group,
+            scene_buffer,
+            scene_bind_group,
+            scene_only_bind_group,
+            shadow_view,
             depth_view,
             fatal_gpu_error,
             debug_pipeline,
@@ -629,12 +851,16 @@ impl Renderer {
         );
     }
 
-    /// Uploads the camera and the `Lod1` debug tint strength (`0.0` when the
-    /// `Lod` view is not active).
-    pub fn update_camera(&self, camera: &Camera, lod_tint: f32) {
-        let uniform = CameraUniform::from_camera(camera, lod_tint);
+    /// Uploads the camera, the weather state, and the `Lod1` debug tint
+    /// strength (`0.0` when the `Lod` view is not active).
+    ///
+    /// One buffer write per frame. Everything the shaders need about the frame
+    /// travels together, so a weather change costs exactly what a camera move
+    /// costs and there is no second path to keep in step.
+    pub fn update_scene(&self, camera: &Camera, weather: Weather, lod_tint: f32) {
+        let uniform = SceneUniform::build(camera, weather, lod_tint);
         self.queue
-            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+            .write_buffer(&self.scene_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     /// Replaces the debug primitives drawn this frame.
@@ -731,13 +957,48 @@ impl Renderer {
                 label: Some("M3B diagnostic frame encoder"),
             });
         {
+            // Shadow pass first: the world pass samples what it writes, so the
+            // two cannot share an encoder scope.
+            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("M4 shadow pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            shadow_pass.set_pipeline(&self.shadow_pipeline);
+            shadow_pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
+            for chunk in self
+                .chunks
+                .values()
+                .filter(|slot| slot.drawable)
+                .filter_map(|slot| slot.active.as_ref())
+            {
+                shadow_pass.set_bind_group(1, &chunk.model_bind_group, &[]);
+                shadow_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                shadow_pass
+                    .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                shadow_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
+        }
+        {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("M3B diagnostic voxel pass"),
+                label: Some("M4 world pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                        // The sky pass covers every pixel, so this clear is a
+                        // safety net rather than a visible colour.
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.035,
                             g: 0.055,
@@ -759,8 +1020,12 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.set_bind_group(0, &self.scene_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(0, &self.scene_bind_group, &[]);
             for chunk in self
                 .chunks
                 .values()
@@ -774,7 +1039,7 @@ impl Renderer {
             }
             if !self.debug_draws.is_empty() {
                 pass.set_pipeline(&self.debug_pipeline);
-                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.debug_vertices.slice(..));
                 for (slot, vertices) in &self.debug_draws {
                     pass.set_bind_group(1, &self.debug_slots[*slot].bind_group, &[]);
@@ -901,9 +1166,14 @@ impl ChunkPresentation for Renderer {
         let vertices = mesh
             .vertices()
             .iter()
-            .map(|vertex| Vertex {
-                position: vertex.position,
-                color: diagnostic_color(vertex.voxel),
+            .map(|vertex| {
+                let (color, specular) = voxel_appearance(vertex.voxel);
+                Vertex {
+                    position: vertex.position,
+                    normal: vertex.normal,
+                    color,
+                    specular,
+                }
             })
             .collect::<Vec<_>>();
         let vertex_buffer = self
@@ -1031,6 +1301,20 @@ impl ChunkPresentation for Renderer {
     }
 }
 
+/// The colour and specular response of one voxel identifier.
+///
+/// A terrain material answers for itself, from the one table in
+/// `veldwake-procedural`; the renderer does not keep a second palette and
+/// cannot drift from the style bible. Identifiers the material table does not
+/// claim are the M3 diagnostic fixture, which keeps its old colours so the
+/// regression view still looks like itself.
+fn voxel_appearance(voxel: VoxelId) -> ([f32; 3], f32) {
+    match TerrainMaterial::from_voxel_id(voxel) {
+        Some(material) => (material.albedo(), material.specular()),
+        None => (diagnostic_color(voxel), 0.0),
+    }
+}
+
 fn diagnostic_color(voxel: VoxelId) -> [f32; 3] {
     const PALETTE: [[f32; 3]; 8] = [
         [0.30, 0.76, 0.42],
@@ -1078,6 +1362,39 @@ fn install_error_handlers(device: &wgpu::Device, fatal: &Arc<AtomicBool>) {
             uncaptured_fatal.store(true, Ordering::Release);
         }
     }));
+}
+
+/// Builds a shader module from the shared scene declaration plus one stage.
+///
+/// WGSL has no include directive, so the uniform layout every shader agrees on
+/// is concatenated in front of each one. One definition, checked by the
+/// compiler in every module that uses it.
+fn shader_module(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
+    let source = format!("{}\n{body}", include_str!("scene.wgsl"));
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
+/// The shadow map: one square depth texture, sampled for comparison.
+fn create_shadow_view(device: &wgpu::Device) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("M4 shadow map"),
+            size: wgpu::Extent3d {
+                width: SHADOW_MAP_EDGE,
+                height: SHADOW_MAP_EDGE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -1128,10 +1445,12 @@ mod tests {
 
     use super::{
         CUBE_EDGE_VERTICES, DebugFrameWork, DebugPrimitiveUniform, FACE_OUTLINE_VERTICES,
-        ModelUniform, debug_line_vertices, debug_vertex_range, diagnostic_color, gpu_payload_bytes,
-        select_alpha_mode, select_present_mode, select_surface_format,
+        ModelUniform, SceneUniform, Vertex, debug_line_vertices, debug_vertex_range,
+        diagnostic_color, gpu_payload_bytes, select_alpha_mode, select_present_mode,
+        select_surface_format, voxel_appearance,
     };
     use crate::debug::{DebugKind, DebugPrimitive, DebugShape};
+    use crate::lighting::Weather;
     use veldwake_streaming::LodLevel;
     use veldwake_voxel::{ChunkCoord, Face, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
 
@@ -1222,10 +1541,14 @@ mod tests {
         assert_eq!(std::mem::size_of::<ModelUniform>(), 32);
         assert_eq!(gpu_payload_bytes(&Mesh::default()), 32);
         let mesh = mesh_exposed_faces(&diagnostic_fixture());
-        // 528 vertices of 24 bytes, 792 u32 indices, one 32-byte model uniform.
+        // 528 vertices of 40 bytes (position, normal, colour, specular), 792
+        // u32 indices, one 32-byte model uniform. The vertex grew by sixteen
+        // bytes in M4; the accounting has to grow with it or the reported
+        // presentation-owned bytes would understate what the GPU holds.
+        assert_eq!(std::mem::size_of::<Vertex>(), 40);
         assert_eq!(mesh.vertices().len(), 528);
         assert_eq!(mesh.indices().len(), 792);
-        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 32);
+        assert_eq!(gpu_payload_bytes(&mesh), 528 * 40 + 792 * 4 + 32);
     }
 
     #[test]
@@ -1278,6 +1601,86 @@ mod tests {
         assert_eq!(diagnostic_color(VoxelId(1)), [0.30, 0.76, 0.42]);
         assert_eq!(diagnostic_color(VoxelId(2)), [0.95, 0.55, 0.20]);
         assert_eq!(diagnostic_color(VoxelId(7)), [0.88, 0.82, 0.24]);
+    }
+
+    #[test]
+    fn terrain_materials_carry_their_own_colour_and_the_fixture_keeps_its_own() {
+        use veldwake_procedural::TerrainMaterial;
+
+        for material in veldwake_procedural::material::ALL_MATERIALS {
+            let (color, specular) = voxel_appearance(material.voxel_id());
+            assert_eq!(
+                color,
+                material.albedo(),
+                "{} lost its colour",
+                material.name()
+            );
+            assert_eq!(specular, material.specular());
+        }
+        // Only water is strongly specular, which is the cue that it is liquid.
+        assert_eq!(voxel_appearance(TerrainMaterial::Water.voxel_id()).1, 1.0);
+        assert_eq!(
+            voxel_appearance(TerrainMaterial::MeadowGrass.voxel_id()).1,
+            0.0
+        );
+
+        // The M3 fixture identifiers still resolve to the diagnostic palette,
+        // with no specular, so the regression view is unchanged.
+        for id in [1, 2, 7] {
+            let (color, specular) = voxel_appearance(VoxelId(id));
+            assert_eq!(color, diagnostic_color(VoxelId(id)));
+            assert_eq!(specular, 0.0);
+        }
+    }
+
+    #[test]
+    fn the_scene_uniform_is_finite_and_carries_the_weather() {
+        use crate::camera::Camera;
+
+        let camera = Camera::default();
+        let clear = SceneUniform::build(&camera, Weather::Clear, 0.0);
+        let overcast = SceneUniform::build(&camera, Weather::Overcast, 0.0);
+
+        for matrix in [
+            clear.view_projection,
+            clear.inverse_view_projection,
+            clear.light_view_projection,
+        ] {
+            assert!(
+                matrix.iter().flatten().all(|value| value.is_finite()),
+                "a scene matrix is not finite"
+            );
+        }
+        // The inverse must actually invert: the sky pass unprojects with it.
+        let forward = glam::Mat4::from_cols_array_2d(&clear.view_projection);
+        let inverse = glam::Mat4::from_cols_array_2d(&clear.inverse_view_projection);
+        let identity = forward * inverse;
+        for (index, value) in identity.to_cols_array().into_iter().enumerate() {
+            let expected = if index % 5 == 0 { 1.0 } else { 0.0 };
+            assert!(
+                (value - expected).abs() < 1e-3,
+                "not an inverse: {identity:?}"
+            );
+        }
+
+        assert!(
+            overcast.sun[3] < clear.sun[3],
+            "overcast did not dim the sun"
+        );
+        assert!(
+            overcast.sky_ambient[3] > clear.sky_ambient[3],
+            "overcast did not raise the fill"
+        );
+        assert!(
+            overcast.fog[3] > clear.fog[3],
+            "overcast did not thicken the fog"
+        );
+        // The debug tint rides in the same buffer as everything else.
+        assert_eq!(
+            SceneUniform::build(&camera, Weather::Clear, 1.0).params[3],
+            1.0
+        );
+        assert_eq!(clear.params[3], 0.0);
     }
 
     #[test]

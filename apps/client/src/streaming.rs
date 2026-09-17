@@ -15,7 +15,7 @@ use std::{
 use glam::Vec3;
 use tracing::{error, warn};
 use veldwake_streaming::{
-    ChunkCache, InvalidationCause, LodLevel, MeshStamp, RuntimeError, StreamingConfig,
+    ChunkCache, ChunkSource, InvalidationCause, LodLevel, MeshStamp, RuntimeError, StreamingConfig,
     StreamingRuntime,
 };
 use veldwake_voxel::{ChunkCoord, Mesh, WorldCoordinateRangeError, WorldVoxelCoord};
@@ -512,37 +512,56 @@ pub struct StreamingBridge {
 }
 
 impl StreamingBridge {
+    /// A bridge over the M3 diagnostic corridor, with no disk cache.
+    ///
+    /// Test-only since M4: the client now selects its world, and the corridor
+    /// reaches it through `with_source` like any other source. It stays because
+    /// the bridge's own tests are written against that corridor's exact counts,
+    /// and rewriting them against generated terrain would replace a fixture
+    /// whose numbers are known with one whose numbers are incidental.
+    #[cfg(test)]
     pub fn new(
         config: StreamingConfig,
         budget: UploadBudget,
         camera_position: Vec3,
     ) -> Result<Self, BridgeInitError> {
-        Self::start(config, budget, camera_position, None)
+        Self::start(
+            config,
+            budget,
+            camera_position,
+            Box::new(veldwake_streaming::DiagnosticChunkSource),
+            None,
+        )
     }
 
-    /// Same bridge, with an experimental disk cache in the runtime's load
-    /// path. The client chooses a directory and learns nothing else: the entry
-    /// format, its validation, and its failure modes stay inside the streaming
-    /// crate.
-    pub fn with_cache(
+    /// A bridge over any source, with an optional experimental disk cache in
+    /// the runtime's load path.
+    ///
+    /// The client chooses a world and a directory and learns nothing else: what
+    /// a chunk contains stays inside `veldwake-procedural`, and the cache entry
+    /// format, its validation, and its failure modes stay inside
+    /// `veldwake-streaming`.
+    pub fn with_source(
         config: StreamingConfig,
         budget: UploadBudget,
         camera_position: Vec3,
-        cache: ChunkCache,
+        source: Box<dyn ChunkSource>,
+        cache: Option<ChunkCache>,
     ) -> Result<Self, BridgeInitError> {
-        Self::start(config, budget, camera_position, Some(cache))
+        Self::start(config, budget, camera_position, source, cache)
     }
 
     fn start(
         config: StreamingConfig,
         budget: UploadBudget,
         camera_position: Vec3,
+        source: Box<dyn ChunkSource>,
         cache: Option<ChunkCache>,
     ) -> Result<Self, BridgeInitError> {
         let center = camera_chunk(camera_position).map_err(BridgeInitError::Anchor)?;
         let runtime = match cache {
-            Some(cache) => StreamingRuntime::with_cache(config, center, cache),
-            None => StreamingRuntime::new(config, center),
+            Some(cache) => StreamingRuntime::with_source_and_cache(config, center, source, cache),
+            None => StreamingRuntime::with_source(config, center, source),
         }
         .map_err(BridgeInitError::Runtime)?;
         Ok(Self {
