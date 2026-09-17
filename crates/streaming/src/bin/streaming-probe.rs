@@ -4,16 +4,68 @@ use std::{
 };
 
 use veldwake_streaming::{
-    CacheConfig, CacheMetrics, ChunkCache, DiagnosticChunkSource, PayloadEncoding, StreamingConfig,
-    StreamingRuntime, TimingStat,
+    CacheConfig, CacheMetrics, ChunkCache, ChunkSource, DiagnosticChunkSource, PayloadEncoding,
+    StreamingConfig, StreamingRuntime, TerrainChunkSource, TimingStat,
 };
 use veldwake_voxel::ChunkCoord;
 
+/// One streaming input, with the centre its measurements are taken around.
+///
+/// The diagnostic corridor and the procedural region are different worlds, so a
+/// cache measurement of one says nothing about the other. Both are measured
+/// here, under the same phases, so the M3D conclusions can be re-tested against
+/// content that costs something to generate.
+struct SourceSpec {
+    name: &'static str,
+    make: fn() -> Box<dyn ChunkSource>,
+    centre: ChunkCoord,
+}
+
+/// The finite M3 corridor, centred where every M3 measurement was taken.
+const DIAGNOSTIC: SourceSpec = SourceSpec {
+    name: "diagnostic",
+    make: || Box::new(DiagnosticChunkSource),
+    centre: ChunkCoord::new(0, 0, 0),
+};
+
+/// The M4 golden region, centred on its middle layer so the demand sphere sits
+/// inside the region rather than half outside it.
+const TERRAIN: SourceSpec = SourceSpec {
+    name: "terrain",
+    make: || Box::new(TerrainChunkSource::golden()),
+    centre: ChunkCoord::new(0, 1, 0),
+};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run("m3b-default", StreamingConfig::default())?;
-    run("m3c-banded", StreamingConfig::m3c_diagnostic())?;
-    for encoding in [PayloadEncoding::Raw, PayloadEncoding::Rle] {
-        cache_experiment(encoding)?;
+    let selection: Vec<String> = std::env::args().skip(1).collect();
+    let wanted = |name: &str| selection.is_empty() || selection.iter().any(|value| value == name);
+
+    if wanted("m3b-default") {
+        run("m3b-default", StreamingConfig::default(), &DIAGNOSTIC)?;
+    }
+    if wanted("m3c-banded") {
+        run("m3c-banded", StreamingConfig::m3c_diagnostic(), &DIAGNOSTIC)?;
+    }
+    if wanted("m4-terrain-near") {
+        run("m4-terrain-near", StreamingConfig::default(), &TERRAIN)?;
+    }
+    if wanted("m4-golden") {
+        run("m4-golden", StreamingConfig::m4_golden(), &TERRAIN)?;
+    }
+    if wanted("m4-golden-banded") {
+        run(
+            "m4-golden-banded",
+            StreamingConfig::m4_golden_banded(),
+            &TERRAIN,
+        )?;
+    }
+    for spec in [&DIAGNOSTIC, &TERRAIN] {
+        if !wanted(spec.name) {
+            continue;
+        }
+        for encoding in [PayloadEncoding::Raw, PayloadEncoding::Rle] {
+            cache_experiment(spec, encoding)?;
+        }
     }
     Ok(())
 }
@@ -22,18 +74,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// then cold, then warm twice, so cold-versus-warm and warm stability are both
 /// visible. Entries live under the system temporary directory; the repository
 /// working tree is never written to.
-fn cache_experiment(encoding: PayloadEncoding) -> Result<(), Box<dyn std::error::Error>> {
-    let label = encoding.name();
+fn cache_experiment(
+    spec: &SourceSpec,
+    encoding: PayloadEncoding,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let label = format!("{}-{}", spec.name, encoding.name());
     let config = StreamingConfig::default();
-    let centre = ChunkCoord::default();
-    let cache_config = CacheConfig::new(cache_root(label)).with_payload_encoding(encoding);
-    let fingerprint = DiagnosticChunkSource.fingerprint();
+    let centre = spec.centre;
+    let cache_config = CacheConfig::new(cache_root(&label)).with_payload_encoding(encoding);
+    let fingerprint = (spec.make)().fingerprint();
 
     // Phase 1: no cache at all. The baseline every other phase is compared to.
     let started = Instant::now();
-    let mut runtime = StreamingRuntime::new(config, centre)?;
+    let mut runtime = StreamingRuntime::with_source(config, centre, (spec.make)())?;
     settle(&mut runtime, started)?;
-    cache_report(label, "off", &runtime, started, None);
+    cache_report(&label, "off", &runtime, started, None);
 
     // Phase 2: cold. The cache is emptied first so the run is reproducible.
     let (cache, _) = ChunkCache::open(&cache_config, fingerprint)?;
@@ -47,12 +102,13 @@ fn cache_experiment(encoding: PayloadEncoding) -> Result<(), Box<dyn std::error:
             );
         }
         let started = Instant::now();
-        let mut runtime = StreamingRuntime::with_cache(config, centre, cache)?;
+        let mut runtime =
+            StreamingRuntime::with_source_and_cache(config, centre, (spec.make)(), cache)?;
         settle(&mut runtime, started)?;
         let footprint = ChunkCache::open(&cache_config, fingerprint)?
             .0
             .footprint()?;
-        cache_report(label, phase, &runtime, started, Some(footprint));
+        cache_report(&label, phase, &runtime, started, Some(footprint));
     }
     Ok(())
 }
@@ -112,22 +168,28 @@ fn cache_report(
     );
 }
 
-fn run(profile: &str, config: StreamingConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn run(
+    profile: &str,
+    config: StreamingConfig,
+    spec: &SourceSpec,
+) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
-    let mut runtime = StreamingRuntime::new(config, ChunkCoord::default())?;
+    let centre = spec.centre;
+    let stepped = ChunkCoord::new(centre.x + 1, centre.y, centre.z);
+    let mut runtime = StreamingRuntime::with_source(config, centre, (spec.make)())?;
     settle(&mut runtime, started)?;
     report(profile, "settled", &runtime, started);
 
     // One boundary crossing and its return: the band must not ping-pong.
     let swaps_before = runtime.metrics().lod_swaps;
-    runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+    runtime.set_demand_center(stepped)?;
     settle(&mut runtime, started)?;
-    runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+    runtime.set_demand_center(centre)?;
     settle(&mut runtime, started)?;
     let first_cycle = runtime.metrics().lod_swaps - swaps_before;
-    runtime.set_demand_center(ChunkCoord::new(1, 0, 0))?;
+    runtime.set_demand_center(stepped)?;
     settle(&mut runtime, started)?;
-    runtime.set_demand_center(ChunkCoord::new(0, 0, 0))?;
+    runtime.set_demand_center(centre)?;
     settle(&mut runtime, started)?;
     let second_cycle = runtime.metrics().lod_swaps - swaps_before - first_cycle;
     println!(
