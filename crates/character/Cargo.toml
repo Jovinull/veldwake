@@ -1,0 +1,18 @@
+[package]
+name = "veldwake-character"
+version = "0.0.0"
+description = "Deterministic CPU character compilation, skeleton, and procedural locomotion for Veldwake"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+glam = { version = "=0.33.7", default-features = false, features = ["std"] }
+veldwake-voxel = { path = "../voxel", version = "=0.0.0" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "character-probe"
+path = "src/bin/character-probe.rs"
