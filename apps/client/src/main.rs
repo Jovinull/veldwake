@@ -3,8 +3,10 @@ mod camera;
 mod debug;
 mod diagnostics;
 mod input;
+mod lighting;
 mod renderer;
 mod streaming;
+mod world;
 
 use std::process::ExitCode;
 

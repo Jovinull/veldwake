@@ -28,12 +28,29 @@ impl Default for Camera {
             aspect: DEFAULT_ASPECT,
             vertical_fov_radians: 55.0_f32.to_radians(),
             near_plane: 0.1,
-            far_plane: 200.0,
+            // Far enough to reach the M4 golden profile's visible radius plus
+            // the diagonal, so the far plane never clips terrain the streaming
+            // runtime has already paid to load and mesh.
+            far_plane: 460.0,
         }
     }
 }
 
 impl Camera {
+    /// A camera at a named pose, in the convention `region::CameraPose` uses:
+    /// yaw in degrees clockwise from `-Z`, pitch in degrees above the horizon.
+    #[must_use]
+    pub fn at(position: Vec3, yaw_degrees: f32, pitch_degrees: f32) -> Self {
+        Self {
+            position,
+            yaw: yaw_degrees.to_radians(),
+            pitch: pitch_degrees
+                .to_radians()
+                .clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS),
+            ..Default::default()
+        }
+    }
+
     /// Finite world-unit position; one world unit is one voxel edge.
     pub const fn position(&self) -> Vec3 {
         self.position
@@ -63,7 +80,7 @@ impl Camera {
         projection * view
     }
 
-    fn forward(&self) -> Vec3 {
+    pub fn forward(&self) -> Vec3 {
         let pitch_cos = self.pitch.cos();
         Vec3::new(
             self.yaw.sin() * pitch_cos,

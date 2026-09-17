@@ -822,7 +822,7 @@ Product world generation, saves or disk cache, gameplay, physics, ECS, networkin
 
 ## Milestone: M3D — Disk Cache & Persistence Experiment
 
-Status: **implemented and independently QA-hardened on `feat/m3d-cache-persistence`, ready for external review/PR**. M3C is merged into `main` through [PR #6](https://github.com/Jovinull/veldwake/pull/6) at merge commit `c669929b00427c2f438529b572931400a24b6d3d`.
+Status: **complete and merged** into `main` through [PR #7](https://github.com/Jovinull/veldwake/pull/7) at merge commit `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e`, after independent branch QA, external review, and a green remote CI run. M3C merged through [PR #6](https://github.com/Jovinull/veldwake/pull/6) at `c669929b00427c2f438529b572931400a24b6d3d`. With M3D merged, **M3 — Streaming World is complete in full**.
 
 M3D closes the last M3 capability: a persistence and cache experiment serious enough to inform the architecture, and explicitly not a save system.
 

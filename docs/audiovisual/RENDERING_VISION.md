@@ -1,6 +1,8 @@
 # Rendering vision
 
-Status: **Accepted direction; techniques and budgets selected by milestone evidence**.
+Status: **Accepted direction; techniques and budgets selected by milestone evidence. M4 implemented the first stylized lighting path.**
+
+M4's renderer is the first concrete instance of this direction and is deliberately small: one directional sun, hemispheric ambient blended by surface normal between a cool sky term and a warm ground bounce, a single 2048-square shadow cascade with a three-by-three percentage-closer filter, a three-stop procedural sky with a soft sun disc, exponential distance fog with a height component that resolves toward that same sky along the view ray, and a tight specular lobe carried only by water and rock. There is no physically based shading, no render graph, no material system, no cascaded shadow framework, and no volumetrics. Every art value the shaders read is uploaded from `lighting.rs`, which transcribes [`STYLE_BIBLE.md`](STYLE_BIBLE.md); no shader invents a colour or an intensity.
 
 The renderer should present stylized high-quality voxel fantasy while remaining a consumer of world/simulation state. It does not own canonical chunks, entities, or gameplay.
 

@@ -1,6 +1,8 @@
 # Observability
 
-Status: **Accepted requirement; M3 streaming telemetry and debug views implemented, broader engine observability remains incremental**.
+Status: **Accepted requirement; M3 streaming telemetry and debug views implemented, M4 adds world and headless world inspection, broader engine observability remains incremental**.
+
+The client's startup line reports the selected world, its fingerprint, the named camera pose, the camera position, and the weather state, so a capture can be tied to exactly the world and viewpoint that produced it. `terrain-probe` is the headless counterpart and needs no GPU: it prints landform, zone, height, and material maps of the region, a full report for any column including how far above the surface a camera must stand to clear every plant, one chunk's material histogram and mesh cost, the locked regional signature with every named probe, measured canopy coverage over the meadow, and per-chunk generation and meshing timings.
 
 Development builds should explain performance and procedural causality, not merely display failures.
 
@@ -53,4 +55,4 @@ Per-level desired, ready, committed, and GPU counts (`lod0_*`, `lod1_*`), per-le
 **What is the debug overlay doing?**
 `debug_mode`, `debug_boxes`, `debug_draws` (one draw per primitive last frame), `debug_slots` (pooled uniform buffers and bind groups, the high-water mark of the pattern's retained cost), `debug_primitive_allocations`, and `debug_uniform_writes`. With the view `Off`, per-frame debug draws, primitive allocations, and uniform writes are zero; `debug_slots` may remain non-zero after a view has been used because the renderer deliberately retains and reuses those fixed-capacity resources. Mesh upload budgets are independent of debug work. Fixed startup pipeline/unit-geometry resources and retained slots mean that `Off` is not a claim of zero total debug memory.
 
-Frame timing is `frames`, `report_seconds`, `average_wall_frame_ms`, `observed_fps`, `interval_submit_mean_us`, and `interval_submit_max_us`. Under vsync the frame average is pinned at the refresh interval and only tells you when something has fallen *below* it; submit timing moves in the opposite direction when frame rate drops, because the vsync wait leaves the measured region.
+Frame timing is `frames`, `report_seconds`, `average_wall_frame_ms`, `observed_fps`, `renderer_render_wall_mean_us`, and `renderer_render_wall_max_us`. The render-wall interval wraps the whole `Renderer::render()` call (including surface acquisition and presentation), so it is not CPU-submit or GPU time. Under vsync the frame average is pinned at the refresh interval and only tells you when something has fallen *below* it; render-wall timing moves in the opposite direction when frame rate drops, because the vsync wait leaves the measured region.

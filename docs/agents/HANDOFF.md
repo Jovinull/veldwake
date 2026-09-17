@@ -4,11 +4,19 @@ Last updated: 2026-09-17
 
 ## Current position
 
-M1, M2, M3A, M3B, and M3C are merged into `main`; M3C landed through PR #6 at merge commit `c669929b00427c2f438529b572931400a24b6d3d` with green remote CI. M3D is implemented and independently QA-hardened on `feat/m3d-cache-persistence`, making M3 technically complete on that branch but not merged. QA corrected the cache thread-boundary claim, made rejected-entry deletion failure observable, coupled the source fingerprint to actual finite-source behavior, bounded hostile file reads, narrowed the public API, and added adversarial format/recovery/concurrency tests. The cache remains opt-in and is not a save. LOD remains opt-in with KI-013/KI-014 unchanged. `veldwake-voxel` owns CPU geometry; `veldwake-streaming` owns headless orchestration and the discardable cache; the client bridge and renderer own disposable presentation state only.
+M1, M2, and all of M3 are merged into `main`. M3D landed through PR #7 at merge commit `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e` with green remote CI, after independent branch QA and external review; M3C landed through PR #6 at `c669929b00427c2f438529b572931400a24b6d3d`. **M3 — Streaming World is complete.** M4 — Beautiful Terrain Vertical Slice is the active milestone on `feat/m4-beautiful-terrain-slice`. QA corrected the cache thread-boundary claim, made rejected-entry deletion failure observable, coupled the source fingerprint to actual finite-source behavior, bounded hostile file reads, narrowed the public API, and added adversarial format/recovery/concurrency tests. The cache remains opt-in and is not a save. LOD remains opt-in with KI-013/KI-014 unchanged. `veldwake-voxel` owns CPU geometry; `veldwake-streaming` owns headless orchestration and the discardable cache; the client bridge and renderer own disposable presentation state only.
 
 ## Continue here
 
-Submit `feat/m3d-cache-persistence` for external review/PR. Do not begin the swap-churn investigation or M4 in this handoff.
+`feat/m4-beautiful-terrain-slice` completed integral branch QA of `main...feat/m4-beautiful-terrain-slice`. QA now rejects cache/source identity mismatches before worker startup, rejects pathological public terrain descriptors before generation, binds the cheap cache fingerprint to a test-only exhaustive 1,875-chunk behavioural signature, tests the real vertical voxel envelope, correctly describes sloped-water quantization, shares the sky-gradient break between WGSL passes, and names the measured render interval honestly. External review/PR is next; do not begin M5.
+
+The three things most worth an adversarial eye:
+
+1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The compact regional signature `0x1285_7799_1516_4f6a`, named probes, and exhaustive behavioural signature `0x2d88_497f_a6d6_d4b5` in `procedural::region` are the tripwires; the latter is folded into the cache fingerprint.
+2. **The cache default change.** Run-length replaced raw as the default payload encoding on M4 evidence: 107,904 bytes against 4,132,656 for the same eighty-one terrain chunks, encoding six times faster. The worst case is unchanged and still bounded by `MAX_ENTRY_BYTES`, but the decision reverses an M3D one and deserves scrutiny.
+3. **The visual assessment.** It is written in the milestone document as a judgement, with its weaknesses named. Disagreeing with it is a legitimate QA result.
+
+Do not begin the swap-churn investigation, KI-017, or M5 in this handoff.
 
 M3D adds an experimental disk cache inside the streaming worker's load path. It is a cache and never a save: entries are reproducible, rejections fall back to the source, and nothing is authoritative. The measurement is deliberately unflattering — warm is slower than no cache on this fixture because the diagnostic source is trivial (KI-016) — and the cache has no eviction policy (KI-015). Judge the boundary, the format discipline, and the failure handling; do not read the timings as a speedup claim. Any later LOD policy work must re-run the documented baseline/banded path and keep LOD opt-in unless the recorded decision rule passes.
 

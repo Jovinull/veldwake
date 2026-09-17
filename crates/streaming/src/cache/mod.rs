@@ -142,6 +142,12 @@ impl ChunkCache {
         self.store.entries_dir()
     }
 
+    /// Identity of the sole source whose entries this cache may replay.
+    #[must_use]
+    pub const fn source_fingerprint(&self) -> u64 {
+        self.source_fingerprint
+    }
+
     /// Entries and bytes currently on disk for this source identity.
     ///
     /// This experiment has no eviction policy, so the footprint is walked on

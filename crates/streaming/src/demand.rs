@@ -108,6 +108,49 @@ impl StreamingConfig {
 }
 
 impl StreamingConfig {
+    /// The M4 golden profile: visible radius 6, every render chunk at `Lod0`.
+    ///
+    /// Wider than the M3 profiles because the M4 region has to read as a place
+    /// rather than as a patch: the style bible separates foreground, midground,
+    /// and background by atmosphere, and a radius that stops inside the
+    /// midground leaves nothing for the background to be.
+    ///
+    /// `Lod0` only, deliberately. The M3C decision stands that the LOD band is
+    /// opt-in, and a golden image measured against a band whose coarse seams
+    /// are still under investigation would be measuring two things at once.
+    /// `m4_golden_banded` exists so the band is still exercised against real
+    /// content, as a separate run.
+    ///
+    /// The cap is the retention set plus the union headroom one chunk of
+    /// movement needs, the same rule `m3c_diagnostic` uses. Most of those
+    /// coordinates are authoritative absence: the region is three chunks tall,
+    /// so a cubic demand set spends most of its volume above and below it and
+    /// holds no payload there.
+    #[must_use]
+    pub const fn m4_golden() -> Self {
+        Self {
+            render_radius: 6,
+            dependency_halo: 1,
+            retention_radius: 7,
+            hard_resident_cap: 4_100,
+            max_cpu_evictions_per_update: 8,
+            lod_selection: LodSelection::Lod0Only,
+        }
+    }
+
+    /// The M4 golden profile with the M3C band enabled, for the compatibility
+    /// run. Never the default: enabling LOD silently would change what every
+    /// golden capture is a picture of.
+    #[must_use]
+    pub const fn m4_golden_banded() -> Self {
+        Self {
+            lod_selection: LodSelection::Banded,
+            ..Self::m4_golden()
+        }
+    }
+}
+
+impl StreamingConfig {
     /// Rejects every configuration whose sets would contradict each other.
     ///
     /// Retention must cover the whole dependency set. The dependency set is the
@@ -260,6 +303,35 @@ fn cube(center: ChunkCoord, radius: u32) -> Result<BTreeSet<ChunkCoord>, DemandE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_m4_profile_is_wide_lod0_only_and_internally_consistent() -> Result<(), DemandError> {
+        let config = StreamingConfig::m4_golden();
+        assert_eq!(config.lod_selection, LodSelection::Lod0Only);
+        assert!(
+            config.render_radius > StreamingConfig::m3c_diagnostic().render_radius,
+            "the golden slice must see further than the M3C diagnostic"
+        );
+        let sets = DemandSets::around(ChunkCoord::default(), config.validate()?)?;
+        assert_eq!(sets.render.len(), 2_197);
+        assert_eq!(sets.dependency.len(), 3_211);
+        assert_eq!(sets.retention.len(), 3_375);
+        // The visible radius has to reach across the valley the region builds,
+        // or the far wall never appears and the frame has no background.
+        assert!(
+            veldwake_voxel::CHUNK_EDGE as u32 * config.render_radius >= 190,
+            "the visible radius does not reach the far valley wall"
+        );
+        assert!(
+            config.hard_resident_cap > sets.retention.len(),
+            "the cap leaves no headroom for one chunk of movement"
+        );
+
+        let banded = StreamingConfig::m4_golden_banded().validate()?;
+        assert_eq!(banded.lod_selection, LodSelection::Banded);
+        assert_eq!(banded.render_radius, config.render_radius);
+        Ok(())
+    }
 
     #[test]
     fn default_demand_counts_are_deterministic() -> Result<(), DemandError> {

@@ -1,0 +1,17 @@
+[package]
+name = "veldwake-procedural"
+version = "0.0.0"
+description = "Deterministic CPU world generation for Veldwake"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veldwake-voxel = { path = "../voxel", version = "=0.0.0" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "terrain-probe"
+path = "src/bin/terrain-probe.rs"

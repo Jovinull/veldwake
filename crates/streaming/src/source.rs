@@ -1,3 +1,4 @@
+use veldwake_procedural::TerrainGenerator;
 use veldwake_voxel::{CHUNK_EDGE, Chunk, ChunkCoord, LocalCoord, VoxelId};
 
 use crate::hash::fnv1a64;
@@ -33,9 +34,85 @@ pub enum SourceChunk {
     KnownAbsent,
 }
 
+/// What the streaming runtime needs from whatever produces world content.
+///
+/// Deliberately two methods. The runtime does not care how a chunk is made; it
+/// cares that the same coordinate always yields the same answer, that absence
+/// is authoritative, and that the producer can name itself so a disk cache can
+/// tell whose bytes it is holding. Anything more would be a plugin system, and
+/// this milestone has exactly two implementations.
+///
+/// `Send` because the source lives on the worker thread. Loading takes `&self`
+/// because a source is a description of a world, not a cursor into one: two
+/// loads in any order must not observe each other.
+pub trait ChunkSource: Send + 'static {
+    /// Deterministic identity of everything this source generates.
+    ///
+    /// A cache entry is valid only while the source that produced it is
+    /// unchanged, so the cache stores this value and refuses any entry that
+    /// disagrees. It is a cache-invalidation key, not a save-format version.
+    fn fingerprint(&self) -> u64;
+
+    /// The content at a coordinate, or authoritative absence.
+    fn load(&self, coord: ChunkCoord) -> SourceChunk;
+}
+
 /// Finite, code-defined streaming input used only to exercise M3B lifecycles.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiagnosticChunkSource;
+
+impl ChunkSource for DiagnosticChunkSource {
+    fn fingerprint(&self) -> u64 {
+        Self::fingerprint(*self)
+    }
+
+    fn load(&self, coord: ChunkCoord) -> SourceChunk {
+        Self::load(*self, coord)
+    }
+}
+
+/// The M4 world generator, adapted to the streaming runtime.
+///
+/// The adapter is the whole boundary: generation semantics stay in
+/// `veldwake-procedural`, scheduling and residency stay here, and the only
+/// translation is between `Option<Chunk>` and [`SourceChunk`]. `None` from the
+/// generator means the region does not reach this coordinate, which is exactly
+/// what [`SourceChunk::KnownAbsent`] means to the runtime.
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainChunkSource {
+    generator: TerrainGenerator,
+}
+
+impl TerrainChunkSource {
+    #[must_use]
+    pub const fn new(generator: TerrainGenerator) -> Self {
+        Self { generator }
+    }
+
+    /// The M4 golden slice.
+    #[must_use]
+    pub fn golden() -> Self {
+        Self::new(TerrainGenerator::golden())
+    }
+
+    #[must_use]
+    pub const fn generator(&self) -> &TerrainGenerator {
+        &self.generator
+    }
+}
+
+impl ChunkSource for TerrainChunkSource {
+    fn fingerprint(&self) -> u64 {
+        self.generator.fingerprint()
+    }
+
+    fn load(&self, coord: ChunkCoord) -> SourceChunk {
+        match self.generator.generate(coord) {
+            Some(chunk) => SourceChunk::Present(chunk),
+            None => SourceChunk::KnownAbsent,
+        }
+    }
+}
 
 impl DiagnosticChunkSource {
     /// Deterministic identity of everything this source generates.
@@ -121,6 +198,7 @@ fn local(x: usize, y: usize, z: usize) -> LocalCoord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veldwake_procedural::{WorldSeed, region::SIGNATURE_CHUNKS};
     use veldwake_voxel::fingerprint;
 
     fn actual_behavior_signature() -> u64 {
@@ -195,6 +273,117 @@ mod tests {
         for z in 0..CHUNK_EDGE {
             assert!(!negative.read_local(local(CHUNK_EDGE - 1, 0, z)).is_air());
             assert!(!origin.read_local(local(0, 0, z)).is_air());
+        }
+    }
+
+    /// The terrain source must not paper over anything the generator says. Its
+    /// whole job is translation, so these tests check that the translation is
+    /// faithful and that the runtime contracts M3 depends on still hold.
+    mod terrain {
+        use super::*;
+
+        #[test]
+        fn the_adapter_reports_the_generator_identity_unchanged() {
+            let source = TerrainChunkSource::golden();
+            assert_eq!(
+                ChunkSource::fingerprint(&source),
+                source.generator().fingerprint(),
+                "the cache key must be the generator identity, not a second one"
+            );
+            let other = TerrainChunkSource::new(veldwake_procedural::TerrainGenerator::with_seed(
+                WorldSeed(7),
+            ));
+            assert_ne!(
+                ChunkSource::fingerprint(&source),
+                ChunkSource::fingerprint(&other),
+                "two worlds must not share a cache key"
+            );
+        }
+
+        #[test]
+        fn absence_outside_the_region_is_authoritative_and_emptiness_is_not() {
+            let source = TerrainChunkSource::golden();
+            let extent = source.generator().identity().config.extent;
+            for outside in [
+                ChunkCoord::new(extent.max_chunk_x + 1, 0, 0),
+                ChunkCoord::new(extent.min_chunk_x - 1, 0, 0),
+                ChunkCoord::new(0, extent.max_chunk_y + 1, 0),
+                ChunkCoord::new(0, extent.min_chunk_y - 1, 0),
+                ChunkCoord::new(0, 0, extent.max_chunk_z + 1),
+            ] {
+                assert_eq!(
+                    source.load(outside),
+                    SourceChunk::KnownAbsent,
+                    "{outside:?} is outside the region"
+                );
+            }
+
+            // Sky inside the region is present and empty, which the runtime
+            // treats differently from absence.
+            let SourceChunk::Present(sky) = source.load(ChunkCoord::new(0, 2, 0)) else {
+                panic!("a chunk inside the region must be present");
+            };
+            assert_eq!(sky.solid_count(), 0);
+
+            let SourceChunk::Present(ground) = source.load(ChunkCoord::new(0, 0, 0)) else {
+                panic!("the ground layer must be present");
+            };
+            assert!(ground.solid_count() > 0);
+        }
+
+        #[test]
+        fn loading_is_independent_of_order_and_of_the_adapter_instance() {
+            let first = TerrainChunkSource::golden();
+            let second = TerrainChunkSource::golden();
+            let mut forward = Vec::new();
+            for coord in SIGNATURE_CHUNKS {
+                forward.push(first.load(*coord));
+            }
+            let mut backward = Vec::new();
+            for coord in SIGNATURE_CHUNKS.iter().rev() {
+                backward.push(second.load(*coord));
+            }
+            backward.reverse();
+            assert_eq!(forward, backward, "load order changed the world");
+        }
+
+        #[test]
+        fn a_cached_terrain_chunk_replays_exactly_what_the_source_produced() {
+            // The M3D cache was measured against a fixture that was 97 percent
+            // air. This is the same round trip against real terrain, where a
+            // chunk is dense and has many distinct materials.
+            let source = TerrainChunkSource::golden();
+            let root = std::env::temp_dir().join(format!(
+                "veldwake-terrain-cache-test-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            let config = crate::CacheConfig::new(root.clone());
+            let fingerprint_key = ChunkSource::fingerprint(&source);
+
+            for coord in [ChunkCoord::new(0, 0, 0), ChunkCoord::new(5, 1, -4)] {
+                let cache = match crate::ChunkCache::open(&config, fingerprint_key) {
+                    Ok((cache, _)) => cache,
+                    Err(error) => panic!("cache failed to open: {error}"),
+                };
+                let direct = source.load(coord);
+                let (cold, cold_outcome) = cache.load_with(coord, || source.load(coord));
+                assert_eq!(cold_outcome.misses, 1);
+                assert_eq!(cold, direct, "a cold load must equal the source");
+
+                let (warm, warm_outcome) =
+                    cache.load_with(coord, || panic!("a warm hit must not consult the source"));
+                assert_eq!(warm_outcome.hits_present, 1);
+                assert_eq!(warm, direct, "a warm load must equal the source");
+                match (&direct, &warm) {
+                    (SourceChunk::Present(direct), SourceChunk::Present(warm)) => {
+                        assert_eq!(fingerprint(direct), fingerprint(warm));
+                        assert!(direct.solid_count() > 4_000, "this chunk is not dense");
+                    }
+                    other => panic!("expected two present chunks: {other:?}"),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
 }

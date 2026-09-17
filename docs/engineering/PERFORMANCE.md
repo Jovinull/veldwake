@@ -45,6 +45,47 @@ The M3C2 follow-up (transition model) re-measured the same path on the same day:
 
 **Debug views (M3C3).** Measured with an idle camera and no screen capture, banded profile, 12-second windows: `Off` and `Lod` hold 60.0 FPS at 16.66 ms and issue no debug line draw; `Boundaries` at 180 primitives runs 46.7–47.9 FPS (20.9–21.4 ms); `Residency` at 637 boxes runs 37.6 then 15.4 FPS (26.6 then 64.8 ms). One uniform buffer, one bind group, and one draw per primitive is the enabled cost (KI-012). `Off` is instrumented as zero per-frame debug primitive allocations, debug uniform writes, and debug draws, while leaving fixed startup resources and reusable slots resident.
 
+## M4 golden slice
+
+Audited Windows 11 host, Intel Iris Xe over D3D12, release builds, golden seed `0x5645_4c44_5741_4b45`. One-host observations, never targets.
+
+**Generation and meshing, headless** (`terrain-probe bench 256`, first 256 chunks of the region):
+
+| measure | value |
+|---|---|
+| generation per chunk: min / median / p95 / max / mean | 0.785 / 0.951 / 1.228 / 1.567 / 0.967 ms |
+| meshing per chunk, standalone: median / p95 / max | 0.602 / 0.743 / 1.248 ms |
+
+Standalone meshing walls off all six chunk faces because it has no neighbours, so its sizes are not the streamed sizes. The streamed figures are below.
+
+**Client, `m4-golden` profile, pose `depth-stack`, 1600 x 900, `Fifo`, debug views off, settled:**
+
+| measure | value |
+|---|---|
+| time to idle | 59,653 ms |
+| tracked / known absent / presented | 3,211 / 2,767 / 351 |
+| GPU-resident chunk meshes / quads | 204 / 358,619 |
+| presentation-owned chunk-mesh bytes | 65,992,424 |
+| CPU resident payload / CPU mesh bytes | 29,097,984 / 48,772,184 |
+| snapshot build, total | 20,395 µs |
+| worker mesh, total / max | 213,838 / 3,490 µs |
+| frame interval / observed rate | 16.83 ms / 59.4 FPS |
+| renderer render wall time, mean / max | 12,638 / 30,163 µs |
+
+The frame interval is vsync-bound at 60 Hz and therefore measures presentation cadence, not renderer headroom. **Renderer render wall time wraps the complete `Renderer::render()` call, including surface acquisition, encoding, submission, and presentation; it is neither isolated CPU-submit time nor GPU time.** No GPU timestamps were taken and none of these numbers may be read as GPU cost. The settle time is dominated by job dispatch, not by generation: see KI-017.
+
+**LOD band against real terrain**, same pose and settle:
+
+| measure | `m4-golden` | `m4-golden-banded` |
+|---|---|---|
+| presented | 351 | 351 |
+| GPU quads | 358,619 | 118,477 |
+| chunk-mesh bytes | 65,992,424 | 21,806,552 |
+| CPU mesh bytes | 48,772,184 | 16,112,872 |
+| time to idle | 59,653 ms | 59,589 ms |
+
+−67% settled chunk-mesh bytes at the same camera. This is settled committed bytes at one pose, not the mutation-boundary simultaneous peak KI-013 measures, and the two must not be compared as if they were the same quantity.
+
 ## M3D disk cache experiment
 
 Release `streaming-probe` on the audited Windows host, one identical settle of the default profile per phase, three repetitions. Residency is identical in every phase and encoding: 81 tracked, 63 resident, 4,128,768 resident bytes, 2,511,648 CPU mesh bytes, 81 load jobs, 0 stale results, 0 hard-cap blocks.
@@ -57,6 +98,22 @@ Release `streaming-probe` on the audited Windows host, one identical settle of t
 | warm again | 42,124 / 16,618 / 24,002 | 16,116 / 11,340 / 16,052 |
 
 Warm is reproducible: 81 lookups, 63 present hits, 18 absence hits, 0 misses, 0 source fallbacks, 0 writes, stable footprint.
+
+### Re-measured against real terrain in M4
+
+Same probe, same default profile, but on `TerrainChunkSource` centred at `(0, 1, 0)`. One run per phase.
+
+| phase | raw | run-length |
+|---|---|---|
+| cache off, time to idle | 60,493 µs | 67,866 µs |
+| cold | 109,949 µs | 109,708 µs |
+| warm | 18,953 µs | 10,670 µs |
+| warm again | 16,655 µs | 11,424 µs |
+| disk bytes, 81 entries | 4,132,656 | 107,904 |
+| encode, mean / max | 92 / 279 µs | 15 / 108 µs |
+| decode, mean / max | 76 / 182 µs | 14 / 48 µs |
+
+Both M3D conclusions move once the source is not trivial. The cache is about six times faster than regeneration warm, where against the diagnostic fixture it was slower (KI-016 is now scoped to that source), and run-length became the default payload encoding: 97.4% less disk for the same content, encoding six times faster and decoding five times faster, with an unchanged and still-bounded worst case.
 
 Disk footprint for the same 81 entries: raw 4,132,656 bytes (65,584 per present entry, 48 per absence), run-length 24,438 bytes, a factor of 169 on this fixture. Codec cost per chunk: raw encode 154 µs mean / 515 µs max and decode 156 / 293; run-length encode 22 / 200 and decode 13 / 67.
 

@@ -11,7 +11,7 @@ use veldwake_voxel::{
 
 use crate::{
     cache::{CacheLoadOutcome, ChunkCache},
-    source::{DiagnosticChunkSource, SourceChunk},
+    source::{ChunkSource, SourceChunk},
     types::{MeshStamp, RequestToken},
 };
 
@@ -82,14 +82,14 @@ impl Worker {
     /// cold open; every later lookup and publication happens on this thread,
     /// never in the caller's frame path.
     pub(crate) fn spawn(
-        source: DiagnosticChunkSource,
+        source: Box<dyn ChunkSource>,
         cache: Option<ChunkCache>,
     ) -> std::io::Result<Self> {
         let (job_tx, job_rx) = mpsc::sync_channel::<WorkerJob>(1);
         let (result_tx, result_rx) = mpsc::sync_channel::<WorkerResult>(1);
         let thread = thread::Builder::new()
             .name("veldwake-streaming".to_owned())
-            .spawn(move || worker_loop(source, cache.as_ref(), &job_rx, &result_tx));
+            .spawn(move || worker_loop(source.as_ref(), cache.as_ref(), &job_rx, &result_tx));
         let thread = thread?;
         Ok(Self {
             jobs: Some(job_tx),
@@ -129,7 +129,7 @@ impl Drop for Worker {
 }
 
 fn worker_loop(
-    source: DiagnosticChunkSource,
+    source: &dyn ChunkSource,
     cache: Option<&ChunkCache>,
     jobs: &Receiver<WorkerJob>,
     results: &SyncSender<WorkerResult>,
@@ -169,14 +169,15 @@ fn worker_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::DiagnosticChunkSource;
 
     #[test]
     fn worker_shutdown_is_clean_with_and_without_work() {
-        let worker = Worker::spawn(DiagnosticChunkSource, None);
+        let worker = Worker::spawn(Box::new(DiagnosticChunkSource), None);
         assert!(worker.is_ok());
         drop(worker);
 
-        let worker = match Worker::spawn(DiagnosticChunkSource, None) {
+        let worker = match Worker::spawn(Box::new(DiagnosticChunkSource), None) {
             Ok(worker) => worker,
             Err(error) => panic!("test worker failed to start: {error}"),
         };

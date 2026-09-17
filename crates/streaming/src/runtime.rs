@@ -13,7 +13,7 @@ use veldwake_voxel::{
 use crate::{
     cache::{CacheLoadOutcome, ChunkCache},
     demand::{DemandError, DemandSets, StreamingConfig},
-    source::{DiagnosticChunkSource, SourceChunk},
+    source::{ChunkSource, DiagnosticChunkSource, SourceChunk},
     types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken, SeamContract},
     worker::{MeshJob, MeshSnapshot, Worker, WorkerJob, WorkerResult},
 };
@@ -197,6 +197,10 @@ pub struct ResidencySummary {
 #[derive(Debug)]
 pub enum RuntimeError {
     Demand(DemandError),
+    CacheSourceMismatch {
+        cache_fingerprint: u64,
+        source_fingerprint: u64,
+    },
     WorkerStart(std::io::Error),
     WorkerDisconnected,
     RequestTokenExhausted,
@@ -210,6 +214,13 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Demand(error) => error.fmt(formatter),
+            Self::CacheSourceMismatch {
+                cache_fingerprint,
+                source_fingerprint,
+            } => write!(
+                formatter,
+                "cache source fingerprint {cache_fingerprint:016x} does not match runtime source {source_fingerprint:016x}"
+            ),
             Self::WorkerStart(error) => {
                 write!(formatter, "failed to start streaming worker: {error}")
             }
@@ -356,9 +367,44 @@ pub struct StreamingRuntime {
 }
 
 impl StreamingRuntime {
-    /// Starts a runtime with no disk cache: every load asks the source.
+    /// Starts a runtime on the diagnostic source, with no disk cache.
+    ///
+    /// Kept as the zero-argument entry point because the M3 regression suite is
+    /// written against the diagnostic corridor, and a milestone that changed
+    /// what those tests stream would stop testing what it claims to test.
     pub fn new(config: StreamingConfig, center: ChunkCoord) -> Result<Self, RuntimeError> {
-        Self::start(config, center, None)
+        Self::start(config, center, Box::new(DiagnosticChunkSource), None)
+    }
+
+    /// Starts a runtime on any source, with no disk cache.
+    pub fn with_source(
+        config: StreamingConfig,
+        center: ChunkCoord,
+        source: Box<dyn ChunkSource>,
+    ) -> Result<Self, RuntimeError> {
+        Self::start(config, center, source, None)
+    }
+
+    /// Starts a runtime on any source, consulting `cache` before it.
+    ///
+    /// Construction rejects a cache opened for a different source before the
+    /// worker starts. A cache validates its entries against its own identity,
+    /// so accepting mismatched objects here could replay one world's chunk to
+    /// another without an entry-level stale rejection.
+    pub fn with_source_and_cache(
+        config: StreamingConfig,
+        center: ChunkCoord,
+        source: Box<dyn ChunkSource>,
+        cache: ChunkCache,
+    ) -> Result<Self, RuntimeError> {
+        let source_fingerprint = source.fingerprint();
+        if cache.source_fingerprint() != source_fingerprint {
+            return Err(RuntimeError::CacheSourceMismatch {
+                cache_fingerprint: cache.source_fingerprint(),
+                source_fingerprint,
+            });
+        }
+        Self::start(config, center, source, Some(cache))
     }
 
     /// Starts a runtime whose worker consults `cache` before the source.
@@ -373,18 +419,18 @@ impl StreamingRuntime {
         center: ChunkCoord,
         cache: ChunkCache,
     ) -> Result<Self, RuntimeError> {
-        Self::start(config, center, Some(cache))
+        Self::with_source_and_cache(config, center, Box::new(DiagnosticChunkSource), cache)
     }
 
     fn start(
         config: StreamingConfig,
         center: ChunkCoord,
+        source: Box<dyn ChunkSource>,
         cache: Option<ChunkCache>,
     ) -> Result<Self, RuntimeError> {
         let config = config.validate()?;
         let demand = DemandSets::around(center, config)?;
-        let worker =
-            Worker::spawn(DiagnosticChunkSource, cache).map_err(RuntimeError::WorkerStart)?;
+        let worker = Worker::spawn(source, cache).map_err(RuntimeError::WorkerStart)?;
         let mut runtime = Self {
             config,
             center,
@@ -1684,6 +1730,64 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct FixedSource {
+        fingerprint: u64,
+        material: veldwake_voxel::VoxelId,
+    }
+
+    impl ChunkSource for FixedSource {
+        fn fingerprint(&self) -> u64 {
+            self.fingerprint
+        }
+
+        fn load(&self, _coord: ChunkCoord) -> SourceChunk {
+            let mut chunk = Chunk::empty();
+            match chunk.write(0, 0, 0, self.material) {
+                Ok(_) => SourceChunk::Present(chunk),
+                Err(error) => panic!("fixed test source could not write its chunk: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_cache_for_one_source_cannot_be_attached_to_another_world() {
+        let root = cache_root("source-cache-identity");
+        let source_a = FixedSource {
+            fingerprint: 0xa11c_e001,
+            material: veldwake_voxel::VoxelId(1),
+        };
+        let source_b = FixedSource {
+            fingerprint: 0xb22c_e002,
+            material: veldwake_voxel::VoxelId(2),
+        };
+        let config = crate::CacheConfig::new(root.clone());
+        let cache = match crate::ChunkCache::open(&config, source_a.fingerprint()) {
+            Ok((cache, _)) => cache,
+            Err(error) => panic!("cache failed to open: {error}"),
+        };
+        let coord = ChunkCoord::default();
+        let (_, cold) = cache.load_with(coord, || source_a.load(coord));
+        assert_eq!(cold.misses, 1);
+        let (_, warm) = cache.load_with(coord, || panic!("A must warm-load from its cache"));
+        assert_eq!(warm.hits_present, 1);
+
+        let result = StreamingRuntime::with_source_and_cache(
+            cache_probe_config(),
+            coord,
+            Box::new(source_b),
+            cache,
+        );
+        assert!(matches!(
+            result,
+            Err(RuntimeError::CacheSourceMismatch {
+                cache_fingerprint: 0xa11c_e001,
+                source_fingerprint: 0xb22c_e002,
+            })
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn settle_runtime(runtime: &mut StreamingRuntime) -> Result<(), RuntimeError> {
         for _ in 0..100_000 {
             runtime.poll()?;
@@ -1863,8 +1967,15 @@ mod tests {
                 Ok((cache, _)) => cache,
                 Err(error) => panic!("cache failed to open: {error}"),
             };
-        let mut second =
-            StreamingRuntime::with_cache(cache_probe_config(), ChunkCoord::default(), other)?;
+        let mut second = StreamingRuntime::with_source_and_cache(
+            cache_probe_config(),
+            ChunkCoord::default(),
+            Box::new(FixedSource {
+                fingerprint: DiagnosticChunkSource.fingerprint() ^ 0xff,
+                material: veldwake_voxel::VoxelId(9),
+            }),
+            other,
+        )?;
         settle_runtime(&mut second)?;
         let cache = &second.metrics().cache;
         assert_eq!(
@@ -2813,5 +2924,78 @@ mod tests {
         );
         assert!(runtime.metrics.snapshot_bytes_dispatched <= 76 * 1_024);
         Ok(())
+    }
+
+    /// The only test here that runs the real worker against the real generator.
+    ///
+    /// Everything else in this module drives records directly, which is what
+    /// keeps the scheduler tests fast and deterministic. This one exists to
+    /// prove the wiring: that a procedural source reaches the runtime through
+    /// the same path the diagnostic source does, that absence outside the
+    /// region is still absence, and that nothing goes stale on the nominal path.
+    #[test]
+    fn the_terrain_source_streams_through_the_ordinary_runtime_path() {
+        use std::time::{Duration, Instant};
+
+        let source = crate::TerrainChunkSource::golden();
+        let region_fingerprint = crate::ChunkSource::fingerprint(&source);
+        let centre = ChunkCoord::new(0, 1, 0);
+        let mut runtime = match StreamingRuntime::with_source(
+            StreamingConfig::default(),
+            centre,
+            Box::new(source),
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("terrain runtime failed to start: {error}"),
+        };
+        assert_ne!(region_fingerprint, 0);
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !runtime.is_idle() && Instant::now() < deadline {
+            if let Err(error) = runtime.poll() {
+                panic!("terrain runtime failed while polling: {error}");
+            }
+            std::thread::yield_now();
+        }
+        assert!(runtime.is_idle(), "the terrain runtime never settled");
+
+        let summary = runtime.summary();
+        assert!(summary.lod0_ready > 0, "no terrain mesh became ready");
+        assert!(
+            runtime.resident_payload_count() > 0,
+            "no terrain chunk became resident"
+        );
+        let metrics = runtime.metrics();
+        assert_eq!(metrics.stale_load_results, 0);
+        assert_eq!(metrics.stale_mesh_results, 0);
+        assert_eq!(metrics.hard_cap_blocks, 0);
+        assert!(
+            runtime
+                .render_ready_meshes()
+                .any(|(_, _, mesh)| !mesh.vertices().is_empty()),
+            "every ready terrain mesh is empty"
+        );
+
+        // A centre near the region edge must still settle, with the outside
+        // reported as authoritative absence rather than as a pending load.
+        let edge = ChunkCoord::new(12, 1, 12);
+        if let Err(error) = runtime.set_demand_center(edge) {
+            panic!("moving to the region edge failed: {error}");
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !runtime.is_idle() && Instant::now() < deadline {
+            if let Err(error) = runtime.poll() {
+                panic!("terrain runtime failed while polling: {error}");
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            runtime.is_idle(),
+            "the terrain runtime never settled at the edge"
+        );
+        assert!(
+            runtime.summary().known_absent > 0,
+            "the region edge reported no absence"
+        );
     }
 }

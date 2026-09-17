@@ -7,7 +7,7 @@ use std::{
 };
 
 use tracing::{debug, info, warn};
-use veldwake_streaming::{CacheConfig, ChunkCache, DiagnosticChunkSource, StreamingConfig};
+use veldwake_streaming::{CacheConfig, ChunkCache, StreamingConfig};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -21,8 +21,10 @@ use crate::{
     camera::{Camera, CameraController},
     debug::{DebugMode, debug_primitives},
     input::{CameraAction, InputState},
+    lighting::Weather,
     renderer::{RenderOutcome, Renderer},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
+    world::{WorldSelection, requested_pose, resolve_pose},
 };
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
@@ -72,6 +74,8 @@ struct App {
     debug_mode: DebugMode,
     /// Whether the box-drawing views draw their boxes, toggled by `F2`.
     debug_boxes: bool,
+    /// Current weather state, toggled by `F3`. A switch, not a simulation.
+    weather: Weather,
 }
 
 impl Default for App {
@@ -79,7 +83,7 @@ impl Default for App {
         Self {
             renderer: None,
             streaming: None,
-            camera: Camera::default(),
+            camera: WorldSelection::from_environment().spawn_camera(requested_pose().as_deref()),
             controller: CameraController::default(),
             input: InputState::default(),
             last_frame: Instant::now(),
@@ -88,6 +92,7 @@ impl Default for App {
             fatal_error: None,
             debug_mode: DebugMode::Off,
             debug_boxes: true,
+            weather: Weather::default(),
         }
     }
 }
@@ -110,6 +115,8 @@ impl App {
         let profile = StreamingProfile::from_environment();
         let config = profile.config();
         let budget = UploadBudget::default();
+        let world = WorldSelection::from_environment();
+        let world_fingerprint = world.fingerprint();
         // The experimental disk cache is opt-in and off by default: without
         // the variable the client behaves exactly as before and touches no
         // filesystem. The client picks a directory and nothing else; the entry
@@ -117,7 +124,9 @@ impl App {
         let cache = match std::env::var_os(CACHE_DIR_VARIABLE) {
             Some(dir) => {
                 let cache_config = CacheConfig::new(PathBuf::from(dir));
-                match ChunkCache::open(&cache_config, DiagnosticChunkSource.fingerprint()) {
+                // Keyed on the selected world, so switching worlds cannot
+                // replay another world's chunks: its entries read as stale.
+                match ChunkCache::open(&cache_config, world_fingerprint) {
                     Ok((cache, report)) => {
                         info!(
                             entries_dir = %report.entries_dir.display(),
@@ -138,12 +147,13 @@ impl App {
             }
             None => None,
         };
-        let streaming = match cache {
-            Some(cache) => {
-                StreamingBridge::with_cache(config, budget, self.camera.position(), cache)
-            }
-            None => StreamingBridge::new(config, budget, self.camera.position()),
-        }
+        let streaming = StreamingBridge::with_source(
+            config,
+            budget,
+            self.camera.position(),
+            world.source(),
+            cache,
+        )
         .map_err(|error| AppRunError(error.to_string()))?;
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
@@ -153,6 +163,11 @@ impl App {
         .map_err(|error| AppRunError(error.to_string()))?;
 
         info!(
+            world = world.name(),
+            world_fingerprint = format_args!("{world_fingerprint:#018x}"),
+            pose = resolve_pose(requested_pose().as_deref()).name,
+            camera_position = ?self.camera.position(),
+            weather = self.weather.name(),
             profile = profile.name(),
             lod_selection = ?config.lod_selection,
             camera_chunk = ?streaming.desired_center(),
@@ -164,7 +179,7 @@ impl App {
             max_uploads_per_frame = budget.max_uploads_per_frame,
             soft_upload_bytes_per_frame = budget.soft_bytes_per_frame,
             max_removals_per_frame = budget.max_removals_per_frame,
-            "M3B streaming bridge started"
+            "streaming bridge started"
         );
         self.last_frame = Instant::now();
         self.renderer = Some(renderer);
@@ -172,8 +187,8 @@ impl App {
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
-             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, \
+            "controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
+             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, F3 toggles weather, \
              Escape exits"
         );
         Ok(())
@@ -202,11 +217,13 @@ impl App {
             match action {
                 DebugAction::CycleMode => self.debug_mode = self.debug_mode.next(),
                 DebugAction::ToggleBoxes => self.debug_boxes = !self.debug_boxes,
+                DebugAction::CycleWeather => self.weather = self.weather.next(),
             }
             info!(
                 mode = self.debug_mode.name(),
                 boxes = self.debug_boxes,
                 boxes_apply = self.debug_mode.uses_boxes(),
+                weather = self.weather.name(),
                 "debug view changed"
             );
             return;
@@ -248,14 +265,14 @@ impl App {
         // slots retained after prior debug use still exist.
         let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
         renderer.set_debug_primitives(&primitives);
-        renderer.update_camera(&self.camera, self.debug_mode.lod_tint());
-        let submit_started = Instant::now();
+        renderer.update_scene(&self.camera, self.weather, self.debug_mode.lod_tint());
+        let render_started = Instant::now();
         let outcome = renderer.render();
-        let submit_time = submit_started.elapsed();
+        let renderer_render_wall_time = render_started.elapsed();
         let request_next_redraw = match outcome {
             RenderOutcome::Rendered => {
                 self.frame_stats
-                    .record(now, elapsed, submit_time, report, streaming);
+                    .record(now, elapsed, renderer_render_wall_time, report, streaming);
                 self.frame_stats.report_if_due(
                     now,
                     streaming,
@@ -378,12 +395,14 @@ impl ApplicationHandler for App {
 enum DebugAction {
     CycleMode,
     ToggleBoxes,
+    CycleWeather,
 }
 
 const fn debug_action(key: KeyCode) -> Option<DebugAction> {
     match key {
         KeyCode::F1 => Some(DebugAction::CycleMode),
         KeyCode::F2 => Some(DebugAction::ToggleBoxes),
+        KeyCode::F3 => Some(DebugAction::CycleWeather),
         _ => None,
     }
 }
@@ -400,15 +419,18 @@ fn camera_action(key: KeyCode) -> Option<CameraAction> {
     }
 }
 
-/// Which streaming configuration the diagnostic client runs. Selected by the
+/// Which streaming configuration the client runs. Selected by the
 /// `VELDWAKE_PROFILE` environment variable so no CLI dependency is needed:
 /// `default` (M3B), `m3c-baseline` (radius 3, `Lod0` only), `m3c-banded`
-/// (radius 3, `Lod0`/`Lod1` band).
+/// (radius 3, `Lod0`/`Lod1` band), `m4-golden` (radius 6, `Lod0` only), and
+/// `m4-golden-banded` (radius 6 with the band, for the compatibility run).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StreamingProfile {
     Default,
     M3cBaseline,
     M3cBanded,
+    M4Golden,
+    M4GoldenBanded,
 }
 
 impl StreamingProfile {
@@ -430,6 +452,8 @@ impl StreamingProfile {
             "" | "default" | "m3b" => Some(Self::Default),
             "m3c-baseline" | "baseline" => Some(Self::M3cBaseline),
             "m3c-banded" | "banded" | "lod" => Some(Self::M3cBanded),
+            "m4-golden" | "m4" | "golden" => Some(Self::M4Golden),
+            "m4-golden-banded" | "m4-banded" => Some(Self::M4GoldenBanded),
             _ => None,
         }
     }
@@ -439,6 +463,8 @@ impl StreamingProfile {
             Self::Default => "default",
             Self::M3cBaseline => "m3c-baseline",
             Self::M3cBanded => "m3c-banded",
+            Self::M4Golden => "m4-golden",
+            Self::M4GoldenBanded => "m4-golden-banded",
         }
     }
 
@@ -447,6 +473,8 @@ impl StreamingProfile {
             Self::Default => StreamingConfig::default_profile(),
             Self::M3cBaseline => StreamingConfig::m3c_baseline(),
             Self::M3cBanded => StreamingConfig::m3c_diagnostic(),
+            Self::M4Golden => StreamingConfig::m4_golden(),
+            Self::M4GoldenBanded => StreamingConfig::m4_golden_banded(),
         }
     }
 }
@@ -491,14 +519,14 @@ impl FrameStats {
         &mut self,
         now: Instant,
         frame_time: Duration,
-        submit_time: Duration,
+        renderer_render_wall_time: Duration,
         report: FrameStreamingReport,
         streaming: &StreamingBridge,
     ) {
         self.frames += 1;
         self.accumulated_frame_time += frame_time;
-        self.submit_total += submit_time;
-        self.submit_max = self.submit_max.max(submit_time);
+        self.submit_total += renderer_render_wall_time;
+        self.submit_max = self.submit_max.max(renderer_render_wall_time);
         if self.idle_reached.is_none()
             && streaming.runtime().is_idle()
             && streaming.pending_removal_count() == 0
@@ -699,8 +727,8 @@ impl FrameStats {
             cache_encode_max_us = metrics.cache.encode.max_us,
             cache_decode_total_us = metrics.cache.decode.total_us,
             cache_decode_max_us = metrics.cache.decode.max_us,
-            interval_submit_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
-            interval_submit_max_us = self.submit_max.as_micros(),
+            renderer_render_wall_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
+            renderer_render_wall_max_us = self.submit_max.as_micros(),
             time_to_idle_ms = self.idle_reached.map(|d| d.as_secs_f64() * 1000.0),
             "M3B streaming work and budgets"
         );
@@ -729,7 +757,8 @@ mod tests {
     fn function_keys_drive_the_debug_views_and_nothing_else_does() {
         assert_eq!(debug_action(KeyCode::F1), Some(DebugAction::CycleMode));
         assert_eq!(debug_action(KeyCode::F2), Some(DebugAction::ToggleBoxes));
-        assert_eq!(debug_action(KeyCode::F3), None);
+        assert_eq!(debug_action(KeyCode::F3), Some(DebugAction::CycleWeather));
+        assert_eq!(debug_action(KeyCode::F4), None);
         assert_eq!(debug_action(KeyCode::KeyW), None);
         assert_eq!(camera_action(KeyCode::F1), None);
         assert_eq!(camera_action(KeyCode::F2), None);

@@ -12,6 +12,7 @@ glam = { version = "=0.33.7", default-features = false, features = ["std"] }
 pollster = { version = "=1.0.1", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+veldwake-procedural = { version = "=0.0.0", path = "../../crates/procedural" }
 veldwake-streaming = { version = "=0.0.0", path = "../../crates/streaming" }
 veldwake-voxel = { version = "=0.0.0", path = "../../crates/voxel" }
 wgpu = { version = "=30.0.1", default-features = false, features = ["dx12", "std", "wgsl"] }
