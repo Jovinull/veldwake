@@ -87,7 +87,7 @@ Four conclusions that cost real time to reach, kept here because they are about 
 - **Counters and pixels answer different questions and neither substitutes for the other.** A zero gap counter has coexisted with four seconds of missing floor, and a non-zero ready-but-undrawn counter has coexisted with a perfectly continuous one. Decide in advance which counter would have to move for a visual claim to be true, then look at the capture anyway.
 - **The harness is part of the evidence, not a scratch detail.** Three milestones in a row rebuilt the same Win32-driven client because only its conclusions were written down.
 - **The cheapest validity check is a counter that only moves when the camera moves.** `cpu_evictions = 0` on a traversal path means focus was lost and the whole run is fiction; it is far more reliable than watching the window.
-- **Record the formula next to any derived number.** "CPU mesh time on the path" is `snapshot_build + lod1_derivation + worker_mesh_lod0 + worker_mesh_lod1`; without that note the next run's comparison silently changes definition.
+- **Record the formula next to any derived number.** Total measured snapshot-plus-worker CPU time is `snapshot_build + worker_mesh_lod0 + worker_mesh_lod1`. `lod1_derivation` is already a subset of `snapshot_build`; report it separately and never add it a second time. Without the formula the next run's comparison silently changes definition.
 
 ## Why the scripts are not in the repository
 

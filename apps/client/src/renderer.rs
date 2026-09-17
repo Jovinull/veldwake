@@ -182,6 +182,25 @@ struct DebugSlot {
     bind_group: wgpu::BindGroup,
 }
 
+/// Debug-only work requested for the current frame. Fixed startup resources
+/// and slots retained from earlier debug use are intentionally not included.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DebugFrameWork {
+    pub primitive_allocations: usize,
+    pub uniform_writes: usize,
+    pub draw_calls: usize,
+}
+
+impl DebugFrameWork {
+    const fn planned(existing_slots: usize, primitives: usize) -> Self {
+        Self {
+            primitive_allocations: primitives.saturating_sub(existing_slots),
+            uniform_writes: primitives,
+            draw_calls: primitives,
+        }
+    }
+}
+
 fn create_debug_slot(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> DebugSlot {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("M3C debug primitive uniform"),
@@ -349,6 +368,7 @@ pub struct Renderer {
     debug_vertices: wgpu::Buffer,
     debug_slots: Vec<DebugSlot>,
     debug_draws: Vec<(usize, std::ops::Range<u32>)>,
+    debug_frame_work: DebugFrameWork,
 }
 
 impl Renderer {
@@ -574,6 +594,7 @@ impl Renderer {
             debug_vertices,
             debug_slots: Vec::new(),
             debug_draws: Vec::new(),
+            debug_frame_work: DebugFrameWork::default(),
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -623,6 +644,7 @@ impl Renderer {
     /// across frames and never shrinks below the largest set seen.
     pub fn set_debug_primitives(&mut self, primitives: &[DebugPrimitive]) {
         self.debug_draws.clear();
+        self.debug_frame_work = DebugFrameWork::planned(self.debug_slots.len(), primitives.len());
         if primitives.is_empty() {
             return;
         }
@@ -653,6 +675,14 @@ impl Renderer {
     #[must_use]
     pub fn debug_slot_count(&self) -> usize {
         self.debug_slots.len()
+    }
+
+    /// Debug-only allocations, uniform writes, and draw calls for this frame.
+    /// In `Off`, all three are zero even if slots from an earlier debug mode
+    /// remain retained in the reusable pool.
+    #[must_use]
+    pub const fn debug_frame_work(&self) -> DebugFrameWork {
+        self.debug_frame_work
     }
 
     pub fn render(&mut self) -> RenderOutcome {
@@ -1078,13 +1108,35 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        CUBE_EDGE_VERTICES, DebugPrimitiveUniform, FACE_OUTLINE_VERTICES, ModelUniform,
-        debug_line_vertices, debug_vertex_range, diagnostic_color, gpu_payload_bytes,
+        CUBE_EDGE_VERTICES, DebugFrameWork, DebugPrimitiveUniform, FACE_OUTLINE_VERTICES,
+        ModelUniform, debug_line_vertices, debug_vertex_range, diagnostic_color, gpu_payload_bytes,
         select_alpha_mode, select_present_mode, select_surface_format,
     };
     use crate::debug::{DebugKind, DebugPrimitive, DebugShape};
     use veldwake_streaming::LodLevel;
     use veldwake_voxel::{ChunkCoord, Face, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
+
+    #[test]
+    fn debug_off_plans_no_per_frame_debug_work_even_with_retained_slots() {
+        assert_eq!(DebugFrameWork::planned(0, 0), DebugFrameWork::default());
+        assert_eq!(DebugFrameWork::planned(637, 0), DebugFrameWork::default());
+        assert_eq!(
+            DebugFrameWork::planned(100, 180),
+            DebugFrameWork {
+                primitive_allocations: 80,
+                uniform_writes: 180,
+                draw_calls: 180,
+            }
+        );
+        assert_eq!(
+            DebugFrameWork::planned(637, 180),
+            DebugFrameWork {
+                primitive_allocations: 0,
+                uniform_writes: 180,
+                draw_calls: 180,
+            }
+        );
+    }
 
     #[test]
     fn debug_line_geometry_holds_the_cube_edges_then_every_face_outline() {

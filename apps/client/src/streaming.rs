@@ -128,13 +128,15 @@ impl Display for PresentationCommitError {
 
 impl Error for PresentationCommitError {}
 
-/// GPU bytes the presentation holds at one instant.
+/// Bytes of chunk-mesh buffers owned by the presentation at one instant.
 ///
 /// Committed and staged are reported separately and the peak is taken on
 /// their simultaneous sum; adding two independently observed peaks would
-/// overstate the real high-water mark.
+/// overstate the real high-water mark. This is not global GPU memory: depth
+/// textures, pipelines, debug resources, and driver/wgpu retention are outside
+/// this accounting boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct GpuBytes {
+pub struct ChunkMeshGpuBytes {
     /// Bytes of committed meshes: drawable, or deactivated and awaiting a
     /// budgeted release.
     pub committed: usize,
@@ -142,7 +144,28 @@ pub struct GpuBytes {
     pub staged: usize,
 }
 
-impl GpuBytes {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GpuPeakObservations {
+    committed: usize,
+    staged: usize,
+    total: usize,
+}
+
+impl GpuPeakObservations {
+    fn observe<P: ChunkPresentation>(&mut self, presentation: &P) -> ChunkMeshGpuBytes {
+        let residency = presentation.residency();
+        let sample = ChunkMeshGpuBytes {
+            committed: residency.bytes(),
+            staged: residency.staged_bytes(),
+        };
+        self.committed = self.committed.max(sample.committed);
+        self.staged = self.staged.max(sample.staged);
+        self.total = self.total.max(sample.total());
+        sample
+    }
+}
+
+impl ChunkMeshGpuBytes {
     #[must_use]
     pub const fn total(&self) -> usize {
         self.committed + self.staged
@@ -330,19 +353,20 @@ pub struct BridgeTotals {
     /// Atomic group commits the presentation refused because a member had no
     /// staged replacement. Nothing was committed on either side.
     pub presentation_commit_failures: u64,
-    /// Groups the presentation swapped but the runtime then refused to
-    /// commit. Readiness is verified on both sides in the same update with
-    /// nothing in between, so this must stay zero; a non-zero value is a
-    /// broken invariant, not a budget effect.
+    /// Groups whose runtime-held preflight and presentation swap succeeded but
+    /// whose CPU commit count was short. Exclusive borrowing prevents an
+    /// intervening runtime mutation, so this must stay zero; a non-zero value
+    /// is an internal invariant failure, never a budget effect.
     pub commit_invariant_failures: u64,
     /// Highest bytes held by staged (undrawn) replacements at one time, as
     /// the presentation reports them.
     pub peak_staged_bytes: usize,
     /// Highest bytes held by committed meshes at one time.
-    pub peak_gpu_committed_bytes: usize,
-    /// Highest `committed + staged` observed in a single update: the real GPU
-    /// high-water mark, never the sum of two peaks from different frames.
-    pub peak_gpu_total_bytes: usize,
+    pub peak_chunk_mesh_committed_bytes: usize,
+    /// Highest simultaneous `committed + staged` chunk-mesh bytes observed at
+    /// any presentation mutation boundary. This excludes all non-chunk GPU
+    /// resources and is never the sum of peaks from different instants.
+    pub peak_chunk_mesh_total_bytes: usize,
 }
 
 /// Presentation gaps: render-demand chunks that were drawn, stopped being
@@ -369,10 +393,9 @@ pub struct GapStats {
     pub current_missing: usize,
     /// Update frames in which at least one chunk was missing.
     pub frames_with_missing: u64,
-    /// Render-demand chunks whose replacement is CPU-ready but not drawn this
-    /// update because its transition group has not committed: never drawn
-    /// before (a frontier entrant) or waiting on a neighbor. These are not
-    /// gaps by the definition above; they are the holes that definition misses.
+    /// Non-empty render-demand meshes that are CPU-ready but not drawn this
+    /// update. These are real known-geometry coverage deficits, even when the
+    /// cause is only the bounded upload pipeline rather than seam starvation.
     pub ready_undrawn_now: usize,
     /// Highest `ready_undrawn_now` observed in one update.
     pub ready_undrawn_max: usize,
@@ -380,6 +403,25 @@ pub struct GapStats {
     pub ready_undrawn_frames: u64,
     /// Sum over updates of `ready_undrawn_now`.
     pub ready_undrawn_chunk_frames: u64,
+    /// Render-demand records not yet known absent, committed, or CPU-ready.
+    /// Geometry is not known yet, so this is frontier pipeline latency rather
+    /// than a proven ready-geometry hole.
+    pub frontier_pipeline_pending_now: usize,
+    pub frontier_pipeline_pending_max: usize,
+    /// Non-empty CPU-ready meshes that have not acquired matching staging;
+    /// normally these are waiting behind the per-frame upload budget.
+    pub ready_awaiting_upload_now: usize,
+    pub ready_awaiting_upload_max: usize,
+    /// Non-empty CPU-ready meshes already staged but withheld because another
+    /// member of their seam-coherent transition group is not ready/staged (or
+    /// because the presentation refused the atomic swap).
+    pub ready_blocked_transition_now: usize,
+    pub ready_blocked_transition_max: usize,
+    /// Non-empty meshes the runtime says are committed but the bridge does not
+    /// have under that exact stamp. This is an invariant failure, never budget
+    /// latency, and must remain zero.
+    pub committed_missing_now: usize,
+    pub committed_missing_max: usize,
     /// Transition groups that could not commit this update, and the largest.
     pub blocked_groups_now: usize,
     pub blocked_group_max: usize,
@@ -398,6 +440,26 @@ impl GapStats {
             + self.membership_gaps
             + self.data_gaps
             + self.unattributed_gaps
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadyUndrawnReason {
+    AwaitingUpload,
+    BlockedByTransition,
+}
+
+fn classify_ready_undrawn(
+    is_presented: bool,
+    is_empty: bool,
+    has_matching_staging: bool,
+) -> Option<ReadyUndrawnReason> {
+    if is_presented || is_empty {
+        None
+    } else if has_matching_staging {
+        Some(ReadyUndrawnReason::BlockedByTransition)
+    } else {
+        Some(ReadyUndrawnReason::AwaitingUpload)
     }
 }
 
@@ -436,7 +498,7 @@ pub struct StreamingBridge {
     missing_since: BTreeMap<ChunkCoord, (u64, Option<InvalidationCause>)>,
     gaps: GapStats,
     /// What the presentation held at the end of the last update.
-    gpu_bytes: GpuBytes,
+    chunk_mesh_gpu_bytes: ChunkMeshGpuBytes,
 }
 
 impl StreamingBridge {
@@ -459,7 +521,7 @@ impl StreamingBridge {
             frame: 0,
             missing_since: BTreeMap::new(),
             gaps: GapStats::default(),
-            gpu_bytes: GpuBytes::default(),
+            chunk_mesh_gpu_bytes: ChunkMeshGpuBytes::default(),
         })
     }
 
@@ -513,32 +575,41 @@ impl StreamingBridge {
 
         report.deactivations = self.reconcile_draw_set(presentation);
         self.discard_obsolete_staging(presentation);
-        let (uploads, upload_bytes, deferred) = self.stage_ready_meshes(presentation);
+        let (uploads, upload_bytes, deferred, stage_peaks) = self.stage_ready_meshes(presentation);
+        self.record_gpu_peaks(stage_peaks);
         report.uploads = uploads;
         report.upload_bytes = upload_bytes;
         report.deferred_uploads = deferred;
-        let (commits, committed_chunks) = self.commit_ready_groups(presentation);
+        let (commits, committed_chunks, commit_peaks) = self.commit_ready_groups(presentation);
+        self.record_gpu_peaks(commit_peaks);
         report.commits = commits;
         report.committed_chunks = committed_chunks;
         report.removals = self.release_pending(presentation);
         self.account_gaps();
-        self.sample_gpu_bytes(presentation);
+        self.sample_chunk_mesh_gpu_bytes(presentation);
         Ok(report)
     }
 
-    /// Records the GPU bytes the presentation actually holds after this
-    /// update. The peak is the highest simultaneous `committed + staged`.
-    fn sample_gpu_bytes<P: ChunkPresentation>(&mut self, presentation: &P) {
-        let residency = presentation.residency();
-        let sample = GpuBytes {
-            committed: residency.bytes(),
-            staged: residency.staged_bytes(),
-        };
-        self.totals.peak_gpu_committed_bytes =
-            self.totals.peak_gpu_committed_bytes.max(sample.committed);
-        self.totals.peak_staged_bytes = self.totals.peak_staged_bytes.max(sample.staged);
-        self.totals.peak_gpu_total_bytes = self.totals.peak_gpu_total_bytes.max(sample.total());
-        self.gpu_bytes = sample;
+    /// Records the chunk-mesh bytes the presentation actually holds after this
+    /// update. Uploads are additionally observed immediately after every
+    /// staging mutation, before an atomic commit can release the old buffers.
+    fn sample_chunk_mesh_gpu_bytes<P: ChunkPresentation>(&mut self, presentation: &P) {
+        let mut observations = GpuPeakObservations::default();
+        let sample = observations.observe(presentation);
+        self.record_gpu_peaks(observations);
+        self.chunk_mesh_gpu_bytes = sample;
+    }
+
+    fn record_gpu_peaks(&mut self, observations: GpuPeakObservations) {
+        self.totals.peak_chunk_mesh_committed_bytes = self
+            .totals
+            .peak_chunk_mesh_committed_bytes
+            .max(observations.committed);
+        self.totals.peak_staged_bytes = self.totals.peak_staged_bytes.max(observations.staged);
+        self.totals.peak_chunk_mesh_total_bytes = self
+            .totals
+            .peak_chunk_mesh_total_bytes
+            .max(observations.total);
     }
 
     /// Staged replacements whose chunk no longer has a pending target (its
@@ -568,13 +639,14 @@ impl StreamingBridge {
     fn commit_ready_groups<P: ChunkPresentation>(
         &mut self,
         presentation: &mut P,
-    ) -> (usize, usize) {
+    ) -> (usize, usize, GpuPeakObservations) {
         let groups = self.runtime.transition_groups();
         let mut commits = 0;
         let mut chunks = 0;
         let mut blocked_groups = 0;
         let mut blocked_group_max = 0;
         let mut constrained_undrawn = 0;
+        let mut peak_observations = GpuPeakObservations::default();
         for group in groups {
             let fully_staged = group.iter().all(|coord| {
                 match (self.staged.get(coord), self.runtime.ready_mesh(*coord)) {
@@ -588,21 +660,28 @@ impl StreamingBridge {
                 constrained_undrawn += self.constrained_undrawn_in(&group);
                 continue;
             }
-            // The presentation is asked first and answers for the whole group:
-            // nothing is marked committed on either side unless every member
-            // can swap in this update.
-            if let Err(error) = presentation.commit_staged_group(&group) {
-                self.totals.presentation_commit_failures += 1;
-                warn!(
-                    %error,
-                    "presentation refused an atomic group commit; the group keeps its current meshes"
-                );
-                blocked_groups += 1;
-                blocked_group_max = blocked_group_max.max(group.len());
-                constrained_undrawn += self.constrained_undrawn_in(&group);
-                continue;
-            }
-            let committed = self.runtime.commit_group(&group);
+            // Runtime readiness is preflighted while its mutable borrow remains
+            // held through the presentation's all-or-nothing swap and the CPU
+            // commit. Nothing can invalidate the runtime preflight between the
+            // two phases; a refused presentation leaves the runtime untouched.
+            let committed = match self
+                .runtime
+                .commit_group_with(&group, || presentation.commit_staged_group(&group))
+            {
+                Ok(committed) => committed,
+                Err(error) => {
+                    self.totals.presentation_commit_failures += 1;
+                    warn!(
+                        %error,
+                        "presentation refused an atomic group commit; the group keeps its current meshes"
+                    );
+                    blocked_groups += 1;
+                    blocked_group_max = blocked_group_max.max(group.len());
+                    constrained_undrawn += self.constrained_undrawn_in(&group);
+                    continue;
+                }
+            };
+            peak_observations.observe(presentation);
             if committed != group.len() {
                 // Both sides verified readiness in this update with nothing in
                 // between, so this is unreachable; report it instead of
@@ -631,7 +710,7 @@ impl StreamingBridge {
         self.gaps.constrained_undrawn_now = constrained_undrawn;
         self.gaps.constrained_undrawn_max =
             self.gaps.constrained_undrawn_max.max(constrained_undrawn);
-        (commits, chunks)
+        (commits, chunks, peak_observations)
     }
 
     /// Undrawn members of a group that also holds a drawn member: entrants
@@ -641,8 +720,14 @@ impl StreamingBridge {
         let (drawn, undrawn) = group.iter().fold((0, 0), |(drawn, undrawn), coord| {
             if self.runtime.committed_mesh(*coord).is_some() {
                 (drawn + 1, undrawn)
-            } else {
+            } else if self
+                .runtime
+                .ready_mesh(*coord)
+                .is_some_and(|(_, mesh)| !mesh.indices().is_empty())
+            {
                 (drawn, undrawn + 1)
+            } else {
+                (drawn, undrawn)
             }
         });
         if drawn > 0 { undrawn } else { 0 }
@@ -685,17 +770,68 @@ impl StreamingBridge {
         if self.gaps.current_missing > 0 {
             self.gaps.frames_with_missing += 1;
         }
-        let ready_undrawn = self
-            .runtime
-            .render_ready_meshes()
-            .filter(|(coord, _, _)| !self.presented.contains_key(coord))
-            .count();
+        let mut ready_awaiting_upload = 0;
+        let mut ready_blocked_transition = 0;
+        for (coord, stamp, mesh) in self.runtime.render_ready_meshes() {
+            match classify_ready_undrawn(
+                self.presented.contains_key(&coord),
+                mesh.indices().is_empty(),
+                self.staged
+                    .get(&coord)
+                    .is_some_and(|(staged, _)| staged == stamp),
+            ) {
+                Some(ReadyUndrawnReason::AwaitingUpload) => ready_awaiting_upload += 1,
+                Some(ReadyUndrawnReason::BlockedByTransition) => {
+                    ready_blocked_transition += 1;
+                }
+                None => {}
+            }
+        }
+        let ready_undrawn = ready_awaiting_upload + ready_blocked_transition;
         self.gaps.ready_undrawn_now = ready_undrawn;
         self.gaps.ready_undrawn_max = self.gaps.ready_undrawn_max.max(ready_undrawn);
         if ready_undrawn > 0 {
             self.gaps.ready_undrawn_frames += 1;
             self.gaps.ready_undrawn_chunk_frames += ready_undrawn as u64;
         }
+        self.gaps.ready_awaiting_upload_now = ready_awaiting_upload;
+        self.gaps.ready_awaiting_upload_max = self
+            .gaps
+            .ready_awaiting_upload_max
+            .max(ready_awaiting_upload);
+        self.gaps.ready_blocked_transition_now = ready_blocked_transition;
+        self.gaps.ready_blocked_transition_max = self
+            .gaps
+            .ready_blocked_transition_max
+            .max(ready_blocked_transition);
+
+        let committed_missing = self
+            .runtime
+            .render_committed_meshes()
+            .filter(|(coord, stamp, mesh)| {
+                !mesh.indices().is_empty() && self.presented.get(coord) != Some(*stamp)
+            })
+            .count();
+        self.gaps.committed_missing_now = committed_missing;
+        self.gaps.committed_missing_max = self.gaps.committed_missing_max.max(committed_missing);
+
+        let frontier_pending = render
+            .iter()
+            .filter(|coord| {
+                !self.presented.contains_key(coord)
+                    && !matches!(
+                        self.runtime.residency_status(**coord),
+                        Some(veldwake_streaming::ResidencyStatus::KnownAbsent)
+                    )
+                    && self.runtime.ready_mesh(**coord).is_none()
+                    && self.runtime.committed_mesh(**coord).is_none()
+            })
+            .count();
+        self.gaps.frontier_pipeline_pending_now = frontier_pending;
+        self.gaps.frontier_pipeline_pending_max = self
+            .gaps
+            .frontier_pipeline_pending_max
+            .max(frontier_pending);
     }
 
     /// Any presented mesh that the runtime no longer commits (a data change,
@@ -739,7 +875,7 @@ impl StreamingBridge {
     fn stage_ready_meshes<P: ChunkPresentation>(
         &mut self,
         presentation: &mut P,
-    ) -> (usize, usize, usize) {
+    ) -> (usize, usize, usize, GpuPeakObservations) {
         let center = self.runtime.center();
         let mut candidates: Vec<(u128, ChunkCoord, MeshStamp, &Mesh)> = self
             .runtime
@@ -755,6 +891,7 @@ impl StreamingBridge {
         let mut bytes_done = 0;
         let mut deferred = 0;
         let mut staged_now = Vec::new();
+        let mut peak_observations = GpuPeakObservations::default();
         for (_, coord, stamp, mesh) in candidates {
             let restage = self.staged.contains_key(&coord);
             if mesh.indices().is_empty() {
@@ -763,6 +900,7 @@ impl StreamingBridge {
                     Ok(_) => {
                         self.totals.empty_meshes_presented += 1;
                         staged_now.push((coord, stamp, 0, restage));
+                        peak_observations.observe(presentation);
                     }
                     Err(error) => {
                         self.totals.upload_failures += 1;
@@ -796,6 +934,10 @@ impl StreamingBridge {
                         }
                     }
                     staged_now.push((coord, stamp, uploaded, restage));
+                    // Observe before the later group commit can release the
+                    // old active buffers. Sampling only at update end misses
+                    // this transient but real overlap.
+                    peak_observations.observe(presentation);
                 }
                 Err(error) => {
                     self.totals.upload_failures += 1;
@@ -812,7 +954,7 @@ impl StreamingBridge {
         self.totals.uploads += uploads as u64;
         self.totals.upload_bytes += bytes_done as u64;
         self.totals.upload_budget_deferrals += deferred as u64;
-        (uploads, bytes_done, deferred)
+        (uploads, bytes_done, deferred, peak_observations)
     }
 
     fn release_pending<P: ChunkPresentation>(&mut self, presentation: &mut P) -> usize {
@@ -866,8 +1008,8 @@ impl StreamingBridge {
 
     /// GPU bytes the presentation held at the end of the last update.
     #[must_use]
-    pub const fn gpu_bytes(&self) -> GpuBytes {
-        self.gpu_bytes
+    pub const fn chunk_mesh_gpu_bytes(&self) -> ChunkMeshGpuBytes {
+        self.chunk_mesh_gpu_bytes
     }
 
     /// Chunks the presentation is drawing, with the stamp each was committed
@@ -940,9 +1082,9 @@ pub(crate) mod tests {
     use veldwake_voxel::{CHUNK_EDGE, Chunk, ChunkCoord, Face, Mesh, WorldVoxelCoord};
 
     use super::{
-        CameraAnchor, CameraAnchorError, ChunkPresentation, ChunkUploadError, GpuResidency,
-        PresentationCommitError, StreamingBridge, UploadAdmission, UploadBudget, camera_chunk,
-        camera_world_voxel,
+        CameraAnchor, CameraAnchorError, ChunkPresentation, ChunkUploadError, GpuPeakObservations,
+        GpuResidency, PresentationCommitError, ReadyUndrawnReason, StreamingBridge,
+        UploadAdmission, UploadBudget, camera_chunk, camera_world_voxel, classify_ready_undrawn,
     };
 
     /// One held mesh in the double: bytes, quads, level, drawable.
@@ -965,13 +1107,27 @@ pub(crate) mod tests {
         levels_sent: Vec<(ChunkCoord, LodLevel)>,
         /// Group commits refused because a member had nothing staged.
         refused_groups: usize,
+        /// Independent mutation-boundary oracle for chunk-mesh byte peaks.
+        observed_peak: GpuPeakObservations,
     }
 
     impl FakePresentation {
         /// Drops a staged replacement behind the bridge's back, simulating a
         /// presentation that lost GPU state the bridge believes is staged.
         pub(crate) fn lose_staging(&mut self, coord: ChunkCoord) -> bool {
-            self.staged.remove(&coord).is_some()
+            let removed = self.staged.remove(&coord).is_some();
+            self.observe_bytes();
+            removed
+        }
+
+        fn observe_bytes(&mut self) {
+            let residency = self.residency();
+            self.observed_peak.committed = self.observed_peak.committed.max(residency.bytes());
+            self.observed_peak.staged = self.observed_peak.staged.max(residency.staged_bytes());
+            self.observed_peak.total = self
+                .observed_peak
+                .total
+                .max(residency.bytes() + residency.staged_bytes());
         }
     }
 
@@ -990,6 +1146,7 @@ pub(crate) mod tests {
             self.levels_sent.push((coord, lod));
             if mesh.indices().is_empty() {
                 self.staged.insert(coord, None);
+                self.observe_bytes();
                 return Ok(0);
             }
             let bytes = self.gpu_payload_bytes(mesh);
@@ -1002,6 +1159,7 @@ pub(crate) mod tests {
                     active: true,
                 }),
             );
+            self.observe_bytes();
             Ok(bytes)
         }
 
@@ -1026,24 +1184,32 @@ pub(crate) mod tests {
                     }
                 }
             }
+            self.observe_bytes();
             Ok(())
         }
 
         fn discard_staged(&mut self, coord: ChunkCoord) -> bool {
-            self.staged.remove(&coord).is_some()
+            let removed = self.staged.remove(&coord).is_some();
+            self.observe_bytes();
+            removed
         }
 
         fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
-            self.chunks
+            let deactivated = self
+                .chunks
                 .get_mut(&coord)
                 .map(|held| held.active = false)
-                .is_some()
+                .is_some();
+            self.observe_bytes();
+            deactivated
         }
 
         fn remove_chunk(&mut self, coord: ChunkCoord) -> bool {
             self.removals += 1;
             self.staged.remove(&coord);
-            self.chunks.remove(&coord).is_some()
+            let removed = self.chunks.remove(&coord).is_some();
+            self.observe_bytes();
+            removed
         }
 
         fn residency(&self) -> GpuResidency {
@@ -1242,6 +1408,49 @@ pub(crate) mod tests {
         assert_eq!(budget.admit(2, 800, 1), UploadAdmission::Defer);
         assert_eq!(budget.admit(0, 0, 5_000), UploadAdmission::AdmitOversized);
         assert_eq!(budget.admit(1, 400, 5_000), UploadAdmission::Defer);
+    }
+
+    #[test]
+    fn coverage_metrics_separate_frontier_pipeline_from_ready_upload_wait() {
+        assert_eq!(
+            classify_ready_undrawn(false, false, false),
+            Some(ReadyUndrawnReason::AwaitingUpload)
+        );
+        assert_eq!(
+            classify_ready_undrawn(false, false, true),
+            Some(ReadyUndrawnReason::BlockedByTransition)
+        );
+        assert_eq!(classify_ready_undrawn(true, false, true), None);
+        assert_eq!(classify_ready_undrawn(false, true, true), None);
+
+        let budget = UploadBudget {
+            max_uploads_per_frame: 0,
+            soft_bytes_per_frame: 0,
+            max_removals_per_frame: 8,
+        };
+        let mut fake = FakePresentation::default();
+        let mut bridge = bridge_at(Vec3::new(5.0, 5.0, 5.0), budget);
+
+        bridge.account_gaps();
+        assert!(bridge.gaps().frontier_pipeline_pending_now > 0);
+        assert_eq!(bridge.gaps().ready_undrawn_now, 0);
+
+        for _ in 0..20_000 {
+            if let Err(error) = bridge.update(&mut fake) {
+                panic!("streaming update failed: {error}");
+            }
+            if bridge.runtime().is_idle() && bridge.gaps().ready_awaiting_upload_now > 0 {
+                break;
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        assert!(bridge.gaps().ready_awaiting_upload_now > 0);
+        assert_eq!(bridge.gaps().ready_blocked_transition_now, 0);
+        assert_eq!(
+            bridge.gaps().ready_undrawn_now,
+            bridge.gaps().ready_awaiting_upload_now
+        );
+        assert_eq!(bridge.gaps().committed_missing_now, 0);
     }
 
     #[test]
@@ -1735,62 +1944,82 @@ pub(crate) mod tests {
         assert_presented_seams_coherent(&bridge, &fake);
     }
 
-    /// The GPU byte peak is the highest simultaneous `committed + staged`,
-    /// never the sum of two peaks observed in different updates.
+    /// The chunk-mesh byte peak includes transient staging before same-update
+    /// commits; end-of-update sampling alone provably misses that overlap.
     #[test]
     fn the_gpu_byte_peak_is_the_highest_simultaneous_total() {
         let mut fake = FakePresentation::default();
-        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
-        let mut committed_max = 0;
-        let mut staged_max = 0;
-        let mut total_max = 0;
-        let mut moved = false;
-        for _ in 0..40_000 {
-            let report = match bridge.update(&mut fake) {
-                Ok(report) => report,
-                Err(error) => panic!("update failed: {error}"),
-            };
-            let sample = bridge.gpu_bytes();
-            let residency = fake.residency();
-            assert_eq!(
-                sample.committed,
-                residency.bytes(),
-                "the sample must come from the presentation"
-            );
-            assert_eq!(sample.staged, residency.staged_bytes());
-            assert_eq!(sample.total(), sample.committed + sample.staged);
-            committed_max = committed_max.max(sample.committed);
-            staged_max = staged_max.max(sample.staged);
-            total_max = total_max.max(sample.total());
+        let budget = UploadBudget {
+            max_uploads_per_frame: usize::MAX,
+            soft_bytes_per_frame: usize::MAX,
+            max_removals_per_frame: usize::MAX,
+        };
+        let mut bridge = match StreamingBridge::new(
+            StreamingConfig::m3c_diagnostic(),
+            budget,
+            Vec3::new(5.0, 5.0, 5.0),
+        ) {
+            Ok(bridge) => bridge,
+            Err(error) => panic!("bridge failed to start: {error}"),
+        };
+        settle(&mut bridge, &mut fake);
 
-            let quiet = report.uploads == 0
-                && report.deactivations == 0
-                && report.removals == 0
-                && report.deferred_uploads == 0;
-            if quiet && bridge.runtime().is_idle() && bridge.pending_removal_count() == 0 {
-                if moved {
-                    break;
-                }
-                // Crossing the band stages replacements while committed meshes
-                // are still drawn, so the two components overlap in time.
-                assert!(matches!(
-                    bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
-                    CameraAnchor::Moved(_)
-                ));
-                moved = true;
+        // Prepare every replacement before allowing the bridge to upload. One
+        // update must therefore hold all old committed buffers and all staged
+        // replacements before its atomic commits release the old set.
+        let target = ChunkCoord::new(1, 0, 0);
+        if let Err(error) = bridge.runtime_mut().set_demand_center(target) {
+            panic!("demand move failed: {error}");
+        }
+        assert!(matches!(
+            bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
+            CameraAnchor::Moved(coord) if coord == target
+        ));
+        for _ in 0..40_000 {
+            if let Err(error) = bridge.runtime_mut().poll() {
+                panic!("streaming poll failed: {error}");
+            }
+            if bridge.runtime().is_idle() {
+                break;
             }
             thread::sleep(Duration::from_micros(50));
         }
-        assert!(moved, "the run never settled");
-        assert!(total_max > 0, "nothing was ever held on the GPU");
-        assert!(staged_max > 0, "no replacement was ever staged");
+        assert!(
+            bridge.runtime().is_idle(),
+            "replacements never became ready"
+        );
+
+        fake.observed_peak = GpuPeakObservations::default();
+        bridge.totals.peak_chunk_mesh_committed_bytes = 0;
+        bridge.totals.peak_staged_bytes = 0;
+        bridge.totals.peak_chunk_mesh_total_bytes = 0;
+        let report = match bridge.update(&mut fake) {
+            Ok(report) => report,
+            Err(error) => panic!("update failed: {error}"),
+        };
+        assert!(report.uploads > 0 && report.commits > 0);
+        let end_sample = bridge.chunk_mesh_gpu_bytes();
+        assert_eq!(end_sample.committed, fake.residency().bytes());
+        assert_eq!(end_sample.staged, fake.residency().staged_bytes());
 
         let totals = bridge.totals();
-        assert_eq!(totals.peak_gpu_total_bytes, total_max);
-        assert_eq!(totals.peak_gpu_committed_bytes, committed_max);
-        assert_eq!(totals.peak_staged_bytes, staged_max);
+        assert_eq!(
+            totals.peak_chunk_mesh_total_bytes, fake.observed_peak.total,
+            "bridge peak must equal the presentation's mutation-boundary oracle"
+        );
+        assert_eq!(
+            totals.peak_chunk_mesh_committed_bytes,
+            fake.observed_peak.committed
+        );
+        assert_eq!(totals.peak_staged_bytes, fake.observed_peak.staged);
         assert!(
-            totals.peak_gpu_total_bytes <= committed_max + staged_max,
+            fake.observed_peak.total > end_sample.total(),
+            "this transition must expose the peak that update-end sampling misses"
+        );
+        assert!(fake.observed_peak.staged > 0);
+        assert!(
+            totals.peak_chunk_mesh_total_bytes
+                <= fake.observed_peak.committed + fake.observed_peak.staged,
             "the real peak can never exceed the sum of the component peaks"
         );
     }
@@ -1856,12 +2085,17 @@ pub(crate) mod tests {
         let mut refused = false;
         for _ in 0..20_000 {
             // Take the GPU state away from everything the bridge believes is
-            // staged, so the next group that becomes ready cannot swap whole.
+            // staged and visibly non-empty, so the next refused group also
+            // exercises the ready-visible transition-blocked accounting.
             for coord in bridge.staged_coords() {
                 let Some(stamp) = bridge.staged_stamp(coord).copied() else {
                     continue;
                 };
-                if fake.lose_staging(coord) {
+                let visible = bridge
+                    .runtime()
+                    .ready_mesh(coord)
+                    .is_some_and(|(_, mesh)| !mesh.indices().is_empty());
+                if visible && fake.lose_staging(coord) {
                     sabotaged.insert(coord, stamp);
                 }
             }
@@ -1881,6 +2115,12 @@ pub(crate) mod tests {
                 );
             }
             if bridge.totals().presentation_commit_failures > 0 {
+                assert_eq!(
+                    bridge.gaps().ready_undrawn_now,
+                    0,
+                    "a refused replacement is not a hole while its old committed mesh remains drawn"
+                );
+                assert_eq!(bridge.gaps().ready_awaiting_upload_now, 0);
                 refused = true;
                 break;
             }
@@ -1893,6 +2133,24 @@ pub(crate) mod tests {
             "the runtime must never commit fewer chunks than the presentation swapped"
         );
         assert_presented_seams_coherent(&bridge, &fake);
+    }
+
+    #[test]
+    fn committed_missing_is_an_invariant_failure_not_budget_latency() {
+        let mut fake = FakePresentation::default();
+        let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
+        settle(&mut bridge, &mut fake);
+        let coord = bridge
+            .runtime()
+            .render_committed_meshes()
+            .find(|(_, _, mesh)| !mesh.indices().is_empty())
+            .map(|(coord, _, _)| coord)
+            .unwrap_or_else(|| panic!("diagnostic source produced no visible committed mesh"));
+        assert!(bridge.presented.remove(&coord).is_some());
+
+        bridge.account_gaps();
+        assert_eq!(bridge.gaps().committed_missing_now, 1);
+        assert_eq!(bridge.gaps().ready_undrawn_now, 0);
     }
 
     #[test]

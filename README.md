@@ -4,7 +4,7 @@
 
 Veldwake is a planned 3D voxel action RPG about exploration in a persistent, systemic procedural world. Geography, creatures, settlements, economies, and events can evolve, while player actions leave observable consequences. Its audiovisual identity is intended to be produced predominantly through code and constrained generators rather than a traditional manual asset pipeline.
 
-Current status: **M3B streaming runtime is merged; M3C initial LOD and the streaming debug views are implemented on their feature branch and measured — one coarse level cuts the peak GPU bytes of committed meshes 53%, but counting the replacements an atomic transition must hold at the same time the real GPU high-water mark falls only 19% while upload bytes rise 81%, so LOD stays opt-in; level transitions no longer open holes**. The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets, with keyboard-toggled debug views (`F1`/`F2`) that are off by default. It is an engineering proof, not a playable world: there is no world generation, persistence, or gameplay, and LOD exists only as an experiment behind `VELDWAKE_PROFILE=m3c-banded`, never enabled by default.
+Current status: **M3B streaming runtime is merged; M3C initial LOD and streaming debug views are implemented and QA-hardened on their feature branch. Mutation-boundary accounting shows the banded profile reduces presentation-owned chunk-mesh high-water by only 16.9% while upload bytes rise 81.6%, so LOD stays opt-in. Atomic transitions prevent mixed seams and previously drawn presentation-only meshes from blinking; short-lived frontier coverage deficits remain explicitly measured.** The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets. It is an engineering proof, not a playable world: there is no world generation, persistence, or gameplay.
 
 ## Principles
 
@@ -30,7 +30,7 @@ cargo run -p veldwake-client
 cargo run --release -p veldwake-streaming --bin streaming-probe
 ```
 
-Diagnostic controls: WASD moves, Space/Control move vertically, hold the right mouse button to look, and Escape exits. `F1` cycles the streaming debug views (off, level tint, residency wireframes, chunk boundaries and transition groups) and `F2` toggles the wireframe boxes; both are off by default and cost nothing while off. Set `RUST_LOG` to change diagnostic filtering and `VELDWAKE_PROFILE` (`default`, `m3c-baseline`, `m3c-banded`) to choose the streaming profile.
+Diagnostic controls: WASD moves, Space/Control move vertically, hold the right mouse button to look, and Escape exits. `F1` cycles the streaming debug views (off, level tint, residency wireframes, chunk boundaries and transition groups) and `F2` toggles the wireframe boxes. `Off` performs no per-frame debug primitive allocation, debug uniform write, or debug draw; fixed startup debug resources and previously pooled slots remain allocated. Set `RUST_LOG` to change diagnostic filtering and `VELDWAKE_PROFILE` (`default`, `m3c-baseline`, `m3c-banded`) to choose the streaming profile.
 
 ## Start here
 

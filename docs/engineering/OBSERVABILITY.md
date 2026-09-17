@@ -1,6 +1,6 @@
 # Observability
 
-Status: **Accepted requirement; implementation staged**.
+Status: **Accepted requirement; M3 streaming telemetry and debug views implemented, broader engine observability remains incremental**.
 
 Development builds should explain performance and procedural causality, not merely display failures.
 
@@ -38,16 +38,16 @@ The ready-but-undrawn family closes the blind spot by counting render-demand chu
 **Did the atomic commit hold?**
 `transition_commits`, `transition_chunks`, `committed_retained`, `committed_dropped`, `restaged`, `staged_discarded`. `presentation_commit_failures` counts groups the presentation refused because a member had no staged replacement, and `commit_invariant_failures` counts the unreachable case of the runtime committing fewer chunks than the presentation swapped. Both must be zero; a non-zero value is a broken invariant, not a budget effect.
 
-**How much GPU memory is really held?**
+**How many presentation-owned chunk-mesh GPU bytes are held?**
 `chunk_mesh_committed_bytes` and `gpu_staged_bytes` are the two live components, `chunk_mesh_total_bytes` their sum, and `peak_chunk_mesh_total_bytes` the highest simultaneous sum observed. `peak_chunk_mesh_committed_bytes` and `peak_staged_bytes` are component peaks and **must never be added together**: they occur in different frames, so their sum overstates the real high-water mark, while quoting the committed peak alone understates it by the entire cost of atomic transitions, which hold a replacement and the mesh it replaces at the same time. Reporting the committed peak alone once overstated LOD's memory saving by roughly a factor of three; the recorded figures live in `PERFORMANCE.md`, not here. Sample the owner of the memory, and sample often enough to catch the peak: a per-update sample can miss a spike that a staging mutation creates and a group commit resolves inside the same update.
 
 **Is streaming keeping up?**
 `loads_dispatched`, `meshes_dispatched`, `queued_loads`, `queued_meshes`, `jobs_in_flight`, `stale_loads`, `stale_meshes`, `stale_lod`, `fairness_loads`, `hard_cap_blocks`, `cpu_evictions`, `eviction_budget_hits`, `interval_uploads`, `interval_upload_bytes`, `interval_deferred_uploads`, `removal_budget_hits`, `upload_failures`, `oversized_uploads`, `time_to_idle_ms`. Stale counters record results correctly rejected, not failures.
 
 **What does LOD cost?**
-Per-level desired, ready, committed, and GPU counts (`lod0_*`, `lod1_*`), per-level upload totals, `lod_swaps`, and the four timing totals with maxima: `snapshot_build`, `lod1_derivation`, `worker_mesh_lod0`, `worker_mesh_lod1`. CPU mesh time on a path is their sum, and that convention must be kept when comparing runs.
+Per-level desired, ready, committed, and GPU counts (`lod0_*`, `lod1_*`), per-level upload totals, `lod_swaps`, and the four timing totals with maxima: `snapshot_build`, `lod1_derivation`, `worker_mesh_lod0`, `worker_mesh_lod1`. `lod1_derivation` is a measured subset of `snapshot_build`, not an additional phase. Total measured CPU work for snapshot construction plus worker meshing is therefore `snapshot_build + worker_mesh_lod0 + worker_mesh_lod1`; report `lod1_derivation` separately to explain the snapshot cost and never add it twice.
 
 **What is the debug overlay doing?**
-`debug_mode`, `debug_boxes`, `debug_draws` (one draw per primitive last frame), `debug_slots` (pooled uniform buffers and bind groups, the high-water mark of the pattern's cost). With the views off both counts are zero and no uniform is written, which is what keeps benchmarks comparable.
+`debug_mode`, `debug_boxes`, `debug_draws` (one draw per primitive last frame), `debug_slots` (pooled uniform buffers and bind groups, the high-water mark of the pattern's retained cost), `debug_primitive_allocations`, and `debug_uniform_writes`. With the view `Off`, per-frame debug draws, primitive allocations, and uniform writes are zero; `debug_slots` may remain non-zero after a view has been used because the renderer deliberately retains and reuses those fixed-capacity resources. Mesh upload budgets are independent of debug work. Fixed startup pipeline/unit-geometry resources and retained slots mean that `Off` is not a claim of zero total debug memory.
 
 Frame timing is `frames`, `report_seconds`, `average_wall_frame_ms`, `observed_fps`, `interval_submit_mean_us`, and `interval_submit_max_us`. Under vsync the frame average is pinned at the refresh interval and only tells you when something has fallen *below* it; submit timing moves in the opposite direction when frame rate drops, because the vsync wait leaves the measured region.

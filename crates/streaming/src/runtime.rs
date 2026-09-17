@@ -634,6 +634,17 @@ impl StreamingRuntime {
     /// Every member of `group` has a ready replacement for its current target.
     #[must_use]
     pub fn group_is_ready(&self, group: &[ChunkCoord]) -> bool {
+        // This is a frame-path preflight. Avoid allocating a temporary set;
+        // transition groups are small and normally sorted, while the public
+        // API still rejects non-adjacent duplicates from arbitrary callers.
+        if group.is_empty()
+            || group
+                .iter()
+                .enumerate()
+                .any(|(index, coord)| group[..index].contains(coord))
+        {
+            return false;
+        }
         group.iter().all(|coord| {
             let Some(record) = self.records.get(coord) else {
                 return false;
@@ -654,9 +665,30 @@ impl StreamingRuntime {
     /// presentation in the same frame and must have proven, before calling,
     /// that the presentation can swap every member.
     pub fn commit_group(&mut self, group: &[ChunkCoord]) -> usize {
-        if !self.group_is_ready(group) {
-            return 0;
+        match self.commit_group_with(group, || Ok::<(), std::convert::Infallible>(())) {
+            Ok(committed) => committed,
+            Err(error) => match error {},
         }
+    }
+
+    /// Commits a ready group only after an external participant has completed
+    /// its own all-or-nothing swap.
+    ///
+    /// Readiness (including non-empty, unique membership) is checked before
+    /// `commit_external` runs. The mutable borrow of the runtime then remains
+    /// held through the callback and the CPU commit, so no load result, demand
+    /// update, or generation change can invalidate the preflight between the
+    /// two phases. If the external swap refuses, the runtime is unchanged.
+    pub fn commit_group_with<E>(
+        &mut self,
+        group: &[ChunkCoord],
+        commit_external: impl FnOnce() -> Result<(), E>,
+    ) -> Result<usize, E> {
+        if !self.group_is_ready(group) {
+            return Ok(0);
+        }
+        commit_external()?;
+
         let mut committed = 0;
         for coord in group {
             let Some(target) = self.current_mesh_stamp(*coord) else {
@@ -682,7 +714,7 @@ impl StreamingRuntime {
             self.metrics.transition_commits += 1;
             self.metrics.transition_chunks_committed += committed as u64;
         }
-        committed
+        Ok(committed)
     }
 
     /// Replaces the resident content of `coord`, bumping its content
@@ -2419,6 +2451,25 @@ mod tests {
             Some(MeshStatus::CpuReady),
             "the ready member must not be committed on its own"
         );
+        assert!(runtime.committed_mesh(center).is_none());
+
+        let mut external_called = false;
+        assert!(!runtime.group_is_ready(&[]));
+        assert!(!runtime.group_is_ready(&[center, center]));
+        assert!(!runtime.group_is_ready(&[center, neighbor, center]));
+        let duplicate = runtime.commit_group_with(&[center, center], || {
+            external_called = true;
+            Ok::<(), ()>(())
+        });
+        assert_eq!(duplicate, Ok(0));
+        assert!(
+            !external_called,
+            "invalid membership must be rejected before the external swap"
+        );
+
+        let refused = runtime.commit_group_with(&[center], || Err("presentation refused"));
+        assert_eq!(refused, Err("presentation refused"));
+        assert_eq!(runtime.mesh_status(center), Some(MeshStatus::CpuReady));
         assert!(runtime.committed_mesh(center).is_none());
 
         assert_eq!(runtime.commit_group(&[center]), 1);

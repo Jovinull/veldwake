@@ -205,7 +205,9 @@ impl App {
                 return;
             }
         };
-        // Off computes nothing, uploads nothing, and draws nothing.
+        // Off produces no primitives, debug-slot allocations, debug uniform
+        // writes, or debug draws. Fixed startup resources and any reusable
+        // slots retained after prior debug use still exist.
         let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
         renderer.set_debug_primitives(&primitives);
         renderer.update_camera(&self.camera, self.debug_mode.lod_tint());
@@ -505,7 +507,8 @@ impl FrameStats {
         let totals = streaming.totals();
         let gaps = streaming.gaps();
         let gpu = renderer.residency();
-        let gpu_bytes = streaming.gpu_bytes();
+        let chunk_mesh_gpu_bytes = streaming.chunk_mesh_gpu_bytes();
+        let debug_work = renderer.debug_frame_work();
         info!(
             frames = self.frames,
             report_seconds = report_span.as_secs_f64(),
@@ -572,7 +575,7 @@ impl FrameStats {
             snapshot_bytes_dispatched = metrics.snapshot_bytes_dispatched,
             resident_payload_bytes = summary.resident_payload_bytes,
             cpu_mesh_bytes = summary.cpu_mesh_bytes,
-            gpu_bytes = gpu.bytes(),
+            chunk_mesh_active_bytes = gpu.bytes(),
             total_uploads_lod0 = totals.uploads_lod0,
             total_uploads_lod1 = totals.uploads_lod1,
             total_upload_bytes_lod0 = totals.upload_bytes_lod0,
@@ -594,6 +597,14 @@ impl FrameStats {
             ready_undrawn_max = gaps.ready_undrawn_max,
             ready_undrawn_frames = gaps.ready_undrawn_frames,
             ready_undrawn_chunk_frames = gaps.ready_undrawn_chunk_frames,
+            frontier_pipeline_pending_now = gaps.frontier_pipeline_pending_now,
+            frontier_pipeline_pending_max = gaps.frontier_pipeline_pending_max,
+            ready_awaiting_upload_now = gaps.ready_awaiting_upload_now,
+            ready_awaiting_upload_max = gaps.ready_awaiting_upload_max,
+            ready_blocked_transition_now = gaps.ready_blocked_transition_now,
+            ready_blocked_transition_max = gaps.ready_blocked_transition_max,
+            committed_missing_now = gaps.committed_missing_now,
+            committed_missing_max = gaps.committed_missing_max,
             blocked_groups_now = gaps.blocked_groups_now,
             blocked_group_max = gaps.blocked_group_max,
             constrained_undrawn_now = gaps.constrained_undrawn_now,
@@ -610,16 +621,18 @@ impl FrameStats {
             transition_pending = summary.transition_pending,
             gpu_staged = gpu.staged(),
             gpu_staged_bytes = gpu.staged_bytes(),
-            gpu_committed_bytes = gpu_bytes.committed,
-            gpu_total_bytes = gpu_bytes.total(),
-            peak_gpu_committed_bytes = totals.peak_gpu_committed_bytes,
-            peak_gpu_total_bytes = totals.peak_gpu_total_bytes,
+            chunk_mesh_committed_bytes = chunk_mesh_gpu_bytes.committed,
+            chunk_mesh_total_bytes = chunk_mesh_gpu_bytes.total(),
+            peak_chunk_mesh_committed_bytes = totals.peak_chunk_mesh_committed_bytes,
+            peak_chunk_mesh_total_bytes = totals.peak_chunk_mesh_total_bytes,
             presentation_commit_failures = totals.presentation_commit_failures,
             commit_invariant_failures = totals.commit_invariant_failures,
             debug_mode = debug_mode.name(),
             debug_boxes,
             debug_draws = renderer.debug_draw_count(),
             debug_slots = renderer.debug_slot_count(),
+            debug_primitive_allocations = debug_work.primitive_allocations,
+            debug_uniform_writes = debug_work.uniform_writes,
             snapshot_build_total_us = metrics.snapshot_build.total_us,
             snapshot_build_max_us = metrics.snapshot_build.max_us,
             lod1_derivation_total_us = metrics.lod1_derivation.total_us,

@@ -8,9 +8,10 @@
 //! transition group from the runtime. The renderer receives primitives and
 //! draws lines; it decides nothing.
 //!
-//! [`DebugMode::Off`] yields no primitives at all, so the shipped rendering
-//! path costs exactly what it cost before: no boxes, no uploads, no draws, and
-//! no share of the mesh upload budget.
+//! [`DebugMode::Off`] yields no primitives at all: no per-frame debug-slot
+//! allocation, debug uniform write, debug draw, or share of the mesh upload
+//! budget. The fixed debug pipeline/unit geometry created at startup, and any
+//! reusable slots retained after a debug mode was used, still exist.
 
 use veldwake_streaming::{LodLevel, MeshStatus, ResidencyStatus};
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Face};
