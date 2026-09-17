@@ -650,7 +650,7 @@ Release client, Intel Iris Xe / D3D12, 1600×900, debug `Off`, the same 12 s set
 | peak committed chunk-mesh bytes | 12,101,888 | 5,838,128 | −51.8% |
 | peak staged chunk-mesh bytes | 253,472 | 4,470,864 | — |
 | **peak simultaneous chunk-mesh bytes** | **12,101,888** | **10,053,696** | **−16.9%** |
-| peak simultaneous chunk-mesh bytes, five later runs | 12,101,888 | 9,734,816 to 9,800,128 | −19.0% to −19.6% |
+| peak simultaneous chunk-mesh bytes, later runs | 12,101,888 (one run) | 9,734,816 to 9,800,128 (five runs) | −19.0% to −19.6% |
 | uploads / upload bytes | 167 / 41,275,744 | 546 / 74,961,072 | +81.6% bytes |
 | mesh jobs / level swaps | 501 / 0 | 1,394 / 654 | — |
 | ready-undrawn max / updates / chunk-frames | 0 / 0 / 0 | 2 / 15 / 21 | actual short-lived coverage deficits |
@@ -681,7 +681,7 @@ The order is now: reject, release, acquire, install.
 
 Three regression tests pin the contract: a restage releases before acquiring and the peak staged bytes equal one replacement rather than the sum of two, with an empty restage still replacing correctly and not raising the peak; a restage never activates the previous replacement and leaves the committed mesh drawn, with the later commit swapping in the newest replacement; and an injected rejection before allocation leaves valid staging intact and still committable.
 
-**Measurement: the benchmark path never restages.** Five driven runs across the audited binary and the fixed one report `restaged = 0` in both profiles, so the corrected branch is never taken there and the high-water figures are unchanged by this fix. The reason is structural rather than lucky: a target change re-dirties the record, `ready_mesh` becomes `None`, and `discard_obsolete_staging` releases the staging before the new mesh is ready. A restage needs the replacement to become CPU-ready in the same update that invalidated it, which one worker and a mesh job of hundreds of microseconds make rare. The path is real and reachable, which is why it is covered by unit tests rather than by the benchmark.
+**Measurement: the benchmark path never restages.** Six driven runs report `restaged = 0`: one `m3c-baseline` and three `m3c-banded` at this commit, and two `m3c-banded` rebuilt from the audited `c877130`. The corrected branch is never taken there, so the high-water figures are unchanged by this fix. The reason is structural rather than lucky: a target change re-dirties the record, `ready_mesh` becomes `None`, and `discard_obsolete_staging` releases the staging before the new mesh is ready. A restage needs the replacement to become CPU-ready in the same update that invalidated it, which one worker and a mesh job of hundreds of microseconds make rare. The path is real and reachable, which is why it is covered by unit tests rather than by the benchmark.
 
 **The documented peak is one sample, not a constant.** Re-validating exposed that the banded peak varies between runs of the identical path:
 
