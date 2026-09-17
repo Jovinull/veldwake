@@ -1,12 +1,115 @@
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
-use veldwake_streaming::{StreamingConfig, StreamingRuntime, TimingStat};
+use veldwake_streaming::{
+    CacheConfig, CacheMetrics, ChunkCache, DiagnosticChunkSource, PayloadEncoding, StreamingConfig,
+    StreamingRuntime, TimingStat,
+};
 use veldwake_voxel::ChunkCoord;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run("m3b-default", StreamingConfig::default())?;
     run("m3c-banded", StreamingConfig::m3c_diagnostic())?;
+    for encoding in [PayloadEncoding::Raw, PayloadEncoding::Rle] {
+        cache_experiment(encoding)?;
+    }
     Ok(())
+}
+
+/// The M3D disk-cache experiment: one identical settle run with the cache off,
+/// then cold, then warm twice, so cold-versus-warm and warm stability are both
+/// visible. Entries live under the system temporary directory; the repository
+/// working tree is never written to.
+fn cache_experiment(encoding: PayloadEncoding) -> Result<(), Box<dyn std::error::Error>> {
+    let label = encoding.name();
+    let config = StreamingConfig::default();
+    let centre = ChunkCoord::default();
+    let cache_config = CacheConfig::new(cache_root(label)).with_payload_encoding(encoding);
+    let fingerprint = DiagnosticChunkSource.fingerprint();
+
+    // Phase 1: no cache at all. The baseline every other phase is compared to.
+    let started = Instant::now();
+    let mut runtime = StreamingRuntime::new(config, centre)?;
+    settle(&mut runtime, started)?;
+    cache_report(label, "off", &runtime, started, None);
+
+    // Phase 2: cold. The cache is emptied first so the run is reproducible.
+    let (cache, _) = ChunkCache::open(&cache_config, fingerprint)?;
+    cache.clear()?;
+    for phase in ["cold", "warm", "warm-again"] {
+        let (cache, open_report) = ChunkCache::open(&cache_config, fingerprint)?;
+        if open_report.temporaries_removed > 0 {
+            println!(
+                "cache encoding={label} phase={phase} swept_temporaries={}",
+                open_report.temporaries_removed
+            );
+        }
+        let started = Instant::now();
+        let mut runtime = StreamingRuntime::with_cache(config, centre, cache)?;
+        settle(&mut runtime, started)?;
+        let footprint = ChunkCache::open(&cache_config, fingerprint)?
+            .0
+            .footprint()?;
+        cache_report(label, phase, &runtime, started, Some(footprint));
+    }
+    Ok(())
+}
+
+fn cache_root(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("veldwake-probe-cache-{label}"))
+}
+
+fn cache_report(
+    encoding: &str,
+    phase: &str,
+    runtime: &StreamingRuntime,
+    started: Instant,
+    footprint: Option<veldwake_streaming::CacheFootprint>,
+) {
+    let metrics = runtime.metrics();
+    let cache: &CacheMetrics = &metrics.cache;
+    let (entries, disk_bytes) = footprint.map_or((0, 0), |f| (f.entries, f.bytes));
+    println!(
+        "cache encoding={encoding} phase={phase} time_to_idle_us={} source_loads={} tracked={} resident={} resident_bytes={} cpu_mesh_bytes={}",
+        started.elapsed().as_micros(),
+        metrics.load_jobs_dispatched,
+        runtime.tracked_count(),
+        runtime.resident_payload_count(),
+        runtime.logical_resident_bytes(),
+        runtime.summary().cpu_mesh_bytes
+    );
+    println!(
+        "cache encoding={encoding} phase={phase} lookups={} hits_present={} hits_absent={} misses={} stale={} corrupt={} read_failures={} rejected_removed={} rejected_delete_failures={} source_fallbacks={}",
+        cache.lookups,
+        cache.hits_present,
+        cache.hits_absent,
+        cache.misses,
+        cache.stale_rejects,
+        cache.corrupt_rejects,
+        cache.read_failures,
+        cache.rejected_entries_removed,
+        cache.rejected_entry_delete_failures,
+        cache.source_fallbacks
+    );
+    println!(
+        "cache encoding={encoding} phase={phase} write_attempts={} writes={} writes_skipped={} write_failures={} bytes_read={} bytes_written={} disk_entries={entries} disk_bytes={disk_bytes}",
+        cache.write_attempts,
+        cache.writes,
+        cache.writes_skipped,
+        cache.write_failures,
+        cache.bytes_read,
+        cache.bytes_written
+    );
+    println!(
+        "cache encoding={encoding} phase={phase} encode={} decode={} stale_loads={} stale_meshes={} hard_cap_blocks={}",
+        timing(&cache.encode),
+        timing(&cache.decode),
+        metrics.stale_load_results,
+        metrics.stale_mesh_results,
+        metrics.hard_cap_blocks
+    );
 }
 
 fn run(profile: &str, config: StreamingConfig) -> Result<(), Box<dyn std::error::Error>> {

@@ -11,6 +11,7 @@ use veldwake_voxel::{
 };
 
 use crate::{
+    cache::{CacheLoadOutcome, ChunkCache},
     demand::{DemandError, DemandSets, StreamingConfig},
     source::{DiagnosticChunkSource, SourceChunk},
     types::{LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken, SeamContract},
@@ -56,6 +57,46 @@ pub struct TrackedState {
     pub pending: bool,
 }
 
+/// Disk-cache accounting, aggregated. Never one line per chunk.
+///
+/// These counters describe the experimental chunk cache only. They are kept
+/// apart from the streaming counters so a cache experiment can never make the
+/// streaming numbers look different than they are.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CacheMetrics {
+    pub lookups: u64,
+    /// Entries replayed as chunk content.
+    pub hits_present: u64,
+    /// Entries replayed as authoritative absence, counted separately so an
+    /// absence hit is never mistaken for content.
+    pub hits_absent: u64,
+    /// No file for the key. Never authoritative absence.
+    pub misses: u64,
+    /// Entries from another format version, cell encoding, or source identity.
+    pub stale_rejects: u64,
+    /// Entries that failed an integrity or identity check.
+    pub corrupt_rejects: u64,
+    /// The entry existed but could not be read at all.
+    pub read_failures: u64,
+    /// Rejected entries successfully deleted before best-effort republish.
+    /// Publication has its own counters; removal alone is not called repair.
+    pub rejected_entries_removed: u64,
+    /// Rejected entries that could not be deleted. Source fallback still
+    /// succeeds, but a future lookup may reject the same poisoned file again.
+    pub rejected_entry_delete_failures: u64,
+    /// Loads answered by the source because the cache could not answer.
+    pub source_fallbacks: u64,
+    pub write_attempts: u64,
+    pub writes: u64,
+    /// Publishes skipped because an entry was already visible for the key.
+    pub writes_skipped: u64,
+    pub write_failures: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub encode: TimingStat,
+    pub decode: TimingStat,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeMetrics {
     pub load_jobs_dispatched: u64,
@@ -93,6 +134,8 @@ pub struct RuntimeMetrics {
     pub worker_mesh_lod0: TimingStat,
     /// Worker time inside the mesher for `Lod1` jobs.
     pub worker_mesh_lod1: TimingStat,
+    /// Experimental disk cache, all zero when no cache is configured.
+    pub cache: CacheMetrics,
 }
 
 /// Count, total, and maximum of a measured duration, in microseconds.
@@ -313,10 +356,35 @@ pub struct StreamingRuntime {
 }
 
 impl StreamingRuntime {
+    /// Starts a runtime with no disk cache: every load asks the source.
     pub fn new(config: StreamingConfig, center: ChunkCoord) -> Result<Self, RuntimeError> {
+        Self::start(config, center, None)
+    }
+
+    /// Starts a runtime whose worker consults `cache` before the source.
+    ///
+    /// The caller opens the cache before construction; all subsequent lookup
+    /// and publication work lives on the worker thread. Behaviour is otherwise
+    /// identical to [`Self::new`]: the same content reaches the runtime whether
+    /// it came from disk or from the source, and tokens, generations, and
+    /// stale-result rejection are unaffected.
+    pub fn with_cache(
+        config: StreamingConfig,
+        center: ChunkCoord,
+        cache: ChunkCache,
+    ) -> Result<Self, RuntimeError> {
+        Self::start(config, center, Some(cache))
+    }
+
+    fn start(
+        config: StreamingConfig,
+        center: ChunkCoord,
+        cache: Option<ChunkCache>,
+    ) -> Result<Self, RuntimeError> {
         let config = config.validate()?;
         let demand = DemandSets::around(center, config)?;
-        let worker = Worker::spawn(DiagnosticChunkSource).map_err(RuntimeError::WorkerStart)?;
+        let worker =
+            Worker::spawn(DiagnosticChunkSource, cache).map_err(RuntimeError::WorkerStart)?;
         let mut runtime = Self {
             config,
             center,
@@ -1280,7 +1348,13 @@ impl StreamingRuntime {
                 coord,
                 token,
                 source,
-            } => self.integrate_load(coord, token, source),
+                cache,
+            } => {
+                // Cache accounting is folded even when the result itself is
+                // stale: the disk work happened either way.
+                self.record_cache(cache);
+                self.integrate_load(coord, token, source)
+            }
             WorkerResult::Mesh(result) => {
                 match result.stamp.lod {
                     LodLevel::Lod0 => self.metrics.worker_mesh_lod0.record(result.mesh_time),
@@ -1288,6 +1362,36 @@ impl StreamingRuntime {
                 }
                 self.integrate_mesh(result.stamp, result.mesh)
             }
+        }
+    }
+
+    fn record_cache(&mut self, outcome: CacheLoadOutcome) {
+        let cache = &mut self.metrics.cache;
+        cache.lookups += outcome.lookups;
+        cache.hits_present += outcome.hits_present;
+        cache.hits_absent += outcome.hits_absent;
+        cache.misses += outcome.misses;
+        cache.stale_rejects += outcome.stale_rejects;
+        cache.corrupt_rejects += outcome.corrupt_rejects;
+        cache.read_failures += outcome.read_failures;
+        cache.rejected_entries_removed += outcome.rejected_entries_removed;
+        cache.rejected_entry_delete_failures += outcome.rejected_entry_delete_failures;
+        cache.source_fallbacks += outcome.source_fallbacks;
+        cache.write_attempts += outcome.write_attempts;
+        cache.writes += outcome.writes;
+        cache.writes_skipped += outcome.writes_skipped;
+        cache.write_failures += outcome.write_failures;
+        cache.bytes_read += outcome.bytes_read;
+        cache.bytes_written += outcome.bytes_written;
+        if outcome.bytes_read > 0 {
+            cache
+                .decode
+                .record(Duration::from_nanos(outcome.decode_nanos));
+        }
+        if outcome.write_attempts > 0 {
+            cache
+                .encode
+                .record(Duration::from_nanos(outcome.encode_nanos));
         }
     }
 
@@ -1566,6 +1670,213 @@ mod tests {
 
     fn runtime_with(config: StreamingConfig) -> Result<StreamingRuntime, RuntimeError> {
         StreamingRuntime::new(config, ChunkCoord::default())
+    }
+
+    /// A small bounded configuration whose whole demand set settles quickly,
+    /// used by the disk-cache integration tests.
+    fn cache_probe_config() -> StreamingConfig {
+        StreamingConfig {
+            render_radius: 0,
+            dependency_halo: 1,
+            retention_radius: 1,
+            hard_resident_cap: 16,
+            ..StreamingConfig::default()
+        }
+    }
+
+    fn settle_runtime(runtime: &mut StreamingRuntime) -> Result<(), RuntimeError> {
+        for _ in 0..100_000 {
+            runtime.poll()?;
+            if runtime.is_idle() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+        Err(RuntimeError::WorkerDisconnected)
+    }
+
+    fn cache_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "veldwake-runtime-cache-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn open_cache(root: &std::path::Path) -> crate::ChunkCache {
+        let config = crate::CacheConfig::new(root.to_path_buf());
+        match crate::ChunkCache::open(&config, DiagnosticChunkSource.fingerprint()) {
+            Ok((cache, _)) => cache,
+            Err(error) => panic!("cache failed to open: {error}"),
+        }
+    }
+
+    /// Quad count of the centre chunk's ready mesh: an end-to-end fingerprint
+    /// of the content the runtime received, whatever produced it.
+    fn centre_quads(runtime: &StreamingRuntime, centre: ChunkCoord) -> usize {
+        match runtime.ready_mesh(centre) {
+            Some((_, mesh)) => mesh.quad_count(),
+            None => panic!("the centre chunk has no ready mesh"),
+        }
+    }
+
+    /// With no cache configured nothing touches the disk and every cache
+    /// counter stays zero, so the cacheless path is provably unchanged.
+    #[test]
+    fn a_runtime_without_a_cache_records_no_cache_activity() -> Result<(), RuntimeError> {
+        let mut runtime = runtime_with(cache_probe_config())?;
+        settle_runtime(&mut runtime)?;
+        assert_eq!(runtime.metrics().cache, CacheMetrics::default());
+        assert!(runtime.metrics().load_jobs_dispatched > 0);
+        Ok(())
+    }
+
+    /// Cold fills the cache from the source; warm replays it without asking
+    /// the source at all, and both produce the same content.
+    #[test]
+    fn a_warm_cache_reproduces_the_same_content_without_the_source() -> Result<(), RuntimeError> {
+        let root = cache_root("warm");
+        // A centre on the corridor edge: the halo straddles it, so the run
+        // stores both content and authoritative absence.
+        let centre = ChunkCoord::new(4, 0, 4);
+        let cold_quads;
+        let cold_loads;
+        {
+            let mut cold =
+                StreamingRuntime::with_cache(cache_probe_config(), centre, open_cache(&root))?;
+            settle_runtime(&mut cold)?;
+            let cache = &cold.metrics().cache;
+            assert!(cache.lookups > 0, "a cold run must consult the cache");
+            assert_eq!(cache.hits_present, 0, "nothing can hit on a cold cache");
+            assert_eq!(cache.hits_absent, 0);
+            assert_eq!(cache.misses, cache.lookups);
+            assert_eq!(cache.source_fallbacks, cache.lookups);
+            assert!(cache.writes > 0 && cache.bytes_written > 0);
+            assert_eq!(cache.write_failures, 0);
+            assert_eq!(cache.corrupt_rejects, 0);
+            assert_eq!(cache.stale_rejects, 0);
+            cold_quads = centre_quads(&cold, centre);
+            cold_loads = cold.metrics().load_jobs_dispatched;
+        }
+
+        let mut warm =
+            StreamingRuntime::with_cache(cache_probe_config(), centre, open_cache(&root))?;
+        settle_runtime(&mut warm)?;
+        let cache = &warm.metrics().cache;
+        assert_eq!(cache.misses, 0, "a warm cache must not miss");
+        assert_eq!(cache.source_fallbacks, 0, "the source must not be asked");
+        assert_eq!(cache.write_attempts, 0, "nothing new to publish");
+        assert!(cache.hits_present > 0, "content must be replayed");
+        assert!(
+            cache.hits_absent > 0,
+            "the corridor edge stores authoritative absence too"
+        );
+        assert_eq!(cache.hits_present + cache.hits_absent, cache.lookups);
+        assert!(cache.bytes_read > 0);
+        assert_eq!(
+            centre_quads(&warm, centre),
+            cold_quads,
+            "a cache hit must produce the same geometry as the source"
+        );
+        assert_eq!(warm.metrics().load_jobs_dispatched, cold_loads);
+        assert_eq!(warm.metrics().stale_load_results, 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A cache never changes what the runtime accepts: a result whose token is
+    /// no longer current is rejected whether it came from disk or the source.
+    #[test]
+    fn a_stale_token_is_rejected_with_a_cache_configured() -> Result<(), RuntimeError> {
+        let root = cache_root("stale");
+        let mut runtime = StreamingRuntime::with_cache(
+            cache_probe_config(),
+            ChunkCoord::default(),
+            open_cache(&root),
+        )?;
+        settle_runtime(&mut runtime)?;
+        assert!(runtime.metrics().cache.writes > 0);
+
+        let coord = ChunkCoord::default();
+        let current = match runtime.request_token(coord) {
+            Some(token) => token,
+            None => panic!("the centre chunk must be tracked"),
+        };
+        let stale = RequestToken(current.0.saturating_sub(1));
+        assert_ne!(stale, current);
+        let before = runtime.metrics().stale_load_results;
+        let cache_before = runtime.metrics().cache.lookups;
+        runtime.integrate_result(WorkerResult::Load {
+            coord,
+            token: stale,
+            source: SourceChunk::KnownAbsent,
+            cache: CacheLoadOutcome {
+                lookups: 1,
+                hits_absent: 1,
+                bytes_read: 48,
+                decode_nanos: 1,
+                ..CacheLoadOutcome::default()
+            },
+        })?;
+        assert_eq!(
+            runtime.metrics().stale_load_results,
+            before + 1,
+            "a stale token is rejected regardless of the cache"
+        );
+        assert_ne!(
+            runtime.residency_status(coord),
+            Some(ResidencyStatus::KnownAbsent),
+            "the rejected result must not change residency"
+        );
+        assert_eq!(
+            runtime.metrics().cache.lookups,
+            cache_before + 1,
+            "disk work is counted even when the load result is stale"
+        );
+        assert_eq!(runtime.metrics().cache.hits_absent, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A new source identity cannot replay the previous identity's entries.
+    #[test]
+    fn a_changed_source_fingerprint_refills_from_the_source() -> Result<(), RuntimeError> {
+        let root = cache_root("fingerprint");
+        {
+            let mut first = StreamingRuntime::with_cache(
+                cache_probe_config(),
+                ChunkCoord::default(),
+                open_cache(&root),
+            )?;
+            settle_runtime(&mut first)?;
+            assert!(first.metrics().cache.writes > 0);
+        }
+
+        // A different identity for the same directory: a new key space, so the
+        // old entries are unreachable rather than silently accepted.
+        let config = crate::CacheConfig::new(root.clone());
+        let other =
+            match crate::ChunkCache::open(&config, DiagnosticChunkSource.fingerprint() ^ 0xff) {
+                Ok((cache, _)) => cache,
+                Err(error) => panic!("cache failed to open: {error}"),
+            };
+        let mut second =
+            StreamingRuntime::with_cache(cache_probe_config(), ChunkCoord::default(), other)?;
+        settle_runtime(&mut second)?;
+        let cache = &second.metrics().cache;
+        assert_eq!(
+            cache.hits_present, 0,
+            "another identity must not be replayed"
+        );
+        assert_eq!(cache.hits_absent, 0);
+        assert_eq!(cache.misses, cache.lookups);
+        assert!(cache.writes > 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     fn force_load(

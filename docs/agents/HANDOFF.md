@@ -4,13 +4,17 @@ Last updated: 2026-09-17
 
 ## Current position
 
-M1, M2, M3A, and M3B are merged into `main`; M3C0–M3C3 are implemented and independently QA-hardened on `feat/m3c-lod-debug`, awaiting external review/PR. LOD remains opt-in. QA fixed three proof gaps: (1) chunk-mesh GPU high-water is now sampled after every staging mutation and group commit, not only at update end; the same path measures 12,101,888 baseline versus 10,053,696 banded bytes (−16.9%, KI-013); (2) coverage metrics distinguish frontier pipeline latency, ready waiting for upload, ready blocked by a transition group, and runtime-committed/bridge-missing state; the banded path observed two short-lived transition-blocked ready deficits, so “zero holes” is no longer claimed (KI-014); (3) `commit_group_with` holds the runtime's exclusive mutable borrow from group preflight through presentation swap and CPU commit, rejects duplicate/empty groups, and leaves both sides unchanged on presentation refusal. M3C3 `Off` means zero per-frame debug primitive allocations, debug uniform writes, and debug draws, with mesh upload budgets untouched; fixed startup resources and previously allocated reusable slots remain (KI-012). Final QA passed 141/141 headless tests, every repository gate/probe, and D3D12 smoke across all three profiles. `veldwake-voxel` owns CPU geometry; `veldwake-streaming` owns headless orchestration; the client bridge and renderer own disposable presentation state only.
+M1, M2, M3A, M3B, and M3C are merged into `main`; M3C landed through PR #6 at merge commit `c669929b00427c2f438529b572931400a24b6d3d` with green remote CI. M3D is implemented and independently QA-hardened on `feat/m3d-cache-persistence`, making M3 technically complete on that branch but not merged. QA corrected the cache thread-boundary claim, made rejected-entry deletion failure observable, coupled the source fingerprint to actual finite-source behavior, bounded hostile file reads, narrowed the public API, and added adversarial format/recovery/concurrency tests. The cache remains opt-in and is not a save. LOD remains opt-in with KI-013/KI-014 unchanged. `veldwake-voxel` owns CPU geometry; `veldwake-streaming` owns headless orchestration and the discardable cache; the client bridge and renderer own disposable presentation state only.
 
 ## Continue here
 
-Submit `feat/m3c-lod-debug` for external review/PR. Do not begin the swap-churn investigation, M3D, or M4 in this handoff. Any later LOD policy work must re-run the documented baseline/banded path and keep LOD opt-in unless the recorded decision rule passes.
+Submit `feat/m3d-cache-persistence` for external review/PR. Do not begin the swap-churn investigation or M4 in this handoff.
+
+M3D adds an experimental disk cache inside the streaming worker's load path. It is a cache and never a save: entries are reproducible, rejections fall back to the source, and nothing is authoritative. The measurement is deliberately unflattering — warm is slower than no cache on this fixture because the diagnostic source is trivial (KI-016) — and the cache has no eviction policy (KI-015). Judge the boundary, the format discipline, and the failure handling; do not read the timings as a speedup claim. Any later LOD policy work must re-run the documented baseline/banded path and keep LOD opt-in unless the recorded decision rule passes.
 
 External review then closed one more accounting gap: `Renderer::stage_chunk` now rejects, releases the obsolete replacement, allocates, and installs, in that order, so a restage never holds two replacements of one chunk inside a call the bridge cannot sample. The benchmark path reports `restaged = 0` in every run, so the figures are unchanged and the path is covered by unit tests. Re-validation also showed the banded peak is run-dependent (9,734,816 to 10,053,696 across runs of the identical path); quote the range or quote a number with its run.
+
+Earlier position, preserved for context: submit `feat/m3c-lod-debug` for external review/PR.
 
 ## Read before continuing
 
@@ -23,7 +27,12 @@ External review then closed one more accounting gap: `Renderer::stage_chunk` now
 
 ## Immediate risks
 
-- Do not turn the documented future crate map into empty crates.
+- Do not turn the documented future crate map into empty crates. M3D deliberately added no crate: the cache has one consumer, needs no build isolation, and inverts no dependency, so it lives in `crates/streaming`. Re-argue that from the crate test in `ARCHITECTURE.md` before splitting it out.
+- The disk cache is discardable by definition. Never let a cache failure reach the runtime as data loss, turn I/O or corruption into AIR, or treat a missing file as `KnownAbsent`; absence is a typed entry. A rejected entry falls back to the source even when deletion or publication fails. Preserve the separate `rejected_entries_removed` and `rejected_entry_delete_failures` evidence.
+- Changing `DiagnosticChunkSource::load` must make the exhaustive finite-corpus behavioral-signature test fail. Update `SOURCE_BEHAVIOR_SIGNATURE` and the locked runtime fingerprint deliberately; bump `SOURCE_SCHEMA_REVISION` when the semantic contract changes beyond output bytes. A descriptor-only locked value is not sufficient.
+- A cache key has one deterministic logical value, but temp-and-rename is not physically write-once on every platform: Windows normally refuses replacement while Unix may atomically replace an existing target. Concurrent publishers must remain semantically equivalent. Do not promise a cross-platform winner; preserve atomic visibility and validation instead.
+- `ChunkCache::open` sweeps temporaries and walks the footprint synchronously. In the client it runs once during opt-in event-loop initialization, not in the frame hot path. Per-chunk reads, decodes, fallback, and publication run on the worker. Do not broaden the claim to “the cache never touches the event-loop thread.”
+- Cache counters live in `RuntimeMetrics::cache` and must stay separate from the streaming counters, and all zero when no cache is configured. That contract is what keeps M3B and M3C evidence comparable.
 - Do not let the M2 voxel representation or mesher depend on `wgpu`, `winit`, or the diagnostic camera.
 - The M1 cube has been replaced by the M2 fixture; its palette and framing remain diagnostic presentation, not game art direction.
 - Keep chunk dimensions, material encoding, coordinate order, and mesh winding explicit and tested; accidental conventions will become expensive compatibility constraints.

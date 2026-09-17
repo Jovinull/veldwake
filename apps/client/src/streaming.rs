@@ -15,7 +15,8 @@ use std::{
 use glam::Vec3;
 use tracing::{error, warn};
 use veldwake_streaming::{
-    InvalidationCause, LodLevel, MeshStamp, RuntimeError, StreamingConfig, StreamingRuntime,
+    ChunkCache, InvalidationCause, LodLevel, MeshStamp, RuntimeError, StreamingConfig,
+    StreamingRuntime,
 };
 use veldwake_voxel::{ChunkCoord, Mesh, WorldCoordinateRangeError, WorldVoxelCoord};
 
@@ -516,8 +517,34 @@ impl StreamingBridge {
         budget: UploadBudget,
         camera_position: Vec3,
     ) -> Result<Self, BridgeInitError> {
+        Self::start(config, budget, camera_position, None)
+    }
+
+    /// Same bridge, with an experimental disk cache in the runtime's load
+    /// path. The client chooses a directory and learns nothing else: the entry
+    /// format, its validation, and its failure modes stay inside the streaming
+    /// crate.
+    pub fn with_cache(
+        config: StreamingConfig,
+        budget: UploadBudget,
+        camera_position: Vec3,
+        cache: ChunkCache,
+    ) -> Result<Self, BridgeInitError> {
+        Self::start(config, budget, camera_position, Some(cache))
+    }
+
+    fn start(
+        config: StreamingConfig,
+        budget: UploadBudget,
+        camera_position: Vec3,
+        cache: Option<ChunkCache>,
+    ) -> Result<Self, BridgeInitError> {
         let center = camera_chunk(camera_position).map_err(BridgeInitError::Anchor)?;
-        let runtime = StreamingRuntime::new(config, center).map_err(BridgeInitError::Runtime)?;
+        let runtime = match cache {
+            Some(cache) => StreamingRuntime::with_cache(config, center, cache),
+            None => StreamingRuntime::new(config, center),
+        }
+        .map_err(BridgeInitError::Runtime)?;
         Ok(Self {
             runtime,
             desired_center: center,

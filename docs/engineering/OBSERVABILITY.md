@@ -44,6 +44,9 @@ The ready-but-undrawn family closes the blind spot by counting render-demand chu
 **Is streaming keeping up?**
 `loads_dispatched`, `meshes_dispatched`, `queued_loads`, `queued_meshes`, `jobs_in_flight`, `stale_loads`, `stale_meshes`, `stale_lod`, `fairness_loads`, `hard_cap_blocks`, `cpu_evictions`, `eviction_budget_hits`, `interval_uploads`, `interval_upload_bytes`, `interval_deferred_uploads`, `removal_budget_hits`, `upload_failures`, `oversized_uploads`, `time_to_idle_ms`. Stale counters record results correctly rejected, not failures.
 
+**What did the experimental disk cache do?**
+`cache_lookups`, present/absence hits, misses, stale/corrupt rejects, read failures, rejected entries removed, rejected-entry delete failures, source fallbacks, write attempts/writes/skips/failures, bytes read/written, and encode/decode total/max time appear in the same aggregate work line. They stay zero when `VELDWAKE_CACHE_DIR` is unset. Cache accounting is integrated before request-token validation: a stale load remains rejected by streaming while the disk work that already happened remains visible. A delete failure is not called a repair; repeated reject + delete-failure + skipped-write growth identifies a poisoned entry that could not be replaced. Cold-open footprint and temporary-sweep results are logged once at startup, not per frame.
+
 **What does LOD cost?**
 Per-level desired, ready, committed, and GPU counts (`lod0_*`, `lod1_*`), per-level upload totals, `lod_swaps`, and the four timing totals with maxima: `snapshot_build`, `lod1_derivation`, `worker_mesh_lod0`, `worker_mesh_lod1`. `lod1_derivation` is a measured subset of `snapshot_build`, not an additional phase. Total measured CPU work for snapshot construction plus worker meshing is therefore `snapshot_build + worker_mesh_lod0 + worker_mesh_lod1`; report `lod1_derivation` separately to explain the snapshot cost and never add it twice.
 

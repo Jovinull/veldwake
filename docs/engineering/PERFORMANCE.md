@@ -44,3 +44,24 @@ The M3C2 follow-up (transition model) re-measured the same path on the same day:
 **Chunk-mesh GPU bytes, corrected twice.** Counting only committed meshes produced the original −59% claim. Adding staged bytes but sampling only at update end produced −19%; that still missed old committed buffers coexisting with replacements staged and committed in the same update. The bridge now samples after each stage and group commit. Independent QA on the same driven path with debug off recorded baseline **12,101,888** versus banded **10,053,696** peak simultaneous presentation-owned chunk-mesh bytes, only **−16.9%**. Upload bytes were 41,275,744 versus 74,961,072 (+81.6%), mesh jobs 501 versus 1,394, and worker mesh time 117,779 versus 198,175 µs (+68.3%, timing is noisy). Both profiles remained vsync-bound at 60 FPS. `presentation_commit_failures`, `commit_invariant_failures`, and `committed_missing_max` were zero. This metric excludes depth textures, pipelines, fixed/reused debug resources, and driver/wgpu retention; do not call it global GPU memory.
 
 **Debug views (M3C3).** Measured with an idle camera and no screen capture, banded profile, 12-second windows: `Off` and `Lod` hold 60.0 FPS at 16.66 ms and issue no debug line draw; `Boundaries` at 180 primitives runs 46.7–47.9 FPS (20.9–21.4 ms); `Residency` at 637 boxes runs 37.6 then 15.4 FPS (26.6 then 64.8 ms). One uniform buffer, one bind group, and one draw per primitive is the enabled cost (KI-012). `Off` is instrumented as zero per-frame debug primitive allocations, debug uniform writes, and debug draws, while leaving fixed startup resources and reusable slots resident.
+
+## M3D disk cache experiment
+
+Release `streaming-probe` on the audited Windows host, one identical settle of the default profile per phase, three repetitions. Residency is identical in every phase and encoding: 81 tracked, 63 resident, 4,128,768 resident bytes, 2,511,648 CPU mesh bytes, 81 load jobs, 0 stale results, 0 hard-cap blocks.
+
+| phase | raw, time to idle (µs) | run-length, time to idle (µs) |
+|---|---|---|
+| cache off | 7,280 / 6,187 / 6,520 | 14,137 / 5,500 / 6,022 |
+| cold | 106,706 / 82,666 / 83,308 | 112,203 / 62,944 / 75,151 |
+| warm | 36,887 / 20,480 / 37,415 | 15,585 / 13,202 / 14,809 |
+| warm again | 42,124 / 16,618 / 24,002 | 16,116 / 11,340 / 16,052 |
+
+Warm is reproducible: 81 lookups, 63 present hits, 18 absence hits, 0 misses, 0 source fallbacks, 0 writes, stable footprint.
+
+Disk footprint for the same 81 entries: raw 4,132,656 bytes (65,584 per present entry, 48 per absence), run-length 24,438 bytes, a factor of 169 on this fixture. Codec cost per chunk: raw encode 154 µs mean / 515 µs max and decode 156 / 293; run-length encode 22 / 200 and decode 13 / 67.
+
+**The cache is slower than no cache on this fixture.** The original three-run set measured warm at 13–37 ms against 6–7 ms cacheless. The final QA run measured raw warm at 15–17 ms against 5 ms cacheless and RLE warm at about 8 ms against 4 ms cacheless. The diagnostic source is cheaper than disk plus decode. These numbers measure mechanism cost, not benefit; re-measure against genuinely expensive generation before enabling a cache by default (KI-016).
+
+Independent QA first produced two much slower samples and then found the cause: the bounded reader reserved the 196,657-byte maximum for every file, including 48-byte absence entries and tiny RLE entries. Retaining the hard `take(MAX_ENTRY_BYTES + 1)` limit but allowing the vector to grow from the actual input removed that avoidable allocation. The final post-fix raw off/cold/warm/warm-again sample was 5,437/50,624/17,119/14,684 µs; RLE was 4,226/45,733/8,411/8,518 µs. Logical counts and footprints were unchanged. Single-run wall-clock values remain noisy, and even the corrected sample shows no benefit over regeneration.
+
+Thread boundary: when opted in, `ChunkCache::open` synchronously sweeps temporary files and walks the footprint once during client event-loop initialization. It is cold setup, not frame-hot-path work, but it can grow with the unbounded cache and is part of KI-015. Per-chunk reads, codec work, fallback, and publication run on the single streaming worker. No directory scan occurs per frame. An individual read is capped at 196,657 bytes (one beyond the largest valid current entry), so a hostile file cannot turn one bounded worker job into an arbitrary allocation.

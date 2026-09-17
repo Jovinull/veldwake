@@ -1,12 +1,13 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use tracing::{debug, info, warn};
-use veldwake_streaming::StreamingConfig;
+use veldwake_streaming::{CacheConfig, ChunkCache, DiagnosticChunkSource, StreamingConfig};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -25,6 +26,10 @@ use crate::{
 };
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Opt-in directory for the experimental M3D chunk cache. Unset means no
+/// cache and no filesystem access from the streaming worker.
+const CACHE_DIR_VARIABLE: &str = "VELDWAKE_CACHE_DIR";
 
 pub fn run() -> Result<(), AppRunError> {
     let event_loop = EventLoop::new().map_err(|error| AppRunError(error.to_string()))?;
@@ -105,8 +110,41 @@ impl App {
         let profile = StreamingProfile::from_environment();
         let config = profile.config();
         let budget = UploadBudget::default();
-        let streaming = StreamingBridge::new(config, budget, self.camera.position())
-            .map_err(|error| AppRunError(error.to_string()))?;
+        // The experimental disk cache is opt-in and off by default: without
+        // the variable the client behaves exactly as before and touches no
+        // filesystem. The client picks a directory and nothing else; the entry
+        // format lives entirely inside the streaming crate.
+        let cache = match std::env::var_os(CACHE_DIR_VARIABLE) {
+            Some(dir) => {
+                let cache_config = CacheConfig::new(PathBuf::from(dir));
+                match ChunkCache::open(&cache_config, DiagnosticChunkSource.fingerprint()) {
+                    Ok((cache, report)) => {
+                        info!(
+                            entries_dir = %report.entries_dir.display(),
+                            entries = report.footprint.entries,
+                            disk_bytes = report.footprint.bytes,
+                            swept_temporaries = report.temporaries_removed,
+                            "experimental chunk cache opened"
+                        );
+                        Some(cache)
+                    }
+                    Err(error) => {
+                        // A cache is an accelerator: failing to open one must
+                        // never stop the client from running without it.
+                        warn!(%error, "chunk cache could not be opened; continuing without it");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let streaming = match cache {
+            Some(cache) => {
+                StreamingBridge::with_cache(config, budget, self.camera.position(), cache)
+            }
+            None => StreamingBridge::new(config, budget, self.camera.position()),
+        }
+        .map_err(|error| AppRunError(error.to_string()))?;
         let renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),
@@ -641,6 +679,26 @@ impl FrameStats {
             worker_mesh_lod0_max_us = metrics.worker_mesh_lod0.max_us,
             worker_mesh_lod1_total_us = metrics.worker_mesh_lod1.total_us,
             worker_mesh_lod1_max_us = metrics.worker_mesh_lod1.max_us,
+            cache_lookups = metrics.cache.lookups,
+            cache_hits_present = metrics.cache.hits_present,
+            cache_hits_absent = metrics.cache.hits_absent,
+            cache_misses = metrics.cache.misses,
+            cache_stale_rejects = metrics.cache.stale_rejects,
+            cache_corrupt_rejects = metrics.cache.corrupt_rejects,
+            cache_read_failures = metrics.cache.read_failures,
+            cache_rejected_entries_removed = metrics.cache.rejected_entries_removed,
+            cache_rejected_entry_delete_failures = metrics.cache.rejected_entry_delete_failures,
+            cache_source_fallbacks = metrics.cache.source_fallbacks,
+            cache_write_attempts = metrics.cache.write_attempts,
+            cache_writes = metrics.cache.writes,
+            cache_writes_skipped = metrics.cache.writes_skipped,
+            cache_write_failures = metrics.cache.write_failures,
+            cache_bytes_read = metrics.cache.bytes_read,
+            cache_bytes_written = metrics.cache.bytes_written,
+            cache_encode_total_us = metrics.cache.encode.total_us,
+            cache_encode_max_us = metrics.cache.encode.max_us,
+            cache_decode_total_us = metrics.cache.decode.total_us,
+            cache_decode_max_us = metrics.cache.decode.max_us,
             interval_submit_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
             interval_submit_max_us = self.submit_max.as_micros(),
             time_to_idle_ms = self.idle_reached.map(|d| d.as_secs_f64() * 1000.0),
