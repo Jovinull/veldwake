@@ -194,7 +194,7 @@ Two conclusions, both reversals of an M3D finding:
 
 ### Visual evidence
 
-Six named poses, captured from the release client on the audited host at 1600 × 900 with debug views off, after an 80-second settle, driven through the `EVIDENCE_HARNESS.md` procedure. `valley-wide`, `pond-shore`, and `cliff-face` were captured in both weather states. Every run exited with code 0 and no validation error.
+Final branch-QA evidence was recaptured at `f9c12d628f92b59b685d3493a3c0213332214ef8`: six maximized-client frames (`1536 x 792` actual client area) after a 70-second settle, `m4-golden`, clear weather, plus `valley-wide` overcast. The release client reported Intel Iris Xe / D3D12, world fingerprint `0x96aef6bb59dca573`, idle coverage, and exit code 0 with no validation, device-lost, or fatal error. The full golden smoke also exercised F1/F2/F3, resize, minimize/restore, focus loss with movement held, and motion across positive and negative coordinates. A separate `m4-golden-banded` settled traversal reported active Lod0 and Lod1 meshes with no validation error; the M3 diagnostic smoke and clean capture preserved the checkerboard material fixture. The captured frames show continuous shorelines and terrain, grounded vegetation, readable strata and water, coherent sky/fog, and a visibly flatter overcast state. Their remaining cube-canopy and uniform-meadow character is the documented style limitation, not a new regression.
 
 Measured luminance bands of `depth-stack` (top to bottom, sky included in the first two):
 
@@ -238,12 +238,12 @@ The disk cache remains an experiment and a discardable accelerator. It is still 
 | gate | result |
 |---|---|
 | `cargo fmt --all --check` | PASS |
-| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace` | PASS, superseded by 273-test branch-QA run |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo test --workspace` | PASS, superseded by 275-test branch-QA run |
 | release `terrain-probe` | PASS |
 | release `streaming-probe` | PASS |
 | Windows/D3D12 driven smoke, six poses, two weather states | PASS, exit code 0, no validation errors |
-| `cargo nextest run --workspace` | PASS, 273 tests in branch QA |
+| `cargo nextest run --workspace` | PASS, 275 tests in branch QA |
 | `cargo deny check` | PASS — advisories, bans, licenses, sources all ok; KI-007's duplicate warnings are unchanged |
 | `cargo audit` | PASS — 207 crate dependencies scanned, no advisory. No dependency was added in this milestone |
 | 1080p/60 budget | NOT YET APPLICABLE — the budget is Proposed and unaccepted; captures are 1600 × 900 and vsync-bound |
