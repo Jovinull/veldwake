@@ -1,6 +1,8 @@
 # Observability
 
-Status: **Accepted requirement; M3 streaming telemetry and debug views implemented, broader engine observability remains incremental**.
+Status: **Accepted requirement; M3 streaming telemetry and debug views implemented, M4 adds world and headless world inspection, broader engine observability remains incremental**.
+
+The client's startup line reports the selected world, its fingerprint, the named camera pose, the camera position, and the weather state, so a capture can be tied to exactly the world and viewpoint that produced it. `terrain-probe` is the headless counterpart and needs no GPU: it prints landform, zone, height, and material maps of the region, a full report for any column including how far above the surface a camera must stand to clear every plant, one chunk's material histogram and mesh cost, the locked regional signature with every named probe, measured canopy coverage over the meadow, and per-chunk generation and meshing timings.
 
 Development builds should explain performance and procedural causality, not merely display failures.
 

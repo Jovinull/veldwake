@@ -14,6 +14,12 @@ Server and authoritative gameplay must not depend on client presentation; render
 **WORLD-001 — Addressable generation**  
 Given the same compatible world version, generator version, canonical inputs, and seed, world generation must produce equivalent specified results.
 
+**WORLD-002 — Position-addressed generation**  
+Every generation decision must be a function of world position, the seed, and the declared configuration. No generator may consume a sequential random source, observe iteration order, or depend on which chunk asked. Implemented and tested in `veldwake-procedural` since M4.
+
+**WORLD-003 — Hydrology by construction**  
+Where water exists without a solver, its surface must be a continuous monotone function of position, so that it cannot run uphill and cannot step at a chunk boundary. A water rule whose correctness depends on tuning rather than on construction is not acceptable.
+
 **PERF-001 — No blocking frame I/O**  
 Blocking disk or network I/O must not occur on the render/game-frame hot path.
 

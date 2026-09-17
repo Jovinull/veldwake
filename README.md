@@ -4,7 +4,7 @@
 
 Veldwake is a planned 3D voxel action RPG about exploration in a persistent, systemic procedural world. Geography, creatures, settlements, economies, and events can evolve, while player actions leave observable consequences. Its audiovisual identity is intended to be produced predominantly through code and constrained generators rather than a traditional manual asset pipeline.
 
-Current status: **M3B streaming runtime is merged; M3C initial LOD and streaming debug views are implemented and QA-hardened on their feature branch. Mutation-boundary accounting shows the banded profile reduces presentation-owned chunk-mesh high-water by only 16.9% while upload bytes rise 81.6%, so LOD stays opt-in. Atomic transitions prevent mixed seams and previously drawn presentation-only meshes from blinking; short-lived frontier coverage deficits remain explicitly measured.** The Windows-first diagnostic client streams a finite code-defined chunk corridor around the camera through `wgpu`/D3D12 under explicit residency and upload budgets. It is an engineering proof, not a playable world: there is no world generation, persistence, or gameplay.
+Current status: **M3 — Streaming World is complete and merged. M4 — Beautiful Terrain Vertical Slice is implemented on its feature branch and awaits QA.** The Windows-first client streams one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, cliffs banded like sedimentary rock, forest pockets, and low vegetation — around the camera through `wgpu`/D3D12, lit by a directional sun with a filtered shadow map, a procedural sky, height-aware distance fog, and two weather states. Generation is a pure function of a seed and a chunk coordinate, so the same world appears every run. LOD stays opt-in from M3C. It is still an engineering proof, not a playable game: there is no persistence, no character, and no gameplay.
 
 ## Principles
 
@@ -30,7 +30,7 @@ cargo run -p veldwake-client
 cargo run --release -p veldwake-streaming --bin streaming-probe
 ```
 
-Diagnostic controls: WASD moves, Space/Control move vertically, hold the right mouse button to look, and Escape exits. `F1` cycles the streaming debug views (off, level tint, residency wireframes, chunk boundaries and transition groups) and `F2` toggles the wireframe boxes. `Off` performs no per-frame debug primitive allocation, debug uniform write, or debug draw; fixed startup debug resources and previously pooled slots remain allocated. Set `RUST_LOG` to change diagnostic filtering and `VELDWAKE_PROFILE` (`default`, `m3c-baseline`, `m3c-banded`) to choose the streaming profile.
+Diagnostic controls: WASD moves, Space/Control move vertically, hold the right mouse button to look, and Escape exits. `F1` cycles the streaming debug views (off, level tint, residency wireframes, chunk boundaries and transition groups) and `F2` toggles the wireframe boxes. `Off` performs no per-frame debug primitive allocation, debug uniform write, or debug draw; fixed startup debug resources and previously pooled slots remain allocated. `F3` toggles the weather between clear and overcast. Set `RUST_LOG` to change diagnostic filtering, `VELDWAKE_PROFILE` (`default`, `m3c-baseline`, `m3c-banded`, `m4-golden`, `m4-golden-banded`) to choose the streaming profile, `VELDWAKE_WORLD` (`golden`, `diagnostic`, `seed:<value>`) to choose the world, and `VELDWAKE_POSE` to start at one of the named golden camera poses.
 
 ## Start here
 

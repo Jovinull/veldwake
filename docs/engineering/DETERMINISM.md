@@ -1,6 +1,8 @@
 # Determinism
 
-Status: **Accepted scope principle; algorithms TBD**.
+Status: **Accepted scope principle; first worked implementation in M4**.
+
+Since M4 there is a worked example of the rules below in `veldwake-procedural`: `WorldSeed::stream(StreamLabel)` derives one named child stream per generator stage from the seed and the generator version, so adding a draw to vegetation cannot perturb terrain; `WorldIdentity::fingerprint()` folds the seed, the generator version, the style-contract version, and every art control into one cheap value that keys the disk cache; and `region::GOLDEN_REGION_SIGNATURE` locks the actual content of nineteen spread-out chunks, four of them outside the region, so a silent change to generation is a failing assertion with a value to paste back. Nothing in that crate consumes a sequential generator or observes iteration order: every spatial decision is a hash of a world position.
 
 Determinism is a compatibility contract, not a blanket claim that every floating-point operation is bit-identical on every platform.
 

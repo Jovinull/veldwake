@@ -1,6 +1,8 @@
 # World generation
 
-Status: **Proposed pipeline**, governed by accepted determinism and causal-coherence principles.
+Status: **Proposed pipeline**, governed by accepted determinism and causal-coherence principles. **M4 implemented its first, deliberately small stage.**
+
+What exists in `veldwake-procedural` after M4 is one finite region, not a world pipeline: a meandering valley axis, a three-part macroform, ridges and detail masked to where they belong, a river carved relative to a monotone water surface, one biome with six micro-zones decided by slope, height above water, landform, and moisture, and a vegetation grammar placed on a jittered lattice. It is conceptually compatible with the elevation to hydrology to climate to vegetation ordering below, and it implements none of the global stages: no tectonics, no plate history, no erosion, no global hydrology solver, no climate simulation, and no civilisation. Hydrology in M4 is a geometric cue whose properties — water cannot run uphill, the waterline cannot step at a chunk seam — are guaranteed by construction rather than by a solver. See [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md).
 
 ## Candidate stages
 
