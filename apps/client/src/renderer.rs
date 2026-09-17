@@ -11,13 +11,15 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
+use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::{
     camera::Camera,
-    streaming::{ChunkPresentation, ChunkUploadError, GpuResidency},
+    debug::{DebugPrimitive, DebugShape},
+    streaming::{ChunkPresentation, ChunkUploadError, GpuResidency, PresentationCommitError},
 };
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -46,16 +48,188 @@ impl Vertex {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct CameraUniform {
     view_projection: [[f32; 4]; 4],
+    /// `x` is how far a `Lod1` mesh is blended toward the debug tint; the rest
+    /// is WGSL alignment padding.
+    debug: [f32; 4],
 }
 
+/// One debug wireframe primitive: where to place the unit geometry and what
+/// color to draw its lines.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct DebugPrimitiveUniform {
+    /// `xyz` world origin, `w` edge length in world units.
+    placement: [f32; 4],
+    color: [f32; 4],
+}
+
+impl DebugPrimitiveUniform {
+    fn from_primitive(primitive: &DebugPrimitive) -> Self {
+        let (origin, edge) = primitive.placement();
+        Self {
+            placement: [origin[0], origin[1], origin[2], edge],
+            color: [
+                primitive.color[0],
+                primitive.color[1],
+                primitive.color[2],
+                1.0,
+            ],
+        }
+    }
+}
+
+/// Position-only vertex of the shared unit-cube line geometry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct DebugVertex {
+    position: [f32; 3],
+}
+
+impl DebugVertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+/// Vertices of the 12 unit-cube edges, drawn as a `LineList`.
+const CUBE_EDGE_VERTICES: u32 = 24;
+/// Vertices of one face outline: four lines.
+const FACE_OUTLINE_VERTICES: u32 = 8;
+
+/// The one shared line buffer: the cube edges first, then the six face
+/// outlines in `Face::ALL` order. Every primitive is this geometry placed and
+/// scaled by its uniform, so no debug geometry is ever uploaded per frame.
+fn debug_line_vertices() -> Vec<DebugVertex> {
+    const CORNERS: [[f32; 3]; 8] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+    ];
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    // Face::ALL order: -x, +x, -y, +y, -z, +z.
+    const FACES: [[usize; 4]; 6] = [
+        [0, 3, 7, 4],
+        [1, 2, 6, 5],
+        [0, 1, 5, 4],
+        [3, 2, 6, 7],
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+    ];
+
+    let mut vertices =
+        Vec::with_capacity(CUBE_EDGE_VERTICES as usize + 6 * FACE_OUTLINE_VERTICES as usize);
+    for (from, to) in EDGES {
+        vertices.push(DebugVertex {
+            position: CORNERS[from],
+        });
+        vertices.push(DebugVertex {
+            position: CORNERS[to],
+        });
+    }
+    for face in FACES {
+        for corner in 0..4 {
+            vertices.push(DebugVertex {
+                position: CORNERS[face[corner]],
+            });
+            vertices.push(DebugVertex {
+                position: CORNERS[face[(corner + 1) % 4]],
+            });
+        }
+    }
+    vertices
+}
+
+/// Where a shape lives in the shared line buffer.
+fn debug_vertex_range(shape: DebugShape) -> std::ops::Range<u32> {
+    match shape {
+        DebugShape::Box => 0..CUBE_EDGE_VERTICES,
+        DebugShape::Face(face) => {
+            let base = CUBE_EDGE_VERTICES + face as u32 * FACE_OUTLINE_VERTICES;
+            base..base + FACE_OUTLINE_VERTICES
+        }
+    }
+}
+
+/// One reusable uniform buffer and bind group for a debug primitive. The pool
+/// grows to the largest primitive count seen and is then reused, so an active
+/// debug view allocates nothing per frame.
+struct DebugSlot {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Debug-only work requested for the current frame. Fixed startup resources
+/// and slots retained from earlier debug use are intentionally not included.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DebugFrameWork {
+    pub primitive_allocations: usize,
+    pub uniform_writes: usize,
+    pub draw_calls: usize,
+}
+
+impl DebugFrameWork {
+    const fn planned(existing_slots: usize, primitives: usize) -> Self {
+        Self {
+            primitive_allocations: primitives.saturating_sub(existing_slots),
+            uniform_writes: primitives,
+            draw_calls: primitives,
+        }
+    }
+}
+
+fn create_debug_slot(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> DebugSlot {
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("M3C debug primitive uniform"),
+        size: size_of::<DebugPrimitiveUniform>() as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("M3C debug primitive bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    DebugSlot { buffer, bind_group }
+}
+
+/// Two `vec4` for WGSL uniform alignment: the chunk origin (never scaled)
+/// and the local cell size of the level in `x`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct ModelUniform {
     translation: [f32; 4],
+    scale: [f32; 4],
 }
 
 impl ModelUniform {
-    fn from_chunk_coord(coord: ChunkCoord) -> Self {
+    fn from_chunk(coord: ChunkCoord, lod: LodLevel) -> Self {
         let edge = CHUNK_EDGE as f32;
         Self {
             translation: [
@@ -64,28 +238,69 @@ impl ModelUniform {
                 coord.z as f32 * edge,
                 0.0,
             ],
+            scale: [level_scale(lod), 0.0, 0.0, 0.0],
         }
+    }
+
+    #[cfg(test)]
+    /// World-space bounds of the chunk volume this uniform places: the
+    /// `Lod1` grid has half the cells at twice the size, so both levels span
+    /// exactly `CHUNK_EDGE` world units from the same origin.
+    fn world_bounds(&self, lod: LodLevel) -> ([f32; 3], [f32; 3]) {
+        let cells = match lod {
+            LodLevel::Lod0 => CHUNK_EDGE,
+            LodLevel::Lod1 => veldwake_voxel::COARSE_EDGE,
+        } as f32;
+        let extent = cells * self.scale[0];
+        let min = [
+            self.translation[0],
+            self.translation[1],
+            self.translation[2],
+        ];
+        (min, [min[0] + extent, min[1] + extent, min[2] + extent])
+    }
+}
+
+const fn level_scale(lod: LodLevel) -> f32 {
+    match lod {
+        LodLevel::Lod0 => 1.0,
+        LodLevel::Lod1 => 2.0,
     }
 }
 
 impl CameraUniform {
-    fn from_camera(camera: &Camera) -> Self {
+    fn from_camera(camera: &Camera, lod_tint: f32) -> Self {
         Self {
             view_projection: camera.view_projection().to_cols_array_2d(),
+            debug: [lod_tint, 0.0, 0.0, 0.0],
         }
     }
 }
 
-/// Disposable GPU state for one streamed chunk. Holds no streaming stamps.
-struct GpuChunkMesh {
+/// Disposable GPU buffers of one chunk mesh at one level. Holds no
+/// streaming stamps.
+struct GpuMeshBuffers {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     model_bind_group: wgpu::BindGroup,
     _model_buffer: wgpu::Buffer,
     bytes: usize,
+    quads: usize,
+    /// Presentation level this mesh was uploaded at.
+    lod: LodLevel,
+}
+
+/// The drawn mesh of a chunk plus an optional staged replacement that is
+/// uploaded but not drawn until the bridge commits its transition group.
+/// `None` in `staged` with `staged_empty` set means "replace with nothing".
+#[derive(Default)]
+struct GpuChunkSlot {
+    active: Option<GpuMeshBuffers>,
     /// Drawable this frame. Cleared immediately when the bridge revokes it.
-    active: bool,
+    drawable: bool,
+    staged: Option<GpuMeshBuffers>,
+    staged_empty: bool,
 }
 
 /// Exact GPU bytes a mesh occupies: converted vertices, `u32` indices, model uniform.
@@ -141,11 +356,19 @@ pub struct Renderer {
     configured: bool,
     pipeline: wgpu::RenderPipeline,
     model_layout: wgpu::BindGroupLayout,
-    chunks: BTreeMap<ChunkCoord, GpuChunkMesh>,
+    chunks: BTreeMap<ChunkCoord, GpuChunkSlot>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     fatal_gpu_error: Arc<AtomicBool>,
+    /// Separate `LineList` pipeline for the debug views. Nothing below is
+    /// touched while the views are off.
+    debug_pipeline: wgpu::RenderPipeline,
+    debug_layout: wgpu::BindGroupLayout,
+    debug_vertices: wgpu::Buffer,
+    debug_slots: Vec<DebugSlot>,
+    debug_draws: Vec<(usize, std::ops::Range<u32>)>,
+    debug_frame_work: DebugFrameWork,
 }
 
 impl Renderer {
@@ -202,7 +425,7 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
-        let camera_uniform = CameraUniform::from_camera(camera);
+        let camera_uniform = CameraUniform::from_camera(camera, 0.0);
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("diagnostic camera uniform"),
             contents: bytemuck::bytes_of(&camera_uniform),
@@ -283,6 +506,70 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let debug_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("M3C debug primitive bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        size_of::<DebugPrimitiveUniform>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let debug_shader = device.create_shader_module(wgpu::include_wgsl!("debug_line.wgsl"));
+        let debug_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("M3C debug line pipeline layout"),
+                bind_group_layouts: &[Some(&camera_layout), Some(&debug_layout)],
+                immediate_size: 0,
+            });
+        let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("M3C debug line pipeline"),
+            layout: Some(&debug_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &debug_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(DebugVertex::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            // Lines are an overlay on the world: occluded by geometry in front
+            // of them, but never writing depth over the meshes.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &debug_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let debug_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("M3C debug unit line geometry"),
+            contents: bytemuck::cast_slice(&debug_line_vertices()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let depth_view = create_depth_view(&device, config.width, config.height);
 
         let mut renderer = Self {
@@ -302,6 +589,12 @@ impl Renderer {
             camera_bind_group,
             depth_view,
             fatal_gpu_error,
+            debug_pipeline,
+            debug_layout,
+            debug_vertices,
+            debug_slots: Vec::new(),
+            debug_draws: Vec::new(),
+            debug_frame_work: DebugFrameWork::default(),
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -336,10 +629,60 @@ impl Renderer {
         );
     }
 
-    pub fn update_camera(&self, camera: &Camera) {
-        let uniform = CameraUniform::from_camera(camera);
+    /// Uploads the camera and the `Lod1` debug tint strength (`0.0` when the
+    /// `Lod` view is not active).
+    pub fn update_camera(&self, camera: &Camera, lod_tint: f32) {
+        let uniform = CameraUniform::from_camera(camera, lod_tint);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// Replaces the debug primitives drawn this frame.
+    ///
+    /// An empty slice writes nothing and draws nothing, so a disabled debug
+    /// view costs no uploads and no draw calls. The uniform pool is reused
+    /// across frames and never shrinks below the largest set seen.
+    pub fn set_debug_primitives(&mut self, primitives: &[DebugPrimitive]) {
+        self.debug_draws.clear();
+        self.debug_frame_work = DebugFrameWork::planned(self.debug_slots.len(), primitives.len());
+        if primitives.is_empty() {
+            return;
+        }
+        while self.debug_slots.len() < primitives.len() {
+            self.debug_slots
+                .push(create_debug_slot(&self.device, &self.debug_layout));
+        }
+        for (index, primitive) in primitives.iter().enumerate() {
+            let uniform = DebugPrimitiveUniform::from_primitive(primitive);
+            self.queue.write_buffer(
+                &self.debug_slots[index].buffer,
+                0,
+                bytemuck::bytes_of(&uniform),
+            );
+            self.debug_draws
+                .push((index, debug_vertex_range(primitive.shape)));
+        }
+    }
+
+    /// Debug line draw calls issued in the last frame: one per primitive.
+    #[must_use]
+    pub fn debug_draw_count(&self) -> usize {
+        self.debug_draws.len()
+    }
+
+    /// Uniform buffers and bind groups allocated for debug primitives. This is
+    /// the cost of the one-bind-group-per-box diagnostic pattern.
+    #[must_use]
+    pub fn debug_slot_count(&self) -> usize {
+        self.debug_slots.len()
+    }
+
+    /// Debug-only allocations, uniform writes, and draw calls for this frame.
+    /// In `Off`, all three are zero even if slots from an earlier debug mode
+    /// remain retained in the reusable pool.
+    #[must_use]
+    pub const fn debug_frame_work(&self) -> DebugFrameWork {
+        self.debug_frame_work
     }
 
     pub fn render(&mut self) -> RenderOutcome {
@@ -418,11 +761,25 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for chunk in self.chunks.values().filter(|chunk| chunk.active) {
+            for chunk in self
+                .chunks
+                .values()
+                .filter(|slot| slot.drawable)
+                .filter_map(|slot| slot.active.as_ref())
+            {
                 pass.set_bind_group(1, &chunk.model_bind_group, &[]);
                 pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
+            if !self.debug_draws.is_empty() {
+                pass.set_pipeline(&self.debug_pipeline);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.debug_vertices.slice(..));
+                for (slot, vertices) in &self.debug_draws {
+                    pass.set_bind_group(1, &self.debug_slots[*slot].bind_group, &[]);
+                    pass.draw(vertices.clone(), 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -490,6 +847,14 @@ impl Renderer {
             "adapter and surface capabilities"
         );
     }
+
+    /// Whether `coord` holds a staged replacement, including a staged empty
+    /// mesh (a commit that removes the chunk).
+    fn has_staged(&self, coord: ChunkCoord) -> bool {
+        self.chunks
+            .get(&coord)
+            .is_some_and(|slot| slot.staged.is_some() || slot.staged_empty)
+    }
 }
 
 impl ChunkPresentation for Renderer {
@@ -497,16 +862,42 @@ impl ChunkPresentation for Renderer {
         gpu_payload_bytes(mesh)
     }
 
-    fn upsert_chunk(&mut self, coord: ChunkCoord, mesh: &Mesh) -> Result<usize, ChunkUploadError> {
+    fn stage_chunk(
+        &mut self,
+        coord: ChunkCoord,
+        lod: LodLevel,
+        mesh: &Mesh,
+    ) -> Result<usize, ChunkUploadError> {
         if mesh.indices().is_empty() {
-            self.chunks.remove(&coord);
+            // Releasing first here too: a staged empty mesh holds no buffers,
+            // and the commit it schedules removes the chunk.
+            let slot = self.chunks.entry(coord).or_default();
+            slot.staged = None;
+            slot.staged_empty = true;
             return Ok(0);
         }
+        // Reject before touching the slot. An early rejection must never
+        // destroy staging that is still valid.
         let index_count =
             u32::try_from(mesh.indices().len()).map_err(|_| ChunkUploadError::TooManyIndices {
                 coord,
                 indices: mesh.indices().len(),
             })?;
+        // Release the obsolete replacement before allocating its successor.
+        //
+        // The bridge restages a coordinate only when the staged stamp is no
+        // longer that chunk's target, and a staged mesh whose stamp differs
+        // from the target can never be committed, so what is dropped here is
+        // provably dead. Taking it out of the map before the new buffers exist
+        // is what keeps presentation-owned chunk-mesh bytes from ever holding
+        // two replacements of one chunk at the same instant, which the bridge
+        // could not observe from outside the call. The committed mesh is not
+        // touched and keeps drawing.
+        let obsolete = self.chunks.get_mut(&coord).and_then(|slot| {
+            slot.staged_empty = false;
+            slot.staged.take()
+        });
+        drop(obsolete);
         let vertices = mesh
             .vertices()
             .iter()
@@ -533,7 +924,7 @@ impl ChunkPresentation for Renderer {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("M3B streamed chunk model uniform"),
-                contents: bytemuck::bytes_of(&ModelUniform::from_chunk_coord(coord)),
+                contents: bytemuck::bytes_of(&ModelUniform::from_chunk(coord, lod)),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let model_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -545,40 +936,98 @@ impl ChunkPresentation for Renderer {
             }],
         });
         let bytes = gpu_payload_bytes(mesh);
-        // Replacing an entry drops the previous buffers; wgpu keeps them alive
-        // for any already-submitted work.
-        self.chunks.insert(
-            coord,
-            GpuChunkMesh {
-                vertex_buffer,
-                index_buffer,
-                index_count,
-                model_bind_group,
-                _model_buffer: model_buffer,
-                bytes,
-                active: true,
-            },
-        );
+        // The slot's previous replacement was already released above, so this
+        // installs into an empty staging position.
+        let slot = self.chunks.entry(coord).or_default();
+        slot.staged = Some(GpuMeshBuffers {
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            model_bind_group,
+            _model_buffer: model_buffer,
+            bytes,
+            quads: mesh.quad_count(),
+            lod,
+        });
+        slot.staged_empty = false;
         Ok(bytes)
+    }
+
+    fn commit_staged_group(&mut self, group: &[ChunkCoord]) -> Result<(), PresentationCommitError> {
+        // Verify the whole group before touching any slot: a partial swap
+        // could draw a pair that mixes an old and a new seam.
+        if let Some(missing) = group.iter().find(|coord| !self.has_staged(**coord)) {
+            return Err(PresentationCommitError {
+                coord: *missing,
+                group_size: group.len(),
+            });
+        }
+        for coord in group {
+            // Verified above and nothing mutates `chunks` in between, so every
+            // member is present; a missing one would simply hold no GPU state.
+            if let Some(slot) = self.chunks.get_mut(coord) {
+                slot.active = slot.staged.take();
+                slot.staged_empty = false;
+                slot.drawable = slot.active.is_some();
+                if slot.active.is_none() {
+                    self.chunks.remove(coord);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn discard_staged(&mut self, coord: ChunkCoord) -> bool {
+        let Some(slot) = self.chunks.get_mut(&coord) else {
+            return false;
+        };
+        let had = slot.staged.take().is_some() || slot.staged_empty;
+        slot.staged_empty = false;
+        if slot.active.is_none() {
+            self.chunks.remove(&coord);
+        }
+        had
     }
 
     fn deactivate_chunk(&mut self, coord: ChunkCoord) -> bool {
         self.chunks
             .get_mut(&coord)
-            .map(|chunk| chunk.active = false)
+            .filter(|slot| slot.active.is_some())
+            .map(|slot| slot.drawable = false)
             .is_some()
     }
 
     fn remove_chunk(&mut self, coord: ChunkCoord) -> bool {
-        self.chunks.remove(&coord).is_some()
+        self.chunks
+            .remove(&coord)
+            .is_some_and(|slot| slot.active.is_some())
     }
 
     fn residency(&self) -> GpuResidency {
-        GpuResidency {
-            resident: self.chunks.len(),
-            active: self.chunks.values().filter(|chunk| chunk.active).count(),
-            bytes: self.chunks.values().map(|chunk| chunk.bytes).sum(),
+        let mut residency = GpuResidency::default();
+        for slot in self.chunks.values() {
+            if let Some(chunk) = &slot.active {
+                let level = match chunk.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.resident += 1;
+                level.bytes += chunk.bytes;
+                level.quads += chunk.quads;
+                if slot.drawable {
+                    level.active += 1;
+                }
+            }
+            if let Some(chunk) = &slot.staged {
+                let level = match chunk.lod {
+                    LodLevel::Lod0 => &mut residency.lod0,
+                    LodLevel::Lod1 => &mut residency.lod1,
+                };
+                level.staged += 1;
+                level.staged_bytes += chunk.bytes;
+            }
         }
+        residency
     }
 }
 
@@ -675,26 +1124,150 @@ fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::Composi
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
-        ModelUniform, diagnostic_color, gpu_payload_bytes, select_alpha_mode, select_present_mode,
-        select_surface_format,
+        CUBE_EDGE_VERTICES, DebugFrameWork, DebugPrimitiveUniform, FACE_OUTLINE_VERTICES,
+        ModelUniform, debug_line_vertices, debug_vertex_range, diagnostic_color, gpu_payload_bytes,
+        select_alpha_mode, select_present_mode, select_surface_format,
     };
-    use veldwake_voxel::{ChunkCoord, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
+    use crate::debug::{DebugKind, DebugPrimitive, DebugShape};
+    use veldwake_streaming::LodLevel;
+    use veldwake_voxel::{ChunkCoord, Face, Mesh, VoxelId, diagnostic_fixture, mesh_exposed_faces};
+
+    #[test]
+    fn debug_off_plans_no_per_frame_debug_work_even_with_retained_slots() {
+        assert_eq!(DebugFrameWork::planned(0, 0), DebugFrameWork::default());
+        assert_eq!(DebugFrameWork::planned(637, 0), DebugFrameWork::default());
+        assert_eq!(
+            DebugFrameWork::planned(100, 180),
+            DebugFrameWork {
+                primitive_allocations: 80,
+                uniform_writes: 180,
+                draw_calls: 180,
+            }
+        );
+        assert_eq!(
+            DebugFrameWork::planned(637, 180),
+            DebugFrameWork {
+                primitive_allocations: 0,
+                uniform_writes: 180,
+                draw_calls: 180,
+            }
+        );
+    }
+
+    #[test]
+    fn debug_line_geometry_holds_the_cube_edges_then_every_face_outline() {
+        let vertices = debug_line_vertices();
+        assert_eq!(
+            vertices.len(),
+            CUBE_EDGE_VERTICES as usize + 6 * FACE_OUTLINE_VERTICES as usize
+        );
+
+        // Twelve distinct cube edges, each along exactly one axis.
+        let mut edges = BTreeSet::new();
+        let (edge_pairs, _) = vertices[..CUBE_EDGE_VERTICES as usize].as_chunks::<2>();
+        for pair in edge_pairs {
+            let from = pair[0].position.map(f32::to_bits);
+            let to = pair[1].position.map(f32::to_bits);
+            let differing = (0..3).filter(|axis| from[*axis] != to[*axis]).count();
+            assert_eq!(differing, 1, "a cube edge moves along one axis");
+            let mut key = [from, to];
+            key.sort();
+            assert!(edges.insert(key), "no cube edge is drawn twice");
+        }
+        assert_eq!(edges.len(), 12);
+
+        // Each face outline lies on its own plane of the unit cube.
+        for (index, face) in Face::ALL.into_iter().enumerate() {
+            let range = debug_vertex_range(DebugShape::Face(face));
+            assert_eq!(
+                range.start,
+                CUBE_EDGE_VERTICES + index as u32 * FACE_OUTLINE_VERTICES
+            );
+            let (axis, plane) = match face {
+                Face::NegativeX => (0, 0.0),
+                Face::PositiveX => (0, 1.0),
+                Face::NegativeY => (1, 0.0),
+                Face::PositiveY => (1, 1.0),
+                Face::NegativeZ => (2, 0.0),
+                Face::PositiveZ => (2, 1.0),
+            };
+            let outline = &vertices[range.start as usize..range.end as usize];
+            assert_eq!(outline.len(), FACE_OUTLINE_VERTICES as usize);
+            for vertex in outline {
+                assert_eq!(vertex.position[axis], plane, "{face:?} outline off plane");
+            }
+        }
+        assert_eq!(debug_vertex_range(DebugShape::Box), 0..CUBE_EDGE_VERTICES);
+    }
+
+    #[test]
+    fn a_debug_uniform_places_and_colors_the_shared_unit_geometry() {
+        let primitive = DebugPrimitive {
+            coord: ChunkCoord::new(2, -1, 0),
+            kind: DebugKind::Presented(LodLevel::Lod1),
+            shape: DebugShape::Box,
+            inset: 4.0,
+            color: [0.25, 0.5, 0.75],
+        };
+        let uniform = DebugPrimitiveUniform::from_primitive(&primitive);
+        assert_eq!(uniform.placement, [68.0, -28.0, 4.0, 24.0]);
+        assert_eq!(uniform.color, [0.25, 0.5, 0.75, 1.0]);
+    }
 
     #[test]
     fn gpu_payload_bytes_are_exact_for_the_uploaded_layout() {
-        assert_eq!(gpu_payload_bytes(&Mesh::default()), 16);
+        assert_eq!(std::mem::size_of::<ModelUniform>(), 32);
+        assert_eq!(gpu_payload_bytes(&Mesh::default()), 32);
         let mesh = mesh_exposed_faces(&diagnostic_fixture());
-        // 528 vertices of 24 bytes, 792 u32 indices, one 16-byte model uniform.
+        // 528 vertices of 24 bytes, 792 u32 indices, one 32-byte model uniform.
         assert_eq!(mesh.vertices().len(), 528);
         assert_eq!(mesh.indices().len(), 792);
-        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 16);
+        assert_eq!(gpu_payload_bytes(&mesh), 528 * 24 + 792 * 4 + 32);
+    }
+
+    #[test]
+    fn both_levels_span_the_same_world_volume_at_positive_and_negative_chunks() {
+        for coord in [ChunkCoord::new(3, 1, -2), ChunkCoord::new(-1, -1, -1)] {
+            let fine = ModelUniform::from_chunk(coord, LodLevel::Lod0);
+            let coarse = ModelUniform::from_chunk(coord, LodLevel::Lod1);
+            assert_eq!(
+                fine.translation, coarse.translation,
+                "origin is never scaled"
+            );
+            assert_eq!(fine.scale, [1.0, 0.0, 0.0, 0.0]);
+            assert_eq!(coarse.scale, [2.0, 0.0, 0.0, 0.0]);
+            let expected_min = [
+                coord.x as f32 * 32.0,
+                coord.y as f32 * 32.0,
+                coord.z as f32 * 32.0,
+            ];
+            let expected_max = [
+                expected_min[0] + 32.0,
+                expected_min[1] + 32.0,
+                expected_min[2] + 32.0,
+            ];
+            assert_eq!(
+                fine.world_bounds(LodLevel::Lod0),
+                (expected_min, expected_max)
+            );
+            assert_eq!(
+                coarse.world_bounds(LodLevel::Lod1),
+                (expected_min, expected_max)
+            );
+        }
     }
 
     #[test]
     fn chunk_model_translation_preserves_signed_chunk_offsets() {
         assert_eq!(
-            ModelUniform::from_chunk_coord(ChunkCoord::new(-1, 2, 3)).translation,
+            ModelUniform::from_chunk(ChunkCoord::new(-1, 2, 3), LodLevel::Lod0).translation,
+            [-32.0, 64.0, 96.0, 0.0]
+        );
+        assert_eq!(
+            ModelUniform::from_chunk(ChunkCoord::new(-1, 2, 3), LodLevel::Lod1).translation,
             [-32.0, 64.0, 96.0, 0.0]
         );
     }

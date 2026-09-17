@@ -1,9 +1,13 @@
 use std::{
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
-use veldwake_voxel::{ChunkCoord, Mesh, OwnedMeshingSnapshot, mesh_exposed_faces_from_snapshot};
+use veldwake_voxel::{
+    CHUNK_EDGE, COARSE_EDGE, ChunkCoord, Mesh, OwnedMeshingSnapshot,
+    mesh_exposed_faces_from_snapshot,
+};
 
 use crate::{
     source::{DiagnosticChunkSource, SourceChunk},
@@ -20,7 +24,29 @@ pub(crate) enum WorkerJob {
 
 pub(crate) struct MeshJob {
     pub(crate) stamp: MeshStamp,
-    pub(crate) snapshot: OwnedMeshingSnapshot,
+    pub(crate) snapshot: MeshSnapshot,
+}
+
+/// Owned meshing input at the level the job was issued for.
+pub(crate) enum MeshSnapshot {
+    Fine(OwnedMeshingSnapshot<CHUNK_EDGE>),
+    Coarse(OwnedMeshingSnapshot<COARSE_EDGE>),
+}
+
+impl MeshSnapshot {
+    pub(crate) fn payload_bytes(&self) -> usize {
+        match self {
+            Self::Fine(snapshot) => snapshot.payload_bytes(),
+            Self::Coarse(snapshot) => snapshot.payload_bytes(),
+        }
+    }
+
+    fn mesh(&self) -> Mesh {
+        match self {
+            Self::Fine(snapshot) => mesh_exposed_faces_from_snapshot(snapshot),
+            Self::Coarse(snapshot) => mesh_exposed_faces_from_snapshot(snapshot),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -37,6 +63,8 @@ pub(crate) enum WorkerResult {
 pub(crate) struct MeshResult {
     pub(crate) stamp: MeshStamp,
     pub(crate) mesh: Mesh,
+    /// Wall time the worker spent inside the mesher for this job.
+    pub(crate) mesh_time: Duration,
 }
 
 pub(crate) struct Worker {
@@ -102,10 +130,15 @@ fn worker_loop(
                 token,
                 source: source.load(coord),
             },
-            WorkerJob::Mesh(job) => WorkerResult::Mesh(Box::new(MeshResult {
-                stamp: job.stamp,
-                mesh: mesh_exposed_faces_from_snapshot(&job.snapshot),
-            })),
+            WorkerJob::Mesh(job) => {
+                let started = Instant::now();
+                let mesh = job.snapshot.mesh();
+                WorkerResult::Mesh(Box::new(MeshResult {
+                    stamp: job.stamp,
+                    mesh,
+                    mesh_time: started.elapsed(),
+                }))
+            }
         };
         if results.send(result).is_err() {
             break;

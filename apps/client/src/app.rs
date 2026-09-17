@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use veldwake_streaming::StreamingConfig;
 use winit::{
     application::ApplicationHandler,
@@ -18,6 +18,7 @@ use winit::{
 
 use crate::{
     camera::{Camera, CameraController},
+    debug::{DebugMode, debug_primitives},
     input::{CameraAction, InputState},
     renderer::{RenderOutcome, Renderer},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
@@ -62,6 +63,10 @@ struct App {
     frame_stats: FrameStats,
     occluded: bool,
     fatal_error: Option<String>,
+    /// Active debug view, cycled by `F1`. `Off` is the shipped rendering.
+    debug_mode: DebugMode,
+    /// Whether the box-drawing views draw their boxes, toggled by `F2`.
+    debug_boxes: bool,
 }
 
 impl Default for App {
@@ -76,6 +81,8 @@ impl Default for App {
             frame_stats: FrameStats::new(),
             occluded: false,
             fatal_error: None,
+            debug_mode: DebugMode::Off,
+            debug_boxes: true,
         }
     }
 }
@@ -95,7 +102,8 @@ impl App {
         self.camera
             .set_aspect_from_size(initial_size.width, initial_size.height);
 
-        let config = StreamingConfig::default();
+        let profile = StreamingProfile::from_environment();
+        let config = profile.config();
         let budget = UploadBudget::default();
         let streaming = StreamingBridge::new(config, budget, self.camera.position())
             .map_err(|error| AppRunError(error.to_string()))?;
@@ -107,6 +115,8 @@ impl App {
         .map_err(|error| AppRunError(error.to_string()))?;
 
         info!(
+            profile = profile.name(),
+            lod_selection = ?config.lod_selection,
             camera_chunk = ?streaming.desired_center(),
             render_radius = config.render_radius,
             dependency_halo = config.dependency_halo,
@@ -124,7 +134,9 @@ impl App {
         window.set_visible(true);
         window.request_redraw();
         info!(
-            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, Escape exits"
+            "M3B diagnostic controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
+             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, \
+             Escape exits"
         );
         Ok(())
     }
@@ -145,6 +157,20 @@ impl App {
         if code == KeyCode::Escape && pressed {
             info!("clean shutdown requested by Escape");
             event_loop.exit();
+            return;
+        }
+
+        if pressed && let Some(action) = debug_action(code) {
+            match action {
+                DebugAction::CycleMode => self.debug_mode = self.debug_mode.next(),
+                DebugAction::ToggleBoxes => self.debug_boxes = !self.debug_boxes,
+            }
+            info!(
+                mode = self.debug_mode.name(),
+                boxes = self.debug_boxes,
+                boxes_apply = self.debug_mode.uses_boxes(),
+                "debug view changed"
+            );
             return;
         }
 
@@ -179,11 +205,26 @@ impl App {
                 return;
             }
         };
-        renderer.update_camera(&self.camera);
-        let request_next_redraw = match renderer.render() {
+        // Off produces no primitives, debug-slot allocations, debug uniform
+        // writes, or debug draws. Fixed startup resources and any reusable
+        // slots retained after prior debug use still exist.
+        let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
+        renderer.set_debug_primitives(&primitives);
+        renderer.update_camera(&self.camera, self.debug_mode.lod_tint());
+        let submit_started = Instant::now();
+        let outcome = renderer.render();
+        let submit_time = submit_started.elapsed();
+        let request_next_redraw = match outcome {
             RenderOutcome::Rendered => {
-                self.frame_stats.record(now, elapsed, report);
-                self.frame_stats.report_if_due(now, streaming, renderer);
+                self.frame_stats
+                    .record(now, elapsed, submit_time, report, streaming);
+                self.frame_stats.report_if_due(
+                    now,
+                    streaming,
+                    renderer,
+                    self.debug_mode,
+                    self.debug_boxes,
+                );
                 true
             }
             RenderOutcome::Retry => true,
@@ -293,6 +334,22 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Keyboard control of the debug views. Separate from camera actions so the
+/// mapping is testable without a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DebugAction {
+    CycleMode,
+    ToggleBoxes,
+}
+
+const fn debug_action(key: KeyCode) -> Option<DebugAction> {
+    match key {
+        KeyCode::F1 => Some(DebugAction::CycleMode),
+        KeyCode::F2 => Some(DebugAction::ToggleBoxes),
+        _ => None,
+    }
+}
+
 fn camera_action(key: KeyCode) -> Option<CameraAction> {
     match key {
         KeyCode::KeyW => Some(CameraAction::Forward),
@@ -305,10 +362,66 @@ fn camera_action(key: KeyCode) -> Option<CameraAction> {
     }
 }
 
+/// Which streaming configuration the diagnostic client runs. Selected by the
+/// `VELDWAKE_PROFILE` environment variable so no CLI dependency is needed:
+/// `default` (M3B), `m3c-baseline` (radius 3, `Lod0` only), `m3c-banded`
+/// (radius 3, `Lod0`/`Lod1` band).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamingProfile {
+    Default,
+    M3cBaseline,
+    M3cBanded,
+}
+
+impl StreamingProfile {
+    fn from_environment() -> Self {
+        match std::env::var("VELDWAKE_PROFILE") {
+            Ok(value) => match Self::parse(&value) {
+                Some(profile) => profile,
+                None => {
+                    warn!(%value, "unknown VELDWAKE_PROFILE; using default");
+                    Self::Default
+                }
+            },
+            Err(_) => Self::Default,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "default" | "m3b" => Some(Self::Default),
+            "m3c-baseline" | "baseline" => Some(Self::M3cBaseline),
+            "m3c-banded" | "banded" | "lod" => Some(Self::M3cBanded),
+            _ => None,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::M3cBaseline => "m3c-baseline",
+            Self::M3cBanded => "m3c-banded",
+        }
+    }
+
+    const fn config(self) -> StreamingConfig {
+        match self {
+            Self::Default => StreamingConfig::default_profile(),
+            Self::M3cBaseline => StreamingConfig::m3c_baseline(),
+            Self::M3cBanded => StreamingConfig::m3c_diagnostic(),
+        }
+    }
+}
+
 struct FrameStats {
     report_started: Instant,
+    started: Instant,
     frames: u64,
     accumulated_frame_time: Duration,
+    submit_total: Duration,
+    submit_max: Duration,
+    /// First time the runtime reported idle with every render chunk decided.
+    idle_reached: Option<Duration>,
     uploads: u64,
     upload_bytes: u64,
     deactivations: u64,
@@ -321,8 +434,12 @@ impl FrameStats {
     fn new() -> Self {
         Self {
             report_started: Instant::now(),
+            started: Instant::now(),
             frames: 0,
             accumulated_frame_time: Duration::ZERO,
+            submit_total: Duration::ZERO,
+            submit_max: Duration::ZERO,
+            idle_reached: None,
             uploads: 0,
             upload_bytes: 0,
             deactivations: 0,
@@ -332,9 +449,33 @@ impl FrameStats {
         }
     }
 
-    fn record(&mut self, _now: Instant, frame_time: Duration, report: FrameStreamingReport) {
+    fn record(
+        &mut self,
+        now: Instant,
+        frame_time: Duration,
+        submit_time: Duration,
+        report: FrameStreamingReport,
+        streaming: &StreamingBridge,
+    ) {
         self.frames += 1;
         self.accumulated_frame_time += frame_time;
+        self.submit_total += submit_time;
+        self.submit_max = self.submit_max.max(submit_time);
+        if self.idle_reached.is_none()
+            && streaming.runtime().is_idle()
+            && streaming.pending_removal_count() == 0
+            && streaming.staged_count() == 0
+            && report.uploads == 0
+        {
+            let elapsed = now.saturating_duration_since(self.started);
+            self.idle_reached = Some(elapsed);
+            let gpu_active = streaming.presented_count();
+            info!(
+                time_to_idle_ms = elapsed.as_secs_f64() * 1000.0,
+                presented = gpu_active,
+                "M3C streaming reached idle coverage"
+            );
+        }
         self.uploads += report.uploads as u64;
         self.upload_bytes += report.upload_bytes as u64;
         self.deactivations += report.deactivations as u64;
@@ -344,7 +485,14 @@ impl FrameStats {
     }
 
     /// One aggregate line per interval; never one line per chunk per frame.
-    fn report_if_due(&mut self, now: Instant, streaming: &StreamingBridge, renderer: &Renderer) {
+    fn report_if_due(
+        &mut self,
+        now: Instant,
+        streaming: &StreamingBridge,
+        renderer: &Renderer,
+        debug_mode: DebugMode,
+        debug_boxes: bool,
+    ) {
         let report_span = now.saturating_duration_since(self.report_started);
         if report_span < FRAME_REPORT_INTERVAL || self.frames == 0 {
             return;
@@ -357,7 +505,10 @@ impl FrameStats {
         let summary = runtime.summary();
         let metrics = runtime.metrics();
         let totals = streaming.totals();
+        let gaps = streaming.gaps();
         let gpu = renderer.residency();
+        let chunk_mesh_gpu_bytes = streaming.chunk_mesh_gpu_bytes();
+        let debug_work = renderer.debug_frame_work();
         info!(
             frames = self.frames,
             report_seconds = report_span.as_secs_f64(),
@@ -382,8 +533,21 @@ impl FrameStats {
             queued_meshes = summary.queued_meshes,
             jobs_in_flight = summary.jobs_in_flight,
             presented = streaming.presented_count(),
-            gpu_resident = gpu.resident,
-            gpu_active = gpu.active,
+            gpu_resident = gpu.resident(),
+            gpu_active = gpu.active(),
+            gpu_quads = gpu.quads(),
+            lod0_desired = summary.lod0_desired,
+            lod1_desired = summary.lod1_desired,
+            lod0_ready = summary.lod0_ready,
+            lod1_ready = summary.lod1_ready,
+            lod0_gpu_resident = gpu.lod0.resident,
+            lod0_gpu_active = gpu.lod0.active,
+            lod0_gpu_quads = gpu.lod0.quads,
+            lod0_gpu_bytes = gpu.lod0.bytes,
+            lod1_gpu_resident = gpu.lod1.resident,
+            lod1_gpu_active = gpu.lod1.active,
+            lod1_gpu_quads = gpu.lod1.quads,
+            lod1_gpu_bytes = gpu.lod1.bytes,
             pending_gpu_removal = streaming.pending_removal_count(),
             "M3B streaming state"
         );
@@ -411,12 +575,82 @@ impl FrameStats {
             snapshot_bytes_dispatched = metrics.snapshot_bytes_dispatched,
             resident_payload_bytes = summary.resident_payload_bytes,
             cpu_mesh_bytes = summary.cpu_mesh_bytes,
-            gpu_bytes = gpu.bytes,
+            chunk_mesh_active_bytes = gpu.bytes(),
+            total_uploads_lod0 = totals.uploads_lod0,
+            total_uploads_lod1 = totals.uploads_lod1,
+            total_upload_bytes_lod0 = totals.upload_bytes_lod0,
+            total_upload_bytes_lod1 = totals.upload_bytes_lod1,
+            lod_swaps = metrics.lod_swaps,
+            stale_lod = metrics.stale_lod_results,
+            gaps_closed = gaps.closed_gaps(),
+            gaps_lod = gaps.lod_gaps,
+            gaps_neighbor = gaps.neighbor_presentation_gaps,
+            gaps_membership = gaps.membership_gaps,
+            gaps_data = gaps.data_gaps,
+            gaps_unattributed = gaps.unattributed_gaps,
+            gap_frames_total = gaps.gap_frames_total,
+            gap_frames_max = gaps.max_gap_frames,
+            gap_max_simultaneous = gaps.max_simultaneous_missing,
+            gap_current_missing = gaps.current_missing,
+            gap_frames_with_missing = gaps.frames_with_missing,
+            ready_undrawn_now = gaps.ready_undrawn_now,
+            ready_undrawn_max = gaps.ready_undrawn_max,
+            ready_undrawn_frames = gaps.ready_undrawn_frames,
+            ready_undrawn_chunk_frames = gaps.ready_undrawn_chunk_frames,
+            frontier_pipeline_pending_now = gaps.frontier_pipeline_pending_now,
+            frontier_pipeline_pending_max = gaps.frontier_pipeline_pending_max,
+            ready_awaiting_upload_now = gaps.ready_awaiting_upload_now,
+            ready_awaiting_upload_max = gaps.ready_awaiting_upload_max,
+            ready_blocked_transition_now = gaps.ready_blocked_transition_now,
+            ready_blocked_transition_max = gaps.ready_blocked_transition_max,
+            committed_missing_now = gaps.committed_missing_now,
+            committed_missing_max = gaps.committed_missing_max,
+            blocked_groups_now = gaps.blocked_groups_now,
+            blocked_group_max = gaps.blocked_group_max,
+            constrained_undrawn_now = gaps.constrained_undrawn_now,
+            constrained_undrawn_max = gaps.constrained_undrawn_max,
+            transition_commits = totals.transition_commits,
+            transition_chunks = totals.transition_chunks,
+            restaged = totals.restaged,
+            staged_discarded = totals.staged_discarded,
+            staged_now = streaming.staged_count(),
+            staged_bytes = streaming.staged_bytes(),
+            peak_staged_bytes = totals.peak_staged_bytes,
+            committed_retained = metrics.committed_retained,
+            committed_dropped = metrics.committed_dropped,
+            transition_pending = summary.transition_pending,
+            gpu_staged = gpu.staged(),
+            gpu_staged_bytes = gpu.staged_bytes(),
+            chunk_mesh_committed_bytes = chunk_mesh_gpu_bytes.committed,
+            chunk_mesh_total_bytes = chunk_mesh_gpu_bytes.total(),
+            peak_chunk_mesh_committed_bytes = totals.peak_chunk_mesh_committed_bytes,
+            peak_chunk_mesh_total_bytes = totals.peak_chunk_mesh_total_bytes,
+            presentation_commit_failures = totals.presentation_commit_failures,
+            commit_invariant_failures = totals.commit_invariant_failures,
+            debug_mode = debug_mode.name(),
+            debug_boxes,
+            debug_draws = renderer.debug_draw_count(),
+            debug_slots = renderer.debug_slot_count(),
+            debug_primitive_allocations = debug_work.primitive_allocations,
+            debug_uniform_writes = debug_work.uniform_writes,
+            snapshot_build_total_us = metrics.snapshot_build.total_us,
+            snapshot_build_max_us = metrics.snapshot_build.max_us,
+            lod1_derivation_total_us = metrics.lod1_derivation.total_us,
+            lod1_derivation_max_us = metrics.lod1_derivation.max_us,
+            worker_mesh_lod0_total_us = metrics.worker_mesh_lod0.total_us,
+            worker_mesh_lod0_max_us = metrics.worker_mesh_lod0.max_us,
+            worker_mesh_lod1_total_us = metrics.worker_mesh_lod1.total_us,
+            worker_mesh_lod1_max_us = metrics.worker_mesh_lod1.max_us,
+            interval_submit_mean_us = self.submit_total.as_micros() / u128::from(self.frames),
+            interval_submit_max_us = self.submit_max.as_micros(),
+            time_to_idle_ms = self.idle_reached.map(|d| d.as_secs_f64() * 1000.0),
             "M3B streaming work and budgets"
         );
         self.report_started = now;
         self.frames = 0;
         self.accumulated_frame_time = Duration::ZERO;
+        self.submit_total = Duration::ZERO;
+        self.submit_max = Duration::ZERO;
         self.uploads = 0;
         self.upload_bytes = 0;
         self.deactivations = 0;
@@ -428,9 +662,59 @@ impl FrameStats {
 
 #[cfg(test)]
 mod tests {
-    use super::camera_action;
+    use super::{DebugAction, camera_action, debug_action};
+    use crate::debug::DebugMode;
     use crate::input::CameraAction;
     use winit::keyboard::KeyCode;
+
+    #[test]
+    fn function_keys_drive_the_debug_views_and_nothing_else_does() {
+        assert_eq!(debug_action(KeyCode::F1), Some(DebugAction::CycleMode));
+        assert_eq!(debug_action(KeyCode::F2), Some(DebugAction::ToggleBoxes));
+        assert_eq!(debug_action(KeyCode::F3), None);
+        assert_eq!(debug_action(KeyCode::KeyW), None);
+        assert_eq!(camera_action(KeyCode::F1), None);
+        assert_eq!(camera_action(KeyCode::F2), None);
+
+        // Four presses of F1 return to the shipped rendering.
+        let mut mode = DebugMode::Off;
+        for _ in 0..4 {
+            mode = mode.next();
+        }
+        assert_eq!(mode, DebugMode::Off);
+    }
+
+    #[test]
+    fn streaming_profile_parses_documented_names_only() {
+        use super::StreamingProfile;
+        use veldwake_streaming::StreamingConfig;
+        assert_eq!(
+            StreamingProfile::parse("default"),
+            Some(StreamingProfile::Default)
+        );
+        assert_eq!(StreamingProfile::parse(""), Some(StreamingProfile::Default));
+        assert_eq!(
+            StreamingProfile::parse(" M3C-Baseline "),
+            Some(StreamingProfile::M3cBaseline)
+        );
+        assert_eq!(
+            StreamingProfile::parse("banded"),
+            Some(StreamingProfile::M3cBanded)
+        );
+        assert_eq!(StreamingProfile::parse("m3d"), None);
+        assert_eq!(
+            StreamingProfile::Default.config(),
+            StreamingConfig::default()
+        );
+        assert_eq!(
+            StreamingProfile::M3cBaseline.config(),
+            StreamingConfig::m3c_baseline()
+        );
+        assert_eq!(
+            StreamingProfile::M3cBanded.config(),
+            StreamingConfig::m3c_diagnostic()
+        );
+    }
 
     #[test]
     fn platform_keys_translate_to_camera_actions() {

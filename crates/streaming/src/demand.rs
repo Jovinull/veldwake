@@ -2,7 +2,48 @@ use std::{collections::BTreeSet, fmt};
 
 use veldwake_voxel::{ChunkCoord, Face};
 
-/// Tunable limits for the M3B diagnostic runtime.
+use crate::types::LodLevel;
+
+/// How render-demand chunks are assigned a level of detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LodSelection {
+    /// Every render-demand chunk is `Lod0`; the M3B behavior.
+    Lod0Only,
+    /// Spatial band by Chebyshev chunk distance `d` from the camera chunk:
+    /// `d <= 1` is `Lod0`, `d == 2` keeps the previous level, `d >= 3` is
+    /// `Lod1`. A coordinate with no history starts at `Lod1` unless `d <= 1`.
+    Banded,
+}
+
+/// Chebyshev distance inside which `Banded` forces `Lod0`.
+pub const BAND_LOD0_RADIUS: u32 = 1;
+/// Chebyshev distance at which `Banded` keeps the previous level.
+pub const BAND_TRANSITION_RADIUS: u32 = 2;
+
+impl LodSelection {
+    /// Deterministic level for a render-demand chunk at Chebyshev distance
+    /// `distance`, given the level it had while retained (if any).
+    #[must_use]
+    pub const fn select(self, distance: u32, previous: Option<LodLevel>) -> LodLevel {
+        match self {
+            Self::Lod0Only => LodLevel::Lod0,
+            Self::Banded => {
+                if distance <= BAND_LOD0_RADIUS {
+                    LodLevel::Lod0
+                } else if distance == BAND_TRANSITION_RADIUS {
+                    match previous {
+                        Some(level) => level,
+                        None => LodLevel::Lod1,
+                    }
+                } else {
+                    LodLevel::Lod1
+                }
+            }
+        }
+    }
+}
+
+/// Tunable limits for the M3B/M3C diagnostic runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamingConfig {
     pub render_radius: u32,
@@ -11,16 +52,57 @@ pub struct StreamingConfig {
     pub hard_resident_cap: usize,
     /// CPU records whose eviction may be finalized in one update.
     pub max_cpu_evictions_per_update: usize,
+    pub lod_selection: LodSelection,
 }
 
 impl Default for StreamingConfig {
+    /// The M3B diagnostic profile: radius 1, every render chunk at `Lod0`.
     fn default() -> Self {
+        Self::default_profile()
+    }
+}
+
+impl StreamingConfig {
+    /// `Default::default()` as a `const fn`, for const profile tables.
+    #[must_use]
+    pub const fn default_profile() -> Self {
         Self {
             render_radius: 1,
             dependency_halo: 1,
             retention_radius: 2,
             hard_resident_cap: 160,
             max_cpu_evictions_per_update: 8,
+            lod_selection: LodSelection::Lod0Only,
+        }
+    }
+}
+
+impl StreamingConfig {
+    /// The M3C baseline: the same visible distance, halo, retention, and cap
+    /// as `m3c_diagnostic`, but every render chunk at `Lod0`. It is the
+    /// no-LOD reference the LOD profile is measured against.
+    #[must_use]
+    pub const fn m3c_baseline() -> Self {
+        Self {
+            lod_selection: LodSelection::Lod0Only,
+            ..Self::m3c_diagnostic()
+        }
+    }
+
+    /// The M3C diagnostic profile: visible radius 3 with the banded selector.
+    ///
+    /// Set sizes at these radii are 343 render, 637 dependency, and 729
+    /// retention chunks; the union of two retention cubes one chunk apart is
+    /// 810, which the cap covers as transient headroom for this profile.
+    #[must_use]
+    pub const fn m3c_diagnostic() -> Self {
+        Self {
+            render_radius: 3,
+            dependency_halo: 1,
+            retention_radius: 4,
+            hard_resident_cap: 810,
+            max_cpu_evictions_per_update: 8,
+            lod_selection: LodSelection::Banded,
         }
     }
 }
@@ -211,6 +293,53 @@ mod tests {
     }
 
     #[test]
+    fn m3c_profile_sets_have_the_documented_sizes() -> Result<(), DemandError> {
+        let config = StreamingConfig::m3c_diagnostic().validate()?;
+        let sets = DemandSets::around(ChunkCoord::default(), config)?;
+        assert_eq!(sets.render.len(), 343);
+        assert_eq!(sets.dependency.len(), 637);
+        assert_eq!(sets.retention.len(), 729);
+        let shifted = DemandSets::around(ChunkCoord::new(1, 0, 0), config)?;
+        assert_eq!(sets.retention.union(&shifted.retention).count(), 810);
+        assert!(config.hard_resident_cap >= 810);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_profile_differs_from_banded_only_in_selection() -> Result<(), DemandError> {
+        let baseline = StreamingConfig::m3c_baseline().validate()?;
+        let banded = StreamingConfig::m3c_diagnostic().validate()?;
+        assert_eq!(baseline.lod_selection, LodSelection::Lod0Only);
+        assert_eq!(
+            StreamingConfig {
+                lod_selection: LodSelection::Banded,
+                ..baseline
+            },
+            banded
+        );
+        assert_ne!(baseline, StreamingConfig::default());
+        Ok(())
+    }
+
+    #[test]
+    fn banded_selection_follows_the_transition_band() {
+        let banded = LodSelection::Banded;
+        assert_eq!(banded.select(0, None), LodLevel::Lod0);
+        assert_eq!(banded.select(1, Some(LodLevel::Lod1)), LodLevel::Lod0);
+        assert_eq!(banded.select(2, None), LodLevel::Lod1);
+        assert_eq!(banded.select(2, Some(LodLevel::Lod0)), LodLevel::Lod0);
+        assert_eq!(banded.select(2, Some(LodLevel::Lod1)), LodLevel::Lod1);
+        assert_eq!(banded.select(3, Some(LodLevel::Lod0)), LodLevel::Lod1);
+        assert_eq!(banded.select(7, None), LodLevel::Lod1);
+        for distance in 0..5 {
+            assert_eq!(
+                LodSelection::Lod0Only.select(distance, Some(LodLevel::Lod1)),
+                LodLevel::Lod0
+            );
+        }
+    }
+
+    #[test]
     fn valid_configurations_are_accepted() -> Result<(), DemandError> {
         StreamingConfig::default().validate()?;
         StreamingConfig {
@@ -219,6 +348,7 @@ mod tests {
             retention_radius: 1,
             hard_resident_cap: 16,
             max_cpu_evictions_per_update: 1,
+            ..StreamingConfig::default()
         }
         .validate()?;
         StreamingConfig {
@@ -227,6 +357,7 @@ mod tests {
             retention_radius: 9,
             hard_resident_cap: 1,
             max_cpu_evictions_per_update: 64,
+            ..StreamingConfig::default()
         }
         .validate()?;
         Ok(())

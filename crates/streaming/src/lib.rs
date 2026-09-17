@@ -12,9 +12,15 @@ mod source;
 mod types;
 mod worker;
 
-pub use demand::{DemandError, DemandSets, StreamingConfig};
+pub use demand::{
+    BAND_LOD0_RADIUS, BAND_TRANSITION_RADIUS, DemandError, DemandSets, LodSelection,
+    StreamingConfig,
+};
 pub use runtime::{
-    MeshStatus, ResidencyStatus, ResidencySummary, RuntimeError, RuntimeMetrics, StreamingRuntime,
+    InvalidationCause, MeshStatus, ResidencyStatus, ResidencySummary, RuntimeError, RuntimeMetrics,
+    StreamingRuntime, TimingStat, TrackedState,
 };
 pub use source::{DiagnosticChunkSource, SourceChunk};
-pub use types::{MeshStamp, NeighborStamp, RequestToken};
+pub use types::{
+    LodLevel, MeshStamp, NeighborPresentation, NeighborStamp, RequestToken, SeamContract,
+};

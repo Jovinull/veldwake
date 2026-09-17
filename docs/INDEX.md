@@ -65,6 +65,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`environment/ENVIRONMENT_REPORT.md`](environment/ENVIRONMENT_REPORT.md)
 - [`environment/SETUP.md`](environment/SETUP.md)
 - [`agents/WORKFLOW.md`](agents/WORKFLOW.md)
+- [`agents/EVIDENCE_HARNESS.md`](agents/EVIDENCE_HARNESS.md)
 - [`agents/SKILLS.md`](agents/SKILLS.md)
 - [`planning/ROADMAP.md`](planning/ROADMAP.md)
 - [`planning/M1_RENDERING_FOUNDATION.md`](planning/M1_RENDERING_FOUNDATION.md)

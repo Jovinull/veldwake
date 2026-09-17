@@ -185,6 +185,17 @@ mod tests {
     }
 
     #[test]
+    fn coarse_diagnostic_fixture_has_locked_topology() {
+        let coarse = diagnostic_fixture().downsample_2x();
+        assert_eq!(coarse.solid_count(), 16);
+        let mesh = mesh_exposed_faces(&coarse);
+        assert_eq!(mesh.quad_count(), 82);
+        assert_eq!(mesh.vertices().len(), 328);
+        assert_eq!(mesh.indices().len(), 492);
+        assert_eq!(coarse, diagnostic_fixture().downsample_2x());
+    }
+
+    #[test]
     fn multichunk_fixture_is_canonical_and_crosses_two_seams() {
         let chunks = multichunk_diagnostic_fixture();
         let coords = chunks.iter().map(|(coord, _)| *coord).collect::<Vec<_>>();

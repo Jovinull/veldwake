@@ -8,7 +8,8 @@ mod mesh;
 mod spatial;
 
 pub use chunk::{
-    CHUNK_BYTES, CHUNK_EDGE, CHUNK_VOLUME, Chunk, ChunkBoundsError, LocalCoord, VoxelId,
+    CHUNK_BYTES, CHUNK_EDGE, CHUNK_VOLUME, COARSE_EDGE, Chunk, ChunkBoundsError, CoarseGrid,
+    DenseGrid, GridCoord, LocalCoord, VoxelId,
 };
 pub use fixture::{
     DIAGNOSTIC_FIXTURE_FINGERPRINT, DIAGNOSTIC_FIXTURE_SOLID_COUNT, MULTICHUNK_FIXTURE_FINGERPRINT,
