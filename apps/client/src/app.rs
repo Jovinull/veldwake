@@ -864,6 +864,10 @@ fn report_combat(
         input_latched,
         input_attack_latched = attack_latched,
         input_dodge_latched = dodge_latched,
+        // A press waiting for a tick. It should clear within a frame or two; a
+        // value that stays set across report intervals is a stuck input.
+        input_held_attack = scene.held_input().0,
+        input_held_dodge = scene.held_input().1,
         distance = scene.distance(),
         player_action = player.action().label(encounter.attack_spec(Side::Player)),
         player_elapsed = player.action().elapsed(),

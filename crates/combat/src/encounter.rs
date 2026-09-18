@@ -1573,6 +1573,113 @@ mod tests {
     }
 
     #[test]
+    fn the_first_blade_of_a_tick_takes_the_other_one_out_of_the_air() {
+        // What §21 asks to be tested, and what it turned out to be.
+        //
+        // The question was which of two hits landing on one tick is published
+        // first. The answer is that there is no such tick: hits resolve in the
+        // fixed order player, then adversary, and a hit staggers its victim —
+        // so by the time the adversary's own query runs it is no longer
+        // attacking. Two blades cannot land together because the first one
+        // takes the second out of the air. That is a better property than a
+        // tie-break, and it is the one asserted here.
+        //
+        // The situation is constructed rather than waited for: the loop starts
+        // the player's swing whenever the two active windows would overlap, and
+        // knockback is off on both sides so that the shove cannot be what
+        // separates them. Nineteen such swings happen in one reference fight,
+        // and the counters below prove the case was exercised rather than
+        // quietly missed.
+        let ground = ground();
+        let mut setup = fixture::golden_setup();
+        setup.tuning.player_attack.knockback = 0.0;
+        setup.tuning.adversary_attack.knockback = 0.0;
+        let mut encounter = armed(&setup, &ground);
+        let player_spec = *encounter.attack_spec(Side::Player);
+        let adversary_spec = *encounter.attack_spec(Side::Adversary);
+
+        let mut overlapping_swings = 0_u32;
+        let mut landed_while_adversary_was_swinging = 0_u32;
+        let mut same_tick_pairs = 0_u32;
+        for _ in 0..fixture::GOLDEN_RUN_TICKS {
+            let toward = encounter.combatant(Side::Adversary).position()
+                - encounter.combatant(Side::Player).position();
+            let adversary = encounter.combatant(Side::Adversary).action();
+            // Start the swing whenever the two active windows would *overlap*,
+            // not only when they would start together: twelve ticks of overlap
+            // is a window worth aiming at, one tick of coincidence is not.
+            let aligned = match adversary.attack_phase(&adversary_spec) {
+                Some(crate::combatant::AttackPhase::Windup) => {
+                    let until = adversary_spec
+                        .active_start()
+                        .saturating_sub(adversary.elapsed());
+                    let earliest = player_spec
+                        .active_start()
+                        .saturating_sub(adversary_spec.active());
+                    until >= earliest && until <= player_spec.active_end()
+                }
+                _ => false,
+            };
+            let attack = aligned && encounter.combatant(Side::Player).can_act();
+            if attack {
+                overlapping_swings += 1;
+            }
+            let adversary_was_attacking =
+                encounter.combatant(Side::Adversary).action().is_attacking();
+            let events = encounter.step(Intent::player(toward, attack, false), Some(&ground));
+
+            let hits: Vec<Side> = events
+                .iter()
+                .filter_map(|event| match event {
+                    CombatEvent::Hit { attacker, .. } => Some(attacker),
+                    _ => None,
+                })
+                .collect();
+            if hits.len() >= 2 {
+                same_tick_pairs += 1;
+                assert_eq!(
+                    hits[0],
+                    Side::Player,
+                    "a tick published {:?} before the player's hit",
+                    hits[0]
+                );
+            }
+            if adversary_was_attacking && hits.contains(&Side::Player) {
+                landed_while_adversary_was_swinging += 1;
+                // The consequence: the adversary is staggered out of its swing
+                // in the same tick, so it is no longer attacking and its blade
+                // never arrives.
+                let after = encounter.combatant(Side::Adversary).action();
+                assert!(
+                    !after.is_attacking(),
+                    "the adversary kept swinging through a hit: {after:?}"
+                );
+                assert!(
+                    !hits.contains(&Side::Adversary),
+                    "both blades landed on one tick, which the stagger should have prevented"
+                );
+            }
+        }
+
+        // A vacuous pass would be worse than a failure, so the test says
+        // whether it ever saw the case it exists for.
+        assert!(
+            overlapping_swings > 0,
+            "the player never swung into the adversary's active window"
+        );
+        assert!(
+            landed_while_adversary_was_swinging > 0,
+            "no hit ever landed on a body that was mid-swing, so nothing was tested: \
+             {overlapping_swings} overlapping swings"
+        );
+        assert_eq!(
+            same_tick_pairs, 0,
+            "two blades landed on the same tick {same_tick_pairs} times; if that is now \
+             possible the ordering above is load-bearing and this test should assert it"
+        );
+    }
+
+    #[test]
     fn the_hurt_capsule_contains_the_core_of_the_body_at_every_moment_of_a_fight() {
         // The accepted limitation, turned into a checked property. Everything
         // that swings is outside the volume — both arms, both legs below the

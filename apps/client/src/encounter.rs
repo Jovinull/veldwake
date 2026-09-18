@@ -232,6 +232,13 @@ pub struct EncounterScene {
     moment_found: Option<u64>,
     /// Ticks a named moment's offset still owes the frame loop.
     pending: u32,
+    /// A press that has not reached a tick yet.
+    ///
+    /// A frame can run no ticks at all — at 144 Hz most of them do — and taking
+    /// the input latches on such a frame and then not stepping would throw the
+    /// press away. Holding it here until a tick consumes it is what makes "a
+    /// press between two ticks is not lost" true rather than intended.
+    held: (bool, bool),
     events: FrameEvents,
     ticks: u64,
 }
@@ -279,6 +286,7 @@ impl EncounterScene {
             runner: None,
             frozen: false,
             pending: 0,
+            held: (false, false),
             moment_found: None,
             events: FrameEvents::new(),
             ticks: 0,
@@ -374,6 +382,15 @@ impl EncounterScene {
         self.frozen
     }
 
+    /// Whether a press is waiting for a tick to consume it.
+    ///
+    /// Reported rather than inspected: a latch that is still set several report
+    /// intervals later is a stuck input, and the report is how that is seen.
+    #[must_use]
+    pub const fn held_input(&self) -> (bool, bool) {
+        self.held
+    }
+
     /// Ticks still owed to a named moment's offset.
     ///
     /// Run by the frame loop, a frame's worth at a time, before the scene
@@ -445,11 +462,19 @@ impl EncounterScene {
             // report line's `input_latched` permanently true, which is how this
             // was noticed in the first real run.
             let _ = input.take_combat_latches();
+            self.held = (false, false);
             return FrameOutcome::default();
         }
         let before = self.clock.dropped();
         let due = self.clock.advance(elapsed);
-        let mut latches = input.take_combat_latches();
+        // Whatever was pressed since the last tick, plus whatever is still held
+        // over from frames that ran none.
+        let taken = input.take_combat_latches();
+        self.held = (self.held.0 || taken.0, self.held.1 || taken.1);
+        let mut latches = self.held;
+        if due > 0 {
+            self.held = (false, false);
+        }
 
         for _ in 0..due {
             let intent = match self.runner.as_mut() {
@@ -501,8 +526,131 @@ impl EncounterScene {
 
 #[cfg(test)]
 mod tests {
-    use super::{EncounterMode, FrameEvents, MAX_FRAME_EVENTS};
+    use super::{EncounterMode, EncounterScene, FrameEvents, MAX_FRAME_EVENTS};
+    use crate::camera::Camera;
+    use crate::input::{CombatAction, InputState};
+    use std::time::Duration;
+    use veldwake_character::ground::FlatGround;
+    use veldwake_combat::MAX_TICKS_PER_FRAME;
     use veldwake_combat::{CombatEvent, MomentKind, Side};
+    use veldwake_procedural::TerrainGenerator;
+
+    #[test]
+    fn a_press_between_two_ticks_is_not_lost() {
+        // The property §9 asks for, and the defect that hid behind it. A frame
+        // can run no ticks — at 144 Hz most do not — and the first version took
+        // the input latches before checking, so a press on such a frame went
+        // straight in the bin. It is held until a tick consumes it.
+        let ground = FlatGround::at(0.0);
+        let generator = TerrainGenerator::golden();
+        let mut scene = match EncounterScene::new(EncounterMode::Armed, &generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("the encounter did not build: {error}"),
+        };
+        let mut input = InputState::default();
+        let camera = Camera::default();
+
+        // A frame far too short to produce a tick, with an attack pressed in it.
+        input.set_combat_action(CombatAction::Attack, true);
+        let outcome = scene.update(
+            Duration::from_micros(100),
+            &mut input,
+            &camera,
+            Some(&ground),
+        );
+        assert_eq!(outcome.ticks, 0, "a tenth of a millisecond produced a tick");
+        assert_eq!(
+            scene.held_input(),
+            (true, false),
+            "the press was thrown away on a frame that ran no ticks"
+        );
+
+        // Several more such frames: it is still waiting, not multiplied.
+        for _ in 0..20 {
+            let outcome = scene.update(
+                Duration::from_micros(100),
+                &mut input,
+                &camera,
+                Some(&ground),
+            );
+            assert_eq!(outcome.ticks, 0);
+        }
+        assert_eq!(scene.held_input(), (true, false));
+
+        // Now a frame long enough to tick. The press is consumed exactly once,
+        // and the swing it started is the only one.
+        let outcome = scene.update(
+            Duration::from_millis(40),
+            &mut input,
+            &camera,
+            Some(&ground),
+        );
+        assert!(outcome.ticks > 0, "forty milliseconds produced no tick");
+        assert_eq!(
+            scene.held_input(),
+            (false, false),
+            "the press was not consumed"
+        );
+        let swings: usize = scene
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    CombatEvent::SwingStarted {
+                        side: Side::Player,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(swings, 1, "one press produced {swings} swings");
+    }
+
+    #[test]
+    fn one_press_with_four_catch_up_ticks_is_still_one_swing() {
+        // The other half: a frame that runs the whole catch-up cap must not
+        // turn one press into four.
+        let ground = FlatGround::at(0.0);
+        let generator = TerrainGenerator::golden();
+        let mut scene = match EncounterScene::new(EncounterMode::Armed, &generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("the encounter did not build: {error}"),
+        };
+        let mut input = InputState::default();
+        let camera = Camera::default();
+
+        input.set_combat_action(CombatAction::Attack, true);
+        // Long enough to owe far more ticks than the cap allows.
+        let outcome = scene.update(
+            Duration::from_millis(250),
+            &mut input,
+            &camera,
+            Some(&ground),
+        );
+        assert_eq!(
+            outcome.ticks, MAX_TICKS_PER_FRAME,
+            "a 250 ms frame did not hit the catch-up cap"
+        );
+        assert!(outcome.dropped_ticks > 0, "the excess was not counted");
+        let swings: usize = scene
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    CombatEvent::SwingStarted {
+                        side: Side::Player,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            swings, 1,
+            "one press produced {swings} swings across four ticks"
+        );
+    }
 
     #[test]
     fn the_mode_parses_every_name_it_documents_and_refuses_the_rest() {
