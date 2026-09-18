@@ -8,6 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 bytemuck = { version = "=1.25.2", default-features = false, features = ["derive"] }
+# The audio device, and nothing else from it. `default-features` is already
+# empty upstream; it is written out because the day a default appears is the day
+# this line has to stop it. No `asio`, no `jack`, no `pipewire`, no
+# `pulseaudio`, no `realtime`: WASAPI is compiled into the Windows backend with
+# no feature flag, and every other backend is a dependency this host will never
+# load. ADR-0007 records the boundary the device sits behind.
+cpal = { version = "=0.18.2", default-features = false }
 glam = { version = "=0.33.7", default-features = false, features = ["std"] }
 pollster = { version = "=1.0.1", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }

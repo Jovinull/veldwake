@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic},
     time::{Duration, Instant},
 };
 
@@ -22,6 +22,7 @@ use veldwake_combat::{CombatEvent, SIDES, Side};
 
 use crate::{
     arena,
+    audio::AudioDevice,
     camera::{Camera, CameraController, FollowController, HitShake},
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
     debug::{DebugMode, combat_primitives, debug_primitives},
@@ -31,6 +32,7 @@ use crate::{
     readout::{self, READOUT_INSTANCES},
     renderer::{RenderOutcome, Renderer, VfxFrameWork},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
+    synth::{VoiceKind, VoiceParams},
     vfx::{MAX_VFX_INSTANCES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
@@ -135,6 +137,9 @@ struct App {
     shake: HitShake,
     /// The two effects, in one fixed pool.
     vfx: VfxPool,
+    /// The sound device, opened only when an encounter runs and silent when
+    /// the host has none.
+    audio: Option<AudioDevice>,
     /// The instance staging buffer, owned here and reused every frame, so that
     /// drawing the effects allocates nothing at all.
     vfx_instances: Box<[VfxInstance; MAX_VFX_INSTANCES]>,
@@ -161,6 +166,7 @@ impl Default for App {
             camera_detached: false,
             shake: HitShake::default(),
             vfx: VfxPool::default(),
+            audio: None,
             vfx_instances: Box::new([VfxInstance::default(); MAX_VFX_INSTANCES]),
             last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
@@ -321,6 +327,10 @@ impl App {
                     player.state().facing,
                 ));
             }
+            // The device opens here and nowhere else, so `VELDWAKE_ENCOUNTER=off`
+            // opens no device, starts no audio thread and holds no handle on
+            // the sound card.
+            self.audio = Some(AudioDevice::open());
             self.encounter = Some(scene);
         }
 
@@ -536,13 +546,50 @@ impl App {
                     // One event, every response: the camera, the chips and
                     // later the sound all come from this and never from a
                     // presentation guess about what probably happened.
-                    CombatEvent::Hit { point, from, .. } => {
+                    CombatEvent::Hit {
+                        point,
+                        from,
+                        damage,
+                        victim,
+                        ..
+                    } => {
                         self.shake.strike();
                         // The contact point the rules computed, and the
                         // direction the blow travelled: the chips leave the
                         // body the way the blade pushed it.
                         self.vfx
                             .impact(point, glam::Vec3::new(from.x, 0.35, from.y));
+                        if let Some(audio) = self.audio.as_ref() {
+                            // Intensity from the damage the rules dealt, weight
+                            // from how big the body struck is: a hit on the
+                            // broad adversary lands lower than one on the
+                            // player, and neither is a guess.
+                            let full = scene.encounter().combatant(victim).health().max().max(1);
+                            let intensity = f32::from(damage) / f32::from(full) * 4.0;
+                            let tallest = scene
+                                .encounter()
+                                .character(Side::Adversary)
+                                .body()
+                                .height_units();
+                            let height = scene.encounter().character(victim).body().height_units();
+                            let weight = if tallest > 0.0 { height / tallest } else { 0.5 };
+                            audio.play(VoiceParams::new(VoiceKind::Hit, intensity, weight));
+                        }
+                    }
+                    // A miss is heard and is never heard as damage: the whiff
+                    // is a different voice with no impact in it, and it moves
+                    // no camera and throws no chips.
+                    CombatEvent::SwingWhiffed { side, .. } => {
+                        if let Some(audio) = self.audio.as_ref() {
+                            let height = scene.encounter().character(side).body().height_units();
+                            let tallest = scene
+                                .encounter()
+                                .character(Side::Adversary)
+                                .body()
+                                .height_units();
+                            let weight = if tallest > 0.0 { height / tallest } else { 0.5 };
+                            audio.play(VoiceParams::new(VoiceKind::Whiff, 0.75, weight));
+                        }
                     }
                     // The accent goes on the adversary's windup only. The
                     // player does not need to be told what the player just
@@ -588,6 +635,7 @@ impl App {
                         shake: &self.shake,
                         vfx: &self.vfx,
                         vfx_work: renderer.vfx_frame_work(),
+                        audio: self.audio.as_ref(),
                     },
                     (attack_latched, dodge_latched),
                 );
@@ -782,6 +830,7 @@ struct PresentationReport<'a> {
     shake: &'a HitShake,
     vfx: &'a VfxPool,
     vfx_work: VfxFrameWork,
+    audio: Option<&'a AudioDevice>,
 }
 
 /// Two aggregate lines about the fight, on the same five-second cadence the
@@ -796,6 +845,7 @@ fn report_combat(
         shake,
         vfx,
         vfx_work,
+        audio,
     } = presentation;
     let (attack_latched, dodge_latched) = latches;
     let input_latched = attack_latched || dodge_latched;
@@ -874,6 +924,45 @@ fn report_combat(
         vfx_draws = vfx_work.draws,
         vfx_instances = vfx_work.instances,
         vfx_instance_bytes = vfx_work.bytes,
+        audio_open = audio.is_some_and(AudioDevice::is_open),
+        audio_sample_rate = audio.map_or(0, AudioDevice::sample_rate),
+        audio_channels = audio.map_or(0, AudioDevice::channels),
+        audio_callbacks = audio.map_or(0, |device| {
+            device.counters().callbacks.load(atomic::Ordering::Relaxed)
+        }),
+        audio_frames = audio.map_or(0, |device| {
+            device.counters().frames.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voices_started = audio.map_or(0, |device| {
+            device.counters().started.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voices_displaced = audio.map_or(0, |device| {
+            device.counters().displaced.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voice_high_water = audio.map_or(0, |device| {
+            device
+                .counters()
+                .voice_high_water
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_buffer_high_water = audio.map_or(0, |device| {
+            device
+                .counters()
+                .buffer_high_water
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_peak_micros = audio.map_or(0, |device| {
+            device
+                .counters()
+                .peak_micros
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_device_errors = audio.map_or(0, |device| {
+            device.counters().errors.load(atomic::Ordering::Relaxed)
+        }),
+        audio_queue_waiting = audio.map_or(0, |device| device.queue().waiting()),
+        audio_queue_consumed = audio.map_or(0, |device| device.queue().consumed()),
+        audio_queue_dropped = audio.map_or(0, |device| device.queue().dropped()),
         "combat work"
     );
 }

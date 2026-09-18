@@ -1,5 +1,6 @@
 mod app;
 mod arena;
+mod audio;
 mod camera;
 mod character;
 mod debug;
@@ -10,6 +11,7 @@ mod lighting;
 mod readout;
 mod renderer;
 mod streaming;
+mod synth;
 mod vfx;
 mod world;
 
