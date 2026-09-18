@@ -1,6 +1,6 @@
 # ADR-0005: Fixed-step headless combat domain
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-18
 - Owners: Veldwake maintainers
 - Supersedes: None

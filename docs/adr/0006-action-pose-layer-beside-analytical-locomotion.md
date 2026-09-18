@@ -1,6 +1,6 @@
 # ADR-0006: Action pose layer beside analytical locomotion
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-18
 - Owners: Veldwake maintainers
 - Supersedes: None
@@ -20,13 +20,25 @@ A weapon adds a second constraint that the milestone discovered rather than assu
 
 **Everything ADR-0004 decided stays decided.** Bodies are rigid voxel parts, one per bone, and nothing is skinned; animation writes transforms and never touches geometry. Locomotion — idle, walk, run and the blend between them — remains analytical, closed form, and driven by distance travelled, with stride as the specified quantity. Terrain contact remains a two-bone analytical IK solve against `GroundSampler`, which returns the top face of the topmost solid voxel and is never smoothed.
 
-**A second animation category is added: a tick-driven action layer.** It lives in `veldwake-character`, because that crate owns what angle every joint is at, and it covers exactly four actions: `Carry`, `Attack`, `Dodge` and `Stagger`. An action is a set of closed-form keyed curves evaluated at a normalized progress derived from an integer tick count, composed over the locomotion angles as an override on the upper body, and clamped by the same joint-range table locomotion is clamped by. Leg IK still runs last, so contact is unaffected by what the upper body is doing.
+**A second animation category is added: a tick-driven action layer.** It lives in `veldwake-character`, because that crate owns what angle every joint is at, and it covers exactly five actions: `Carry`, `Attack`, `Dodge`, `Stagger` and `Defeated`. The fifth was not in the proposal and was added because a capture demanded it: a defeated body posed by `Carry` stood at the end of a fight with its sword out, indistinguishable from a body about to swing. An action is a set of closed-form keyed curves evaluated at a normalized progress derived from an integer tick count, composed over the locomotion angles as an override on the upper body, and clamped by the same joint-range table locomotion is clamped by. Leg IK still runs last, so contact is unaffected by what the upper body is doing.
 
 The seam between the domains: **`veldwake-combat` says which action and how far through it is; `veldwake-character` owns every angle.** Combat never computes a joint angle, and character never knows what a hit is.
 
 `pose()` keeps its M5 signature and behaviour exactly, and `pose_with(character, state, ground, overlay)` is the path that takes an action. With no overlay the two are the same function, which is what keeps every M5 fixture signature valid.
 
-The boundary: this is not an animation system. There is no graph, no state machine inside the animation layer, no clip format, no sampler, no transition table, no additive stack, and no retargeting. Four named actions with keyed curves is the whole thing, and the number of hand-tuned constants grows with the number of actions exactly as ADR-0004 warned it would.
+The boundary: this is not an animation system. There is no graph, no state machine inside the animation layer, no clip format, no sampler, no transition table, no additive stack, and no retargeting. Five named actions with keyed curves is the whole thing, and the number of hand-tuned constants grows with the number of actions exactly as ADR-0004 warned it would.
+
+## Why ADR-0004 is not superseded
+
+ADR-0004 named its own review trigger and expected to be replaced at it:
+
+> this ADR should be superseded rather than stretched.
+
+It was neither. The concern behind that sentence was that combat would force the analytical locomotion layer to grow into something it is not, leaving "driven by distance, not by time" written down as a decision while being false in the code. That did not happen, because the action layer is **not locomotion**. Locomotion is still every joint angle that comes from distance travelled, it is still closed form, and `pose()` is byte-for-byte the function M5 shipped — `GOLDEN_POSE_SIGNATURE` is unchanged at `0xfd1e1f61ba1737d2`, along with the geometry, skeleton, collision and behavioural signatures of all three fixtures.
+
+So every decision in ADR-0004 is still the current decision, and marking it superseded would say the opposite. What M6 adds is a second category beside it, which is what this ADR records. The review trigger has been honoured by answering it rather than by changing a status field.
+
+If a later milestone does need blended, interruptible, clip-driven animation — a second archetype with its own moveset, a transition table, retargeting — then *both* of these ADRs are in scope for a superseding one, and the fact that the keyed-curve approach took five actions before it strained is the evidence that decision should start from.
 
 ## Alternatives considered
 

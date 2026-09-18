@@ -1,6 +1,6 @@
 # ADR-0007: Procedural impact audio and its device boundary
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-18
 - Owners: Veldwake maintainers
 - Supersedes: None

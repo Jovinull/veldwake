@@ -43,3 +43,15 @@ A change that makes current-behavior documentation false must update it in the s
 
 **QUAL-001 — Honest gates**  
 Agents must report checks as PASS, FAIL, BLOCKED, or NOT YET APPLICABLE based on actual execution; tests and assertions cannot be weakened merely to obtain green.
+
+**COMBAT-001 — Integer time**  
+An authoritative combat step takes no duration. `Encounter::step` advances exactly one tick, and every duration inside the domain — attack phases, dodge, stagger, hitstop, adversary timers, the defeat hold — is a tick count. Authored seconds exist only in configuration and are compiled to ticks by a validating constructor before they can reach the runtime, so a `NaN`, negative or infinite duration is unrepresentable rather than rejected, and a phase boundary is an integer comparison. Implemented and tested in `veldwake-combat` since M6.
+
+**COMBAT-002 — Presentation may not invent a consequence**  
+Damage, stagger, knockback, hitstop, the reaction pose, impact effects, impact audio and the camera impulse all originate from one `CombatEvent` produced by the rules. Presentation reads events; it never infers that a hit probably happened. A miss produces no damage, no hit reaction, no impact effect and no camera movement, and may produce a whiff sound. Implemented and tested in `apps/client` since M6.
+
+**COMBAT-003 — Bounded work per tick and per frame**  
+Every buffer in the combat path is fixed at compile time and every overflow is counted rather than absorbed: events per tick, events per frame, blade sweep substeps, simulation ticks per rendered frame, particles in the pool, sound requests in the queue, and simultaneous voices. Nothing in the path allocates per tick or per frame. Implemented and tested in `veldwake-combat` and `apps/client` since M6.
+
+**COMBAT-004 — The real-time audio callback**  
+The audio callback never allocates, never takes a lock, never logs, never blocks and never panics. Communication with it is a lock-free single-producer single-consumer ring of atomics, and everything it reports is an atomic the game thread reads on its own time. A channel that is not documented to be allocation-free does not satisfy this. Implemented in `apps/client/src/audio.rs` since M6.

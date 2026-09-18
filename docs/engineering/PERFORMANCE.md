@@ -147,3 +147,35 @@ Disk footprint for the same 81 entries: raw 4,132,656 bytes (65,584 per present 
 Independent QA first produced two much slower samples and then found the cause: the bounded reader reserved the 196,657-byte maximum for every file, including 48-byte absence entries and tiny RLE entries. Retaining the hard `take(MAX_ENTRY_BYTES + 1)` limit but allowing the vector to grow from the actual input removed that avoidable allocation. The final post-fix raw off/cold/warm/warm-again sample was 5,437/50,624/17,119/14,684 µs; RLE was 4,226/45,733/8,411/8,518 µs. Logical counts and footprints were unchanged. Single-run wall-clock values remain noisy, and even the corrected sample shows no benefit over regeneration.
 
 Thread boundary: when opted in, `ChunkCache::open` synchronously sweeps temporary files and walks the footprint once during client event-loop initialization. It is cold setup, not frame-hot-path work, but it can grow with the unbounded cache and is part of KI-015. Per-chunk reads, codec work, fallback, and publication run on the single streaming worker. No directory scan occurs per frame. An individual read is capped at 196,657 bytes (one beyond the largest valid current entry), so a hostile file cannot turn one bounded worker job into an arbitrary allocation.
+
+## M6 combat slice, measured on the audited host
+
+Headless, from `combat-probe bench`:
+
+| measure | value |
+|---|---|
+| combat tick, mean over 12,000 ticks | `14.161` µs |
+| a second of simulation at `120` Hz | `1.699` ms of one core |
+| ground queries per tick | `14.96` |
+| one hit query at 16 substeps | `0.3551` µs |
+| worst sweep substeps observed in a fight | 4 of a bounded 16 |
+| weapon compile, median of 64 runs | `125.5` µs |
+
+The bench's worst single tick is `44,021` µs — two orders of magnitude above the mean and unrelated to the work. It is desktop scheduling; the mean is the figure.
+
+In the client, with an encounter running:
+
+| measure | value |
+|---|---|
+| static GPU bytes for two actors and two weapons | 985,648 |
+| dynamic upload per frame | 2,720 bytes |
+| world draws / shadow draws | 34 / 34 |
+| effect instances at one hit | 12 chips, 384 bytes, one draw |
+| effect instances with nothing in flight | 16 readout pips, 512 bytes, one draw |
+| particle high-water in a full fight | 12 of a fixed pool of 96 |
+| audio callbacks over a 37.5 s fight | 10,412, rendering 4,998,336 frames |
+| audio buffer high-water | 1,056 frames (`22.0` ms at 48 kHz) |
+| audio voice high-water | 1 of 8; zero displaced |
+| audio peak sample | `0.2323` against a `0.92` limit |
+
+`renderer_render_wall` measured a mean of `12,091` µs with the encounter off and `10,697` µs with it on, over identical 75-second settles. **The run with more work in it measured faster.** That is noise: the figure is dominated by present and vsync, it is wall time around the render call and not GPU time, and it is not a measure of what combat costs. What combat costs is the `1.699` ms per second above.
