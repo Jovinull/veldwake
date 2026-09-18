@@ -39,6 +39,7 @@ fn main() -> ExitCode {
         "trace" => trace(arguments.get(1).map(String::as_str)),
         "dodge" => dodge(),
         "bodies" => bodies(),
+        "aim" => aim(),
         "contact" => contact(
             arguments.get(1).map(String::as_str),
             arguments.get(2).map(String::as_str),
@@ -509,6 +510,70 @@ fn wrap_degrees(radians: f32) -> f32 {
         degrees += 360.0;
     }
     degrees
+}
+
+/// How much of a facing error one swing forgives, at every range it reaches.
+///
+/// The question a played run cannot answer on its own, because a blind driver
+/// aims no better than it walks: is a swing hard to land because the player
+/// aimed badly, or because the window is too narrow to aim into at all? The
+/// answer is a number of degrees, measured by standing a passive body at a
+/// bearing and swinging.
+fn aim() -> Result<(), String> {
+    let ground = fixture::golden_ground();
+    let mut setup = fixture::sandbox_setup();
+    // A body that will not move, will not swing and will not be knocked
+    // anywhere: the measurement is of the attacker's arc, nothing else.
+    setup.tuning.player_attack.knockback = 0.0;
+    println!("one swing against a still body, by range and facing error");
+    println!();
+    print!("   range ");
+    let errors: Vec<i16> = (-60..=60).step_by(5).collect();
+    for error in &errors {
+        print!("{error:>4}");
+    }
+    println!();
+    for step in 0_u8..=12 {
+        let range = 1.6 + f32::from(i16::from(step)) * 0.1;
+        print!("{range:>8.2} ");
+        for error in &errors {
+            let hit = swing_at(&setup, &ground, range, f32::from(*error))?;
+            print!("{:>4}", if hit { "x" } else { "." });
+        }
+        println!();
+    }
+    println!();
+    println!("`x` is a landed hit. Rows are centre-to-centre range in world units,");
+    println!("columns are the attacker's facing error in degrees.");
+    Ok(())
+}
+
+/// Runs one swing with the attacker at a fixed facing error and reports whether
+/// it landed.
+fn swing_at(
+    setup: &EncounterSetup,
+    ground: &FlatGround,
+    range: f32,
+    error_degrees: f32,
+) -> Result<bool, String> {
+    let mut setup = *setup;
+    // The two bodies on the `z` axis, and the attacker's start facing turned off
+    // the line between them by `error`. Turning it by walking would not do: a
+    // body that walks to change where it looks has also changed the range.
+    setup.player_offset = Vec2::new(0.0, range * 0.5);
+    setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+    setup.facing_offsets[Side::Player.index()] = error_degrees.to_radians();
+    let mut encounter =
+        Encounter::new(&setup, Some(ground)).map_err(|error| format!("setup: {error}"))?;
+    encounter.arm();
+    let spec = *encounter.attack_spec(Side::Player);
+    let mut landed = false;
+    // Standing still throughout, so the only thing under test is the arc.
+    for tick in 0..spec.total() + 2 {
+        let events = encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(ground));
+        landed |= events.iter().any(|event| event.name() == "hit");
+    }
+    Ok(landed)
 }
 
 fn contact(side: Option<&str>, arena: Option<&str>) -> Result<(), String> {

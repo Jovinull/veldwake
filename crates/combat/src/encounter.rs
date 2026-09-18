@@ -71,6 +71,15 @@ pub struct EncounterSetup {
     pub player_offset: Vec2,
     /// Where the adversary starts, relative to the arena centre.
     pub adversary_offset: Vec2,
+    /// Radians added to each body's start facing, indexed by [`Side`].
+    ///
+    /// Zero for a fight, which is the default and the only value any fixture
+    /// uses: two bodies look at each other on the first frame. It exists because
+    /// facing is otherwise only reachable by walking, and some questions need a
+    /// body that is standing still and looking the wrong way — how much facing
+    /// error one swing forgives, whether the adversary turns to face a player
+    /// behind it.
+    pub facing_offsets: [f32; SIDES.len()],
 }
 
 /// Why an encounter could not be built.
@@ -178,6 +187,9 @@ pub struct Encounter {
     combatants: [Combatant; SIDES.len()],
     brain: AdversaryBrain,
     offsets: [Vec2; SIDES.len()],
+    /// Radians added to each body's facing on a start or a reset, so a reset
+    /// puts a body back where the setup asked rather than where a fight left it.
+    facing_offsets: [f32; SIDES.len()],
     tick: u64,
     armed: bool,
     /// Who was defeated, while the defeat hold runs.
@@ -207,7 +219,13 @@ impl Encounter {
         let mut combatants = Vec::with_capacity(SIDES.len());
         for side in SIDES {
             let index = side.index();
-            let state = start_state(tuning.arena().centre(), offsets, side, ground);
+            let state = start_state(
+                tuning.arena().centre(),
+                offsets,
+                setup.facing_offsets[index],
+                side,
+                ground,
+            );
             let character = &characters[index];
             let posed = pose_with(character, &state, ground, None);
             combatants.push(Combatant::new(
@@ -232,6 +250,7 @@ impl Encounter {
             combatants,
             brain: AdversaryBrain::new(tuning.seed()),
             offsets,
+            facing_offsets: setup.facing_offsets,
             tick: 0,
             armed: false,
             outcome: None,
@@ -749,7 +768,13 @@ impl Encounter {
             return;
         }
         for side in SIDES {
-            let state = start_state(self.tuning.arena().centre(), self.offsets, side, ground);
+            let state = start_state(
+                self.tuning.arena().centre(),
+                self.offsets,
+                self.facing_offsets[side.index()],
+                side,
+                ground,
+            );
             self.combatants[side.index()].reset(state);
         }
         self.brain.reset();
@@ -830,6 +855,7 @@ impl Encounter {
 fn start_state(
     centre: Vec2,
     offsets: [Vec2; SIDES.len()],
+    facing_offset: f32,
     side: Side,
     ground: Option<&dyn GroundSampler>,
 ) -> CharacterState {
@@ -837,8 +863,10 @@ fn start_state(
     let position = centre + offsets[index];
     let other = centre + offsets[side.other().index()];
     // Each starts facing the other, because a faceoff is the first frame of
-    // evidence and two bodies looking past each other is not one.
-    let facing = facing_of(other - position).unwrap_or(0.0);
+    // evidence and two bodies looking past each other is not one. The offset is
+    // zero in every fixture and exists so a measurement can ask for the
+    // opposite.
+    let facing = facing_of(other - position).unwrap_or(0.0) + facing_offset;
     CharacterState::standing(position.x, position.y, facing, ground)
 }
 
@@ -1601,6 +1629,63 @@ mod tests {
             worst <= CHARACTER_VOXEL_SIZE,
             "worst core overshoot was {worst:.4} world units"
         );
+    }
+
+    #[test]
+    fn a_swing_aimed_at_the_body_connects_at_every_range_it_claims_and_misses_a_body_behind() {
+        // Two bounds on the same window, and both of them were defects at some
+        // point. A window that does not contain zero means a player who aims at
+        // the body in front of them misses it, which is a game that cannot be
+        // played. A window that contains sixty degrees means the volume being
+        // swept is not the shape of a body — the first hurt volume here was M5's
+        // whole-body capsule, and it registered hits with the blade still raised
+        // over the shoulder and its tip in the air above the head.
+        //
+        // The bodies stand still throughout: the only thing under test is the
+        // arc. `facing_offsets` is how the attacker ends up looking the wrong
+        // way without walking there, because walking to turn also changes the
+        // range being measured.
+        let ground = ground();
+        let swings = |range: f32, error_degrees: f32| {
+            let mut setup = fixture::sandbox_setup();
+            setup.tuning.player_attack.knockback = 0.0;
+            setup.player_offset = Vec2::new(0.0, range * 0.5);
+            setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+            setup.facing_offsets[Side::Player.index()] = error_degrees.to_radians();
+            let mut encounter = armed(&setup, &ground);
+            let spec = *encounter.attack_spec(Side::Player);
+            let mut landed = false;
+            for tick in 0..spec.total() + 2 {
+                let events =
+                    encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+                landed |= events
+                    .iter()
+                    .any(|event| matches!(event, CombatEvent::Hit { .. }));
+            }
+            landed
+        };
+
+        // Every range from bodies almost touching out to the reach the fixture
+        // measures, in tenths of a world unit.
+        let reach = fixture::reach_of(&armed(&fixture::sandbox_setup(), &ground));
+        for step in 0..=12_u8 {
+            let range = 1.6 + f32::from(i16::from(step)) * 0.1;
+            if range > reach {
+                continue;
+            }
+            assert!(
+                swings(range, 0.0),
+                "a swing aimed straight at a body {range:.2} away did not connect, \
+                 with a reach of {reach:.2}"
+            );
+            for error in [-90.0, -75.0, 75.0, 90.0] {
+                assert!(
+                    !swings(range, error),
+                    "a swing {error} degrees off the body still hit it at {range:.2}, \
+                     so the volume being swept is wider than a body"
+                );
+            }
+        }
     }
 
     #[test]

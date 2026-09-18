@@ -227,6 +227,7 @@ pub fn setup(arena_centre: Vec2, arena_radius: f32) -> EncounterSetup {
         tuning: tuning(arena_centre, arena_radius),
         player_offset: PLAYER_OFFSET,
         adversary_offset: ADVERSARY_OFFSET,
+        facing_offsets: [0.0; SIDES.len()],
     }
 }
 
