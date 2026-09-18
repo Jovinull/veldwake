@@ -6,7 +6,7 @@
 //!   requests. The game writes; the audio callback reads. Nothing else touches
 //!   it.
 //! - [`AudioDevice`], a thin adapter that opens a cpal output stream and, in
-//!   its callback, drains the queue into a [`Synth`](crate::synth::Synth) and
+//!   its callback, drains the queue into a [`Synth`] and
 //!   renders. It is the only code in the repository that knows cpal exists.
 //!
 //! # The real-time contract
