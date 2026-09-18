@@ -56,3 +56,15 @@ Per-level desired, ready, committed, and GPU counts (`lod0_*`, `lod1_*`), per-le
 `debug_mode`, `debug_boxes`, `debug_draws` (one draw per primitive last frame), `debug_slots` (pooled uniform buffers and bind groups, the high-water mark of the pattern's retained cost), `debug_primitive_allocations`, and `debug_uniform_writes`. With the view `Off`, per-frame debug draws, primitive allocations, and uniform writes are zero; `debug_slots` may remain non-zero after a view has been used because the renderer deliberately retains and reuses those fixed-capacity resources. Mesh upload budgets are independent of debug work. Fixed startup pipeline/unit-geometry resources and retained slots mean that `Off` is not a claim of zero total debug memory.
 
 Frame timing is `frames`, `report_seconds`, `average_wall_frame_ms`, `observed_fps`, `renderer_render_wall_mean_us`, and `renderer_render_wall_max_us`. The render-wall interval wraps the whole `Renderer::render()` call (including surface acquisition and presentation), so it is not CPU-submit or GPU time. Under vsync the frame average is pinned at the refresh interval and only tells you when something has fallen *below* it; render-wall timing moves in the opposite direction when frame rate drops, because the vsync wait leaves the measured region.
+
+## What the M5 character client reports today
+
+Two lines, both scoped so that a run with no character says nothing about one.
+
+**What was compiled, and is it the character this build claims?**
+One `character ready` line at startup: `selection`, the identity `fingerprint`, the `geometry` fingerprint, `height_voxels` and `height_units`, `parts`, `quads`, `gpu_bytes`, `dynamic_upload_bytes_per_frame`, `world_draws`, `shadow_draws`, and `grounded`. The two fingerprints are separate on purpose — a repaint moves the identity and leaves the geometry alone — and the byte figures are the ones the `character-probe` prints, so a disagreement between probe and client is visible rather than assumed. An `character uploaded` line reports the same geometry from the renderer's side.
+
+**What is the character doing?**
+A `character state` line every five seconds: `selection`, `elapsed`, `x`, `z`, `base_height`, `facing_degrees`, `speed`, `phase`, the `moving` and `run` blend weights, `grounded`, and per side `stance` and `clearance`, together with the `landform` and `zone` of the column underneath. `clearance` is the signed distance from a sole to the block top it should be resting on, so a contact defect is a number in the log before it is a defect in a capture — but the number is not the evidence, because a sole can be exactly on a surface the viewer cannot see. Both are checked.
+
+Frame timing is unchanged and is where the character's cost is read: `renderer_render_wall_mean_us` and `renderer_render_wall_max_us` with the character off and on, at the same world, camera, weather and settle.

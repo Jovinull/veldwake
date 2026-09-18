@@ -1,7 +1,10 @@
 # M4 — Beautiful Terrain Vertical Slice
 
-Status: **implemented on `feat/m4-beautiful-terrain-slice`, awaiting branch QA**
+Status: **complete and merged**
+Merged into `main` through [PR #8](https://github.com/Jovinull/veldwake/pull/8) at merge commit `abadadff6ad1251e4f291d272577da6121d37540`, after independent branch QA, a green pull-request CI run, and a green post-merge CI run on the merge commit ([run 35281261587](https://github.com/Jovinull/veldwake/actions/runs/35281261587)).
 Base: `main` at merge commit `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e`
+
+The evidence below was recorded on the feature branch before the merge and is left exactly as measured. Branch QA added seven hardenings after the first implementation pass — cache/source identity mismatch rejected before the worker starts, typed validation of hostile `TerrainConfig` input, an exhaustive golden behavioural signature folded into the cache identity, complete vegetation bounds proved against the finite region, corrected hydrology seam semantics, the render interval renamed `renderer_render_wall` so it is not mistaken for CPU submit or GPU time, and a shared WGSL sky constant — and the workspace test count is 275.
 
 M4 is the first milestone whose success is a picture. M1 proved a window, M2 proved a chunk, M3 proved that chunks stream. All three rendered a checkerboard, because none of them had any content to render. M4 replaces the checkerboard with one deliberately shaped region — a verdant highland valley — and lights it well enough to judge whether Veldwake looks like anything.
 

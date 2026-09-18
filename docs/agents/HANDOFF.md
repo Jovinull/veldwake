@@ -1,40 +1,72 @@
 # Current handoff
 
-Last updated: 2026-09-17
+Last updated: 2026-09-18
 
 ## Current position
 
-M1, M2, and all of M3 are merged into `main`. M3D landed through PR #7 at merge commit `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e` with green remote CI, after independent branch QA and external review; M3C landed through PR #6 at `c669929b00427c2f438529b572931400a24b6d3d`. **M3 — Streaming World is complete.** M4 — Beautiful Terrain Vertical Slice is the active milestone on `feat/m4-beautiful-terrain-slice`. QA corrected the cache thread-boundary claim, made rejected-entry deletion failure observable, coupled the source fingerprint to actual finite-source behavior, bounded hostile file reads, narrowed the public API, and added adversarial format/recovery/concurrency tests. The cache remains opt-in and is not a save. LOD remains opt-in with KI-013/KI-014 unchanged. `veldwake-voxel` owns CPU geometry; `veldwake-streaming` owns headless orchestration and the discardable cache; the client bridge and renderer own disposable presentation state only.
+**M1, M2, M3, and M4 are all merged into `main`.** M4 — Beautiful Terrain Vertical Slice landed through [PR #8](https://github.com/Jovinull/veldwake/pull/8) at merge commit `abadadff6ad1251e4f291d272577da6121d37540`, after independent branch QA, a green pull-request CI run, and a green post-merge CI run on the merge commit ([run 35281261587](https://github.com/Jovinull/veldwake/actions/runs/35281261587)). M3D landed through PR #7 at `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e`; M3C through PR #6 at `c669929b00427c2f438529b572931400a24b6d3d`.
 
-## Continue here
+The repository now renders one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, banded cliffs, forest pockets, and low vegetation — streamed around a free-fly camera and lit by a directional sun with a filtered shadow map, a procedural sky, height-aware fog, and two weather states. It is still an engineering proof: there is no persistence, no character, no collision, and no gameplay.
 
-`feat/m4-beautiful-terrain-slice` completed integral branch QA of `main...feat/m4-beautiful-terrain-slice`. QA now rejects cache/source identity mismatches before worker startup, rejects pathological public terrain descriptors before generation, binds the cheap cache fingerprint to a test-only exhaustive 1,875-chunk behavioural signature, tests the real vertical voxel envelope, correctly describes sloped-water quantization, shares the sky-gradient break between WGSL passes, and names the measured render interval honestly. External review/PR is next; do not begin M5.
+**M5 — Procedural Character completed independent branch QA on `feat/m5-procedural-character` and is ready for external review/PR.** The branch adds the `veldwake-character` crate, the `CHARACTER_STYLE.md` contract, [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md), the client adapter and render path, and the milestone document with its captures assessed in writing. Final clean D3D12 capture/motion/lifecycle QA accepted KI-018, KI-019, and KI-020 as documented; M3/M4 regressions and M5 lifecycle passed with no validation, device-loss, fatal, or panic marker. Nothing is merged and no pull request is open.
 
-The three things most worth an adversarial eye:
+## Start here — reading order for a session with no prior context
 
-1. **Determinism of the whole pipeline.** Generation must not depend on which chunk asks, on order, or on anything sequential. The compact regional signature `0x1285_7799_1516_4f6a`, named probes, and exhaustive behavioural signature `0x2d88_497f_a6d6_d4b5` in `procedural::region` are the tripwires; the latter is folded into the cache fingerprint.
-2. **The cache default change.** Run-length replaced raw as the default payload encoding on M4 evidence: 107,904 bytes against 4,132,656 for the same eighty-one terrain chunks, encoding six times faster. The worst case is unchanged and still bounded by `MAX_ENTRY_BYTES`, but the decision reverses an M3D one and deserves scrutiny.
-3. **The visual assessment.** It is written in the milestone document as a judgement, with its weaknesses named. Disagreeing with it is a legitimate QA result.
+Read these before changing anything. They are the whole truth of the project; nothing important about it lives outside the repository.
 
-Do not begin the swap-churn investigation, KI-017, or M5 in this handoff.
+1. [`../../AGENTS.md`](../../AGENTS.md) — the constitution, binding on every agent runtime
+2. [`../../CLAUDE.md`](../../CLAUDE.md) — the Claude Code entry point and runtime-specific notes
+3. [`../PROJECT_STATE.md`](../PROJECT_STATE.md) — what exists, what does not, which milestone is active
+4. This file
+5. [`../planning/ROADMAP.md`](../planning/ROADMAP.md) — milestone sequence and the accepted scope of each
+6. [`../engineering/ARCHITECTURE.md`](../engineering/ARCHITECTURE.md) — crate map, boundaries, and the test a new crate must pass
+7. [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md) — the rules a change may not break
+8. [`../engineering/DETERMINISM.md`](../engineering/DETERMINISM.md) — named streams, fingerprints, what determinism does and does not promise
+9. [`../engineering/PERFORMANCE.md`](../engineering/PERFORMANCE.md) — measurement method and every recorded number, with its host
+10. [`../engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — what is tested and why, and the current test count
+11. [`../engineering/OBSERVABILITY.md`](../engineering/OBSERVABILITY.md) — what the client and the probes report
+12. [`../procedural/PROCEDURAL_PHILOSOPHY.md`](../procedural/PROCEDURAL_PHILOSOPHY.md) — how generated content is expected to be built and justified
+13. [`../procedural/WORLD_GENERATION.md`](../procedural/WORLD_GENERATION.md) — the proposed world pipeline and how little of it M4 implemented
+14. [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md) — the aesthetic direction
+15. [`../audiovisual/STYLE_BIBLE.md`](../audiovisual/STYLE_BIBLE.md) — the versioned, checkable constraints M4 was held to, and what they explicitly do not cover
+16. [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md) — the milestone that just closed, its evidence and its limitations
 
-M3D adds an experimental disk cache inside the streaming worker's load path. It is a cache and never a save: entries are reproducible, rejections fall back to the source, and nothing is authoritative. The measurement is deliberately unflattering — warm is slower than no cache on this fixture because the diagnostic source is trivial (KI-016) — and the cache has no eviction policy (KI-015). Judge the boundary, the format discipline, and the failure handling; do not read the timings as a speedup claim. Any later LOD policy work must re-run the documented baseline/banded path and keep LOD opt-in unless the recorded decision rule passes.
+Then, as needed: [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md), [`../LEARNINGS.md`](../LEARNINGS.md), [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md), [`WORKFLOW.md`](WORKFLOW.md), the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
-External review then closed one more accounting gap: `Renderer::stage_chunk` now rejects, releases the obsolete replacement, allocates, and installs, in that order, so a restage never holds two replacements of one chunk inside a call the bridge cannot sample. The benchmark path reports `restaged = 0` in every run, so the figures are unchanged and the path is covered by unit tests. Re-validation also showed the banded peak is run-dependent (9,734,816 to 10,053,696 across runs of the identical path); quote the range or quote a number with its run.
+## Continue here — external review of the M5 branch
 
-Earlier position, preserved for context: submit `feat/m3c-lod-debug` for external review/PR.
+One continuation point: **external review / owner-directed PR preparation for `feat/m5-procedural-character`.** Independent D3D12 branch QA is complete. Fresh maximized-client-area captures were inspected one by one; no contaminated capture was used. Do not merge, open a PR, or begin M6 without owner direction.
 
-## Read before continuing
+Read [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) first, then [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) and [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md). The milestone document is written so that the five design errors captures rejected — the voxel scale, the chest width, the missing neck, the sleeve that was a voxel too narrow, and a character that walked backwards — are recorded with the frame that rejected each one. Re-deriving those is wasted work; finding the sixth is the job.
 
-- [`../../AGENTS.md`](../../AGENTS.md)
-- [`../engineering/ARCHITECTURE.md`](../engineering/ARCHITECTURE.md)
-- [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md)
-- [`../engineering/PERFORMANCE.md`](../engineering/PERFORMANCE.md)
-- [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md)
-- ADRs 0001 and 0002
+Where to push hardest, in order:
+
+1. **Run the client and look at it.** `VELDWAKE_CHARACTER` takes `off`, `idle`, `course`, `slope`, `slope-stand`, `sturdy`, `pose:<name>`, `walk:<0..7>` and `run:<0..7>`; `VELDWAKE_POSE` takes any of the ten `character-*` camera poses. Every visual claim in the milestone document was made by opening a capture and magnifying it, and every one of them is a judgement a reviewer may disagree with.
+2. **The contact claim on moving ground.** Standing contact is clean and asserted. KI-018 records what a planted foot does when it crosses a terrace during stance, and the bound in that test is the number to attack.
+3. **The joint-overlap invariant and what it costs.** KI-020 is its visible consequence at a flexed knee. A reviewer who thinks the sliver is worse than recorded should say so with a magnified frame.
+4. **Scope.** The branch adds one crate, no third-party dependency, no ECS, no physics engine, and no animation graph. Check that nothing crept in.
+
+### What was deliberately not built
+
+Faces beyond two eye voxels, hair or clothing as geometry, equipment, a second archetype, character LOD, a character controller, player input, gameplay integration, any physics or collision library, ragdoll, cloth, an animation graph, and a save format. Those are later milestones and the branch must not be read as having prejudged them.
+
+## Questions before context reset
+
+None. Everything a reviewer needs is in the repository: the accepted scope, the contract the captures were judged against, the evidence, the measurements with their host, and the limitations as open issues rather than as prose.
 
 ## Immediate risks
 
+- **The M5 branch awaits external review, not more branch QA.** The independent visual exit gate is complete; reviewer judgement remains valuable because visual readability is not reducible to the headless fixtures.
+- **The character's visual contract is versioned and now locked.** `CHARACTER_STYLE_VERSION`, `CHARACTER_COMPILER_VERSION` and `CHARACTER_SCHEMA_VERSION` fold into a character's identity fingerprint, and seven fixture signatures are checked against the compiler on every test run. Moving a voxel, a bone or a gait constant without bumping the matching version is a failing test, which is the intent. Re-lock deliberately; never re-lock to make a test pass.
+- **Character identifiers are `128..192`.** Terrain is `64..128` and the M2/M3 diagnostics are `1`, `2`, `7`. The client is the only place all three tables are visible and it carries the disjointness test. A new content domain declares its own range there.
+- **`veldwake-character` must not gain a dependency on `veldwake-procedural`.** It duplicates thirty lines of hashing rather than reach for that crate's helpers, deliberately and with the reason written at the duplication. The one thing it needs from the world is `GroundSampler`, which the client implements in eleven lines over `TerrainField`.
+- **`GroundSampler` returns the top face of the topmost solid voxel, and that is a contract, not an implementation detail.** Smoothing it makes soles float or sink against the blocks a viewer can actually see. Water is not ground.
+- **Gait thresholds are in leg lengths per second.** Absolute world-unit thresholds silently put the same body at a different size into the wrong gait; that is why they were changed. `GaitParameters::speed_for` converts back.
+- **The diagnostic courses are closed loops and are sampled modulo their own duration.** A course that runs once has always finished before a seventy-five-second settle fires a capture. If a leg's duration or speed changes, the loop must still return to its own start position and facing, and a test says so.
+- Characters are outside the style bible. `audiovisual/STYLE_BIBLE.md` says so explicitly in *What this document does not cover*: characters, creatures, equipment, animation, and particles are later work and must not be invented there. M5 either extends that document deliberately, with the same kind of checkable rules, or writes its own and says how the two relate. Do not silently reuse terrain rules for a character and call it consistent.
+- Terrain material identifiers start at `64` (`procedural::material::FIRST_TERRAIN_ID`) precisely so the M2/M3 diagnostic identifiers `1`, `2`, and `7` stay distinguishable. Any new content domain needs its own declared range and its own round-trip test; do not extend the terrain enum by accident.
+- There is no collision, no physics, no ground contact, and no character controller anywhere in the repository. The client camera is a free-fly camera. A milestone that needs terrain contact is adding all of that from nothing, and the voxel field it would query is `veldwake-procedural`'s height field, not a physics world.
+- The M4 visual captures were not committed. `agents/EVIDENCE_HARNESS.md` records the procedure, the traps, and the validity rules so they can be reproduced; `procedural::region::GOLDEN_POSES` records where they were taken from. A written assessment in the milestone document is the durable artefact, not the PNGs.
 - Do not turn the documented future crate map into empty crates. M3D deliberately added no crate: the cache has one consumer, needs no build isolation, and inverts no dependency, so it lives in `crates/streaming`. Re-argue that from the crate test in `ARCHITECTURE.md` before splitting it out.
 - The disk cache is discardable by definition. Never let a cache failure reach the runtime as data loss, turn I/O or corruption into AIR, or treat a missing file as `KnownAbsent`; absence is a typed entry. A rejected entry falls back to the source even when deletion or publication fails. Preserve the separate `rejected_entries_removed` and `rejected_entry_delete_failures` evidence.
 - Changing `DiagnosticChunkSource::load` must make the exhaustive finite-corpus behavioral-signature test fail. Update `SOURCE_BEHAVIOR_SIGNATURE` and the locked runtime fingerprint deliberately; bump `SOURCE_SCHEMA_REVISION` when the semantic contract changes beyond output bytes. A descriptor-only locked value is not sufficient.

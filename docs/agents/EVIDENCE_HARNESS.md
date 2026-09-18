@@ -66,11 +66,15 @@ At 12 world units per second this crosses the `Lod0`/`Lod1` band in both signs o
 - Two profiles being compared should report similar `cpu_evictions` and `loads_dispatched`; that is the evidence they really walked the same path.
 - A capture whose pixels include another window (a Start menu opening over the client, an editor behind a transparent title bar) is contaminated. Say so and exclude it rather than quietly reusing it.
 
+- **A capture of the wrong size is a capture of the wrong thing.** PowerShell is DPI-unaware by default. On this host the desktop is 1920x1080 physical at 125%, so an unaware process sees 1536x864 logical pixels and every rectangle it asks for is scaled by something it cannot see: `GetClientRect`, `ClientToScreen` and `CopyFromScreen` disagree and the PNG comes back stretched, cropped, or containing the desktop. Call `SetProcessDPIAware()` before the first `System.Drawing` or `System.Windows.Forms` call, maximize with `ShowWindow(handle, 3)` rather than `MoveWindow`, re-assert it immediately before the capture, and check the saved dimensions against the real client size. A correct capture on this host is 1920x991.
+
 ## Capture modes
 
 - **At rest.** Two captures three seconds apart must be identical. This proves no hole persists, and nothing else.
 - **Mid-movement.** Capture while the key is still held, at roughly 40% and 80% of the leg. A hole that exists only while streaming is running is invisible at rest, and resting captures were the reason a four-second band of missing floor went unnoticed.
 - **Burst plus contact sheet.** When a hole is suspected, capture every 300 ms for a whole leg and assemble the frames into one labeled grid image with `System.Drawing` (six columns, index drawn on each tile). Reading twenty tiles at once localizes the frame where geometry disappears and the frame where it returns. This is how frontier starvation was found after the gap counters read zero.
+- **One run per phase, for a cycle.** For an animation cycle, eight separate runs at eight frozen phases beat one timed burst: every tile is exactly reproducible and none of it depends on when a screenshot happened to land. The client takes the phase from its environment; the sheet is assembled the same way as a burst sheet.
+- **Crop and magnify before judging.** A 1920x991 frame viewed whole hides exactly the defects a character capture is for. Crop the subject with `InterpolationMode.NearestNeighbor` at 1.5x to 3.5x and look at the joints, the silhouette edges and the ground contact; a one-voxel step at the elbow and a sliver of sky through an armpit are both invisible at full frame and obvious at 2x.
 
 ## Timing A/B
 
@@ -82,11 +86,13 @@ Under `%TEMP%\veldwake-*`: `client.log` (stdout and stderr joined), `marks.txt` 
 
 ## What this harness encodes
 
-Four conclusions that cost real time to reach, kept here because they are about producing evidence rather than about any one milestone:
+Six conclusions that cost real time to reach, kept here because they are about producing evidence rather than about any one milestone:
 
 - **Counters and pixels answer different questions and neither substitutes for the other.** A zero gap counter has coexisted with four seconds of missing floor, and a non-zero ready-but-undrawn counter has coexisted with a perfectly continuous one. Decide in advance which counter would have to move for a visual claim to be true, then look at the capture anyway.
 - **The harness is part of the evidence, not a scratch detail.** Three milestones in a row rebuilt the same Win32-driven client because only its conclusions were written down.
 - **The cheapest validity check is a counter that only moves when the camera moves.** `cpu_evictions = 0` on a traversal path means focus was lost and the whole run is fiction; it is far more reliable than watching the window.
+- **A subject is part of the frame, and so is where it stands and which way it faces.** A character capture can fail for three reasons that have nothing to do with the character: something between the camera and the subject, a camera inside the hillside behind it, and a subject turned away from the sun. All three happened here. Scan for the stand point the way a camera pose is scanned for, and give the stand a facing derived from the key light's azimuth.
+- **A diagnostic that runs once has finished before the capture fires.** The settle is seventy-five seconds and the first course was forty-six, so every capture of a walk was a capture of a character standing at the end of one. Make a diagnostic path a closed loop and sample it modulo its own duration.
 - **Record the formula next to any derived number.** Total measured snapshot-plus-worker CPU time is `snapshot_build + worker_mesh_lod0 + worker_mesh_lod1`. `lod1_derivation` is already a subset of `snapshot_build`; report it separately and never add it a second time. Without the formula the next run's comparison silently changes definition.
 
 ## Why the scripts are not in the repository

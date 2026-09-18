@@ -177,4 +177,8 @@ Rejection criteria, checked in the written screenshot review:
 
 ## What this document does not cover
 
-Characters, creatures, equipment, architecture, settlements, roads, ruins, interiors, weather beyond the two states above, night or dawn lighting, seasons, animation, particles, and colour grading. Those belong to later milestones and must not be invented here.
+Creatures, equipment, architecture, settlements, roads, ruins, interiors, weather beyond the two states above, night or dawn lighting, seasons, particles, and colour grading. Those belong to later milestones and must not be invented here.
+
+**Characters have their own contract.** [`CHARACTER_STYLE.md`](CHARACTER_STYLE.md) carries character scale, proportions, silhouette, joint overlap, palette slots, posture, animation timing, and joint ranges, under its own `CHARACTER_STYLE_VERSION`. The separation is not organisational: `STYLE_CONTRACT_VERSION` participates in the terrain generator fingerprint, so a character rule living here would invalidate every cached chunk whenever a proportion moved.
+
+What stays here and applies to characters unchanged: the sunlight direction, colour, and intensity; ambient and shadow behaviour; fog, sky, and the two weather states; the relative-luminance and contrast rules; the HSV saturation ceilings; and the statements that voxel structure stays visible and intentional and that the target is neither photorealism nor Minecraft with a shader. What is per domain: shape language, proportions, detail frequency, and animation.

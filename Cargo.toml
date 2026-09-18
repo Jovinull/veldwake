@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/client",
+    "crates/character",
     "crates/foundation",
     "crates/procedural",
     "crates/streaming",

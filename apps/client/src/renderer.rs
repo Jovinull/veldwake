@@ -11,6 +11,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
+use veldwake_character::{BONE_COUNT, CompiledCharacter, PosedCharacter};
 use veldwake_procedural::TerrainMaterial;
 use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
@@ -293,6 +294,75 @@ impl ModelUniform {
     }
 }
 
+/// One body part's world matrix plus its shadow parameters.
+///
+/// Eighty bytes, separate from [`ModelUniform`] on purpose. A body part needs a
+/// full transform because it rotates about its joint, while a chunk needs a
+/// translation and a uniform scale; widening the chunk uniform to share one
+/// path would move every recorded chunk byte figure for no benefit.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct PartUniform {
+    model: [[f32; 4]; 4],
+    /// `x` the shadow normal offset in world units; `yzw` padding.
+    params: [f32; 4],
+}
+
+/// How far along its own normal a character surface is pushed before the shadow
+/// lookup, in world units.
+///
+/// Terrain uses `0.35`, which is a third of a terrain voxel and about three
+/// shadow texels. At character scale that same offset is five and a half
+/// character voxels, wider than a limb, so it would move the sample clean off
+/// the body. This is roughly one and a quarter shadow texels instead: enough to
+/// keep a character surface out of its own acne, small enough to stay on the
+/// body it belongs to.
+const CHARACTER_SHADOW_NORMAL_OFFSET: f32 = 0.13;
+
+impl PartUniform {
+    fn from_matrix(model: glam::Mat4) -> Self {
+        Self {
+            model: model.to_cols_array_2d(),
+            params: [CHARACTER_SHADOW_NORMAL_OFFSET, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// One compiled body part on the GPU, uploaded once and never re-uploaded.
+struct GpuCharacterPart {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// The whole character on the GPU.
+///
+/// Rigid parts make the geometry static: the buffers are immutable after
+/// upload and a frame writes only the part transforms.
+struct GpuCharacter {
+    parts: Vec<GpuCharacterPart>,
+    vertex_bytes: usize,
+    index_bytes: usize,
+    uniform_bytes: usize,
+    quads: usize,
+}
+
+/// What the character costs the renderer, for the milestone measurements.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CharacterGpuStats {
+    pub parts: usize,
+    pub quads: usize,
+    pub vertex_bytes: usize,
+    pub index_bytes: usize,
+    pub uniform_bytes: usize,
+    /// Bytes written every frame a pose is applied.
+    pub dynamic_upload_bytes: usize,
+    pub world_draws: usize,
+    pub shadow_draws: usize,
+}
+
 const fn level_scale(lod: LodLevel) -> f32 {
     match lod {
         LodLevel::Lod0 => 1.0,
@@ -399,6 +469,42 @@ impl Display for RendererInitError {
 
 impl Error for RendererInitError {}
 
+/// Why a compiled character cannot be represented by the fixed M5 GPU path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacterUploadError {
+    PartCount { found: usize, expected: usize },
+    EmptyMesh { bone: &'static str },
+    TooManyIndices { bone: &'static str, count: usize },
+    NonCharacterMaterial { bone: &'static str, voxel: VoxelId },
+}
+
+impl Display for CharacterUploadError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PartCount { found, expected } => {
+                write!(
+                    formatter,
+                    "character has {found} parts; M5 requires {expected}"
+                )
+            }
+            Self::EmptyMesh { bone } => {
+                write!(formatter, "character part {bone} has an empty mesh")
+            }
+            Self::TooManyIndices { bone, count } => write!(
+                formatter,
+                "character part {bone} has {count} indices, beyond the u32 index format"
+            ),
+            Self::NonCharacterMaterial { bone, voxel } => write!(
+                formatter,
+                "character part {bone} carries non-character voxel identifier {}",
+                voxel.0
+            ),
+        }
+    }
+}
+
+impl Error for CharacterUploadError {}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum RenderOutcome {
     Rendered,
@@ -442,6 +548,13 @@ pub struct Renderer {
     debug_slots: Vec<DebugSlot>,
     debug_draws: Vec<(usize, std::ops::Range<u32>)>,
     debug_frame_work: DebugFrameWork,
+    /// Character body parts: their own pipelines and their own uniform,
+    /// sharing the vertex layout, the scene bind group, and every
+    /// lighting constant with the world pass.
+    character_pipeline: wgpu::RenderPipeline,
+    character_shadow_pipeline: wgpu::RenderPipeline,
+    part_layout: wgpu::BindGroupLayout,
+    character: Option<GpuCharacter>,
 }
 
 impl Renderer {
@@ -594,7 +707,7 @@ impl Renderer {
                 count: None,
             }],
         });
-        let shader = shader_module(&device, "M4 world shader", include_str!("world.wgsl"));
+        let shader = lit_shader_module(&device, "M4 world shader", include_str!("world.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("M4 world pipeline layout"),
             bind_group_layouts: &[Some(&scene_layout), Some(&model_layout)],
@@ -676,6 +789,120 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+
+        let part_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("M5 character part bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(size_of::<PartUniform>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let character_shader = lit_shader_module(
+            &device,
+            "M5 character shader",
+            include_str!("character.wgsl"),
+        );
+        let character_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("M5 character pipeline layout"),
+                bind_group_layouts: &[Some(&scene_layout), Some(&part_layout)],
+                immediate_size: 0,
+            });
+        let character_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("M5 character pipeline"),
+            layout: Some(&character_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &character_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(Vertex::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &character_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let character_shadow_shader = shader_module(
+            &device,
+            "M5 character shadow shader",
+            include_str!("character_shadow.wgsl"),
+        );
+        let character_shadow_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("M5 character shadow pipeline layout"),
+                bind_group_layouts: &[Some(&scene_only_layout), Some(&part_layout)],
+                immediate_size: 0,
+            });
+        let character_shadow_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("M5 character shadow pipeline"),
+                layout: Some(&character_shadow_layout),
+                vertex: wgpu::VertexState {
+                    module: &character_shadow_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(Vertex::layout())],
+                },
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Ccw,
+                    // Cast from back faces, exactly as chunks do. Casting from
+                    // the lit faces was tried first and produced visible acne
+                    // on the chest, because one shadow texel is `0.109` world
+                    // units and a character voxel is `0.0833`: the map cannot
+                    // resolve one part shadowing another, so the comparison
+                    // dithers along the boundary.
+                    //
+                    // The cost is real and is a limitation rather than a fix:
+                    // the recorded depth is the far side of a part that is only
+                    // a few voxels thick, so a character does not shadow itself
+                    // at all. It still casts a correct shadow on the world,
+                    // which is the reading that matters at this map resolution.
+                    cull_mode: Some(wgpu::Face::Front),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: Default::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            });
 
         let sky_shader = shader_module(&device, "M4 sky shader", include_str!("sky.wgsl"));
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -817,6 +1044,10 @@ impl Renderer {
             debug_slots: Vec::new(),
             debug_draws: Vec::new(),
             debug_frame_work: DebugFrameWork::default(),
+            character_pipeline,
+            character_shadow_pipeline,
+            part_layout,
+            character: None,
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -988,6 +1219,17 @@ impl Renderer {
                     .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 shadow_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
+            if let Some(character) = &self.character {
+                shadow_pass.set_pipeline(&self.character_shadow_pipeline);
+                shadow_pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
+                for part in &character.parts {
+                    shadow_pass.set_bind_group(1, &part.bind_group, &[]);
+                    shadow_pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
+                    shadow_pass
+                        .set_index_buffer(part.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    shadow_pass.draw_indexed(0..part.index_count, 0, 0..1);
+                }
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1036,6 +1278,16 @@ impl Renderer {
                 pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
+            if let Some(character) = &self.character {
+                pass.set_pipeline(&self.character_pipeline);
+                pass.set_bind_group(0, &self.scene_bind_group, &[]);
+                for part in &character.parts {
+                    pass.set_bind_group(1, &part.bind_group, &[]);
+                    pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
+                    pass.set_index_buffer(part.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..part.index_count, 0, 0..1);
+                }
             }
             if !self.debug_draws.is_empty() {
                 pass.set_pipeline(&self.debug_pipeline);
@@ -1115,6 +1367,164 @@ impl Renderer {
 
     /// Whether `coord` holds a staged replacement, including a staged empty
     /// mesh (a commit that removes the chunk).
+    /// Uploads a compiled character once.
+    ///
+    /// Rigid parts make the geometry static, so this happens at startup and
+    /// never again; a frame writes only the part transforms. Any character
+    /// already resident is released first.
+    pub fn upload_character(
+        &mut self,
+        character: &CompiledCharacter,
+    ) -> Result<(), CharacterUploadError> {
+        self.character = None;
+        if character.parts().len() != BONE_COUNT {
+            return Err(CharacterUploadError::PartCount {
+                found: character.parts().len(),
+                expected: BONE_COUNT,
+            });
+        }
+        let palette = character.palette();
+        let mut parts = Vec::with_capacity(character.parts().len());
+        let mut vertex_bytes = 0;
+        let mut index_bytes = 0;
+        let mut quads = 0;
+        for part in character.parts() {
+            let mesh = part.mesh();
+            if mesh.vertices().is_empty() || mesh.indices().is_empty() {
+                return Err(CharacterUploadError::EmptyMesh {
+                    bone: part.bone().name(),
+                });
+            }
+            let index_count = u32::try_from(mesh.indices().len()).map_err(|_| {
+                CharacterUploadError::TooManyIndices {
+                    bone: part.bone().name(),
+                    count: mesh.indices().len(),
+                }
+            })?;
+            let vertices = mesh
+                .vertices()
+                .iter()
+                .map(|vertex| -> Result<Vertex, CharacterUploadError> {
+                    // A character material answers for itself, from the one
+                    // table in `veldwake-character`. A vertex that is not a
+                    // character identifier is a compiler bug, and drawing it in
+                    // the terrain palette would hide that, so it is reported.
+                    let (color, specular) = palette.appearance(vertex.voxel).ok_or(
+                        CharacterUploadError::NonCharacterMaterial {
+                            bone: part.bone().name(),
+                            voxel: vertex.voxel,
+                        },
+                    )?;
+                    Ok(Vertex {
+                        position: vertex.position,
+                        normal: vertex.normal,
+                        color,
+                        specular,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let vertex_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("M5 character part vertices"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let index_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("M5 character part indices"),
+                    contents: bytemuck::cast_slice(mesh.indices()),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            let uniform_buffer =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("M5 character part uniform"),
+                        contents: bytemuck::bytes_of(&PartUniform::from_matrix(
+                            glam::Mat4::IDENTITY,
+                        )),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("M5 character part bind group"),
+                layout: &self.part_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+            vertex_bytes += vertices.len() * size_of::<Vertex>();
+            index_bytes += size_of_val(mesh.indices());
+            quads += mesh.quad_count();
+            parts.push(GpuCharacterPart {
+                vertex_buffer,
+                index_buffer,
+                index_count,
+                uniform_buffer,
+                bind_group,
+            });
+        }
+        let uniform_bytes = parts.len() * size_of::<PartUniform>();
+        info!(
+            parts = parts.len(),
+            quads,
+            vertex_bytes,
+            index_bytes,
+            uniform_bytes,
+            fingerprint = format_args!("{:#018x}", character.fingerprint()),
+            "character uploaded"
+        );
+        self.character = Some(GpuCharacter {
+            parts,
+            vertex_bytes,
+            index_bytes,
+            uniform_bytes,
+            quads,
+        });
+        Ok(())
+    }
+
+    /// Writes one frame of part transforms.
+    ///
+    /// The only per-frame character work there is. The matrices are composed by
+    /// `veldwake-character`, so the renderer decides nothing about a pose.
+    pub fn set_character_pose(&self, posed: &PosedCharacter) {
+        let Some(character) = &self.character else {
+            return;
+        };
+        // Upload only follows a successful `upload_character`, which requires
+        // the compiler's fixed sixteen-part contract. `part_matrices` is the
+        // same fixed-size array, so indexing makes an accidental mismatch
+        // impossible to hide by truncating a `zip`.
+        for index in 0..BONE_COUNT {
+            let part = &character.parts[index];
+            let matrix = posed.part_matrices()[index];
+            self.queue.write_buffer(
+                &part.uniform_buffer,
+                0,
+                bytemuck::bytes_of(&PartUniform::from_matrix(matrix)),
+            );
+        }
+    }
+
+    /// What the resident character costs, or zeroes when there is none.
+    pub fn character_stats(&self) -> CharacterGpuStats {
+        let Some(character) = &self.character else {
+            return CharacterGpuStats::default();
+        };
+        CharacterGpuStats {
+            parts: character.parts.len(),
+            quads: character.quads,
+            vertex_bytes: character.vertex_bytes,
+            index_bytes: character.index_bytes,
+            uniform_bytes: character.uniform_bytes,
+            dynamic_upload_bytes: character.uniform_bytes,
+            world_draws: character.parts.len(),
+            shadow_draws: character.parts.len(),
+        }
+    }
+
     fn has_staged(&self, coord: ChunkCoord) -> bool {
         self.chunks
             .get(&coord)
@@ -1378,6 +1788,23 @@ fn shader_module(device: &wgpu::Device, label: &str, body: &str) -> wgpu::Shader
 }
 
 /// The shadow map: one square depth texture, sampled for comparison.
+/// A shader that shades a surface: the shared scene layout plus the one
+/// stylized shading model, prepended to the body.
+///
+/// WGSL has no include directive, so terrain and characters share their
+/// lighting by sharing this source rather than by copying it.
+fn lit_shader_module(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
+    let source = format!(
+        "{}\n{}\n{body}",
+        include_str!("scene.wgsl"),
+        include_str!("shading.wgsl")
+    );
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
 fn create_shadow_view(device: &wgpu::Device) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {

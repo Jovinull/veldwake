@@ -12,8 +12,9 @@ The renderer should present stylized high-quality voxel fantasy while remaining 
 2. One chunk and an explicit meshing baseline. **Complete and merged in M2:** dependency-free exposed-face CPU mesh, one-time immutable `u32` GPU upload, depth/back-face culling, and diagnostic ID colors.
 3. Multi-chunk correctness. **Complete and merged in M3A:** neighbor-aware local meshes and a static signed-coordinate fixture rendered with one presentation translation per chunk. This is not streaming or final batching.
 4. Streaming, prioritized async generation/meshing, residency, and initial LOD. **Streaming, async meshing, and bounded residency are complete and merged in M3B:** camera-driven demand, one worker, stamp-validated results, per-frame draw-set reconciliation, and upload/release budgets. **Initial LOD is implemented in M3C behind a profile** (one coarse 2× level with a coarse-occupancy seam rule, atomic seam-coherent transitions, measured against a no-LOD baseline and kept opt-in by the recorded rule) and **streaming debug visualization is implemented in M3C3** (keyboard-toggled level tint, residency wireframes, and chunk-boundary/seam/transition overlays on a separate `LineList` pipeline, off by default).
-5. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures.
-6. Later evidence-driven culling/batching/GPU-driven techniques.
+5. Coherent sunlight, shadows, ambient response, sky/atmosphere/fog, water, vegetation, weather subset, and stable captures. **Complete and merged in M4.**
+6. A character in that light. **Implemented in M5:** rigid voxel body parts drawn in the same world and shadow passes as terrain, through one shared WGSL lighting function rather than a second copy of the sun, with static geometry uploaded once and one small uniform per part per frame. The character shadow pass culls front faces like the chunk pass does, which removes the acne a `0.109`-world-unit shadow texel causes on a body built from `0.083`-unit voxels, and costs self-shadowing at this map resolution.
+7. Later evidence-driven culling/batching/GPU-driven techniques.
 
 Potential techniques include greedy meshing or a selected alternative, frustum culling, occlusion culling, asynchronous meshing, hierarchical terrain LOD, indirect rendering, meshlets, compute culling, GPU particles/vegetation, atmospheric scattering, fog, shadows, water, cloud shadows, and color grading. Listing a technique does not authorize implementation.
 
@@ -22,6 +23,8 @@ Potential techniques include greedy meshing or a selected alternative, frustum c
 The source proposed concentric levels—near full simulation, farther high-detail world, lower-detail kilometers, distant terrain silhouettes, and global aggregate simulation. Exact radii (the transcript illustrated 200 m, 1 km, 8 km, and 30 km+) are exploratory and must derive from visibility, world scale, gameplay, memory, generation latency, and target hardware.
 
 Terrain, props, and characters may use different voxel scales. The renderer must preserve silhouette and material identity across LOD transitions and expose chunk/mesh/upload/culling metrics.
+
+M5 exercised that first sentence: a character voxel is `1/12` of a world unit while a terrain voxel is one, and the ratio is a documented visual claim in [`CHARACTER_STYLE.md`](CHARACTER_STYLE.md) rather than an arithmetic convenience. It was chosen against a capture — at `1/16` the humanoid was shorter than the undergrowth and its whole leg was shorter than one terrain voxel — which is what the sentence means in practice: the scales are independent, and each one is judged in the frame the other appears in.
 
 ## Quality and correctness
 

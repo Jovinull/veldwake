@@ -94,6 +94,20 @@ impl WorldSelection {
         }
     }
 
+    /// The terrain generator behind this world, when it has one.
+    ///
+    /// The diagnostic corridor is not generated terrain and has no
+    /// walkable surface to query, so it answers `None` rather than
+    /// inventing a floor.
+    #[must_use]
+    pub fn generator(self) -> Option<TerrainGenerator> {
+        match self {
+            Self::Golden => Some(TerrainGenerator::golden()),
+            Self::Seeded(seed) => Some(TerrainGenerator::with_seed(WorldSeed(seed))),
+            Self::Diagnostic => None,
+        }
+    }
+
     /// Identity of everything this world generates.
     ///
     /// The disk cache is keyed on it, so switching worlds cannot replay another
@@ -156,6 +170,17 @@ pub fn resolve_pose(requested: Option<&str>) -> &'static CameraPose {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_procedural_world_has_a_terrain_generator() {
+        assert!(WorldSelection::Golden.generator().is_some());
+        assert!(WorldSelection::Seeded(7).generator().is_some());
+        assert!(WorldSelection::Diagnostic.generator().is_none());
+        let Some(golden) = WorldSelection::Golden.generator() else {
+            panic!("the golden world has a generator");
+        };
+        assert_eq!(golden.fingerprint(), WorldSelection::Golden.fingerprint());
+    }
 
     #[test]
     fn world_names_parse_including_an_explicit_seed() {
