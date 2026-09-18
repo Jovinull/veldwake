@@ -1,8 +1,10 @@
 mod app;
+mod arena;
 mod camera;
 mod character;
 mod debug;
 mod diagnostics;
+mod encounter;
 mod input;
 mod lighting;
 mod renderer;

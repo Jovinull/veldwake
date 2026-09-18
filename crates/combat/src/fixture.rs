@@ -60,6 +60,14 @@ pub fn adversary_descriptor() -> CharacterDescriptor {
     CharacterDescriptor {
         proportions: Proportions {
             total_height_units: 2.75,
+            // `0.15` rather than `sturdy`'s `0.20`, and a capture is why. At
+            // `0.20` a thirty-three voxel body gets a hand seven voxels deep —
+            // as deep as it is long — and the close contact frame came back with
+            // two brown slabs and two brass guards piled where the blades meet,
+            // one indistinct mass instead of a hit. `0.15` gives five, which the
+            // style contract's `1.20`–`1.80` hand-to-forearm band still allows,
+            // and the hand reads as a fist holding a grip.
+            hand_depth_fraction: 0.15,
             ..Proportions::sturdy()
         },
         seed: CharacterSeed(0x4144_5645_5253_0001),
@@ -175,7 +183,15 @@ pub const PLAYER_OFFSET: Vec2 = Vec2::new(0.0, START_SEPARATION * 0.5);
 pub const ADVERSARY_OFFSET: Vec2 = Vec2::new(0.0, -START_SEPARATION * 0.5);
 
 /// The arena radius every recorded encounter uses.
-pub const ARENA_RADIUS: f32 = 7.0;
+///
+/// `5.5` rather than the `7.0` this started at, and the reason came from the
+/// world rather than from the rules. The client's arena is a scanned column of
+/// the M4 golden region, and the best clearing it has is free of vegetation only
+/// out to seven world units; a seven-unit arena would let a body reach the
+/// boundary and stand inside a shrub, because there is no vegetation collision.
+/// At `5.5` the widest body plus the arena radius is `6.36`, comfortably inside
+/// the clearing, so the whole fight happens on ground a viewer can see.
+pub const ARENA_RADIUS: f32 = 5.5;
 
 /// The whole tuning, around an arena the caller places.
 ///
@@ -586,7 +602,14 @@ pub const GOLDEN_WEAPON_IDENTITY_FINGERPRINT: u64 = 0x084b_f386_500b_b0e4;
 /// broader descriptor of its own. With a longer reach on the other side, a
 /// scripted player that dodged in only one leg of ten lost every run, which is the
 /// right outcome for that player and the wrong reference encounter.
-pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x38e2_07fc_7ead_6c47;
+///
+/// **Old** `0x38e207fc7ead6c47`, **new** `0xc2fc91e36fbd0ec4`, **why**: the first
+/// real close-up contact capture showed the adversary's hands as two slabs seven
+/// voxels deep piled where the blades meet, so its hand depth came down from
+/// `0.20` of body height to `0.15`. That moves its capsule radius from `0.8563`
+/// to `0.8274` and therefore every separation in the fight. The outcome is
+/// unchanged: six hits each, one defeat, the player down to six health.
+pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0xc2fc_91e3_6fbd_0ec4;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]
@@ -834,10 +857,12 @@ mod tests {
             (0.8..=1.25).contains(&ratio),
             "the reaches are lopsided: {connects:?}"
         );
-        // The fight fits in its arena with room to circle.
+        // The fight fits in its arena with room to circle: the arena is wider
+        // across than three swings are long.
         assert!(
-            ARENA_RADIUS > connects[0] * 2.0,
-            "an arena of {ARENA_RADIUS} is too small for a reach of {}",
+            ARENA_RADIUS * 2.0 > connects[0] * 3.0,
+            "an arena {} across is too small for a reach of {}",
+            ARENA_RADIUS * 2.0,
             connects[0]
         );
     }

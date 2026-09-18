@@ -1,6 +1,8 @@
 use std::{f32::consts::FRAC_PI_2, time::Duration};
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
+
+use veldwake_character::GroundSampler;
 
 use crate::input::InputState;
 
@@ -91,6 +93,159 @@ impl Camera {
 
     fn horizontal_forward(&self) -> Vec3 {
         Vec3::new(self.yaw.sin(), 0.0, -self.yaw.cos())
+    }
+
+    /// Places the camera without disturbing its projection.
+    ///
+    /// [`Camera::at`] rebuilds from the default, which would silently drop the
+    /// aspect ratio the window set; a follow camera has to move every frame, so it
+    /// needs a mutator rather than a constructor.
+    pub fn place(&mut self, position: Vec3, yaw: f32, pitch: f32) {
+        if !position.is_finite() || !yaw.is_finite() || !pitch.is_finite() {
+            return;
+        }
+        self.position = position;
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS);
+    }
+
+    /// The planar direction the camera looks along, which is the frame a player's
+    /// movement intent is expressed in.
+    pub fn planar_forward(&self) -> Vec2 {
+        let forward = self.horizontal_forward();
+        Vec2::new(forward.x, forward.z)
+    }
+
+    /// The planar direction to the camera's right.
+    pub fn planar_right(&self) -> Vec2 {
+        let forward = self.planar_forward();
+        Vec2::new(-forward.y, forward.x)
+    }
+}
+
+/// How far behind the anchor a follow camera sits, in world units.
+const FOLLOW_DISTANCE: f32 = 6.2;
+/// How far above the stand point the camera aims, in world units.
+///
+/// Above the player's own head, which the first real run showed is necessary: at
+/// chest height and directly behind, the player's body stood exactly in front of
+/// the adversary six units beyond it and hid the thing the player is fighting.
+const FOLLOW_EYE_HEIGHT: f32 = 2.10;
+/// How far to the camera's right the view is offset, in world units.
+///
+/// The other half of that fix, and the reason every third-person action camera
+/// does it: a view directly down the player's spine has the player between the
+/// viewer and everything the player cares about. Just over a body's width is
+/// enough to see past it without the shot becoming a side view.
+const FOLLOW_LATERAL: f32 = 1.15;
+/// Pitch the follow camera starts at, in radians below the horizon.
+const FOLLOW_PITCH: f32 = -0.24;
+/// How quickly the anchor catches up with the body, in seconds.
+///
+/// Small, but not zero. **The anchor is the stand point, never the pelvis**: the
+/// gait drops and bobs the pelvis by a fraction of a leg length every step, and a
+/// camera that followed it would pulse the whole screen at the step frequency.
+const FOLLOW_ANCHOR_TAU: f32 = 0.08;
+/// Lowest the camera may sit above the ground under it, in world units.
+const FOLLOW_GROUND_CLEARANCE: f32 = 0.55;
+
+/// A third-person camera that orbits a body.
+///
+/// Deliberately not a camera system: there is no occlusion solving, no collision
+/// volume, no lock-on and no field-of-view response. What it does is follow a
+/// stable anchor, take its yaw and pitch from the mouse, and refuse to sit inside
+/// the ground.
+#[derive(Clone, Copy, Debug)]
+pub struct FollowController {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    anchor: Vec3,
+    settled: bool,
+    look_sensitivity: f32,
+}
+
+impl Default for FollowController {
+    fn default() -> Self {
+        Self {
+            yaw: 0.0,
+            pitch: FOLLOW_PITCH,
+            distance: FOLLOW_DISTANCE,
+            anchor: Vec3::ZERO,
+            settled: false,
+            look_sensitivity: 0.0025,
+        }
+    }
+}
+
+impl FollowController {
+    /// Starts the camera behind a body looking the way that body faces.
+    #[must_use]
+    pub fn behind(anchor: Vec3, facing: f32) -> Self {
+        Self {
+            yaw: facing,
+            anchor,
+            settled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Moves the camera for one frame.
+    ///
+    /// `target` is the point the followed body stands on. `offset` is an extra
+    /// world-space displacement, which is how a hit's camera response reaches the
+    /// camera without this controller knowing what a hit is.
+    pub fn update(
+        &mut self,
+        camera: &mut Camera,
+        input: &mut InputState,
+        target: Vec3,
+        offset: Vec3,
+        elapsed: Duration,
+        ground: Option<&dyn GroundSampler>,
+    ) {
+        let (look_x, look_y) = input.take_look_delta();
+        if look_x.is_finite() && look_y.is_finite() {
+            self.yaw -= look_x * self.look_sensitivity;
+            self.pitch = (self.pitch - look_y * self.look_sensitivity)
+                .clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS);
+        }
+        if !target.is_finite() {
+            return;
+        }
+        if self.settled {
+            let step = elapsed.min(MAX_PRESENTATION_DELTA).as_secs_f32();
+            let alpha = 1.0 - (-step / FOLLOW_ANCHOR_TAU).exp();
+            self.anchor += (target - self.anchor) * alpha;
+        } else {
+            self.anchor = target;
+            self.settled = true;
+        }
+
+        let eye = self.anchor + Vec3::Y * FOLLOW_EYE_HEIGHT;
+        let pitch_cos = self.pitch.cos();
+        let forward = Vec3::new(
+            self.yaw.sin() * pitch_cos,
+            self.pitch.sin(),
+            -self.yaw.cos() * pitch_cos,
+        );
+        let right = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin());
+        let mut position = eye - forward * self.distance + right * FOLLOW_LATERAL + offset;
+        // The one concession to the world: a camera inside a hillside photographs
+        // the inside of a hillside. There is no occlusion solving beyond this.
+        if let Some(ground) = ground
+            && let Some(height) = ground.surface(f64::from(position.x), f64::from(position.z))
+        {
+            let floor = height as f32 + FOLLOW_GROUND_CLEARANCE;
+            if position.y < floor {
+                position.y = floor;
+            }
+        }
+        // The camera is offset to one side, so it has to yaw back toward the
+        // anchor or the player drifts out of frame.
+        let toward = eye - position;
+        let yaw = toward.x.atan2(-toward.z);
+        camera.place(position, yaw, self.pitch);
     }
 }
 

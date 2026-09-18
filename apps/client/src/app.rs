@@ -18,12 +18,15 @@ use winit::{
 };
 
 use veldwake_character::GroundSampler;
+use veldwake_combat::{CombatEvent, SIDES, Side};
 
 use crate::{
-    camera::{Camera, CameraController},
+    arena,
+    camera::{Camera, CameraController, FollowController},
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
-    debug::{DebugMode, debug_primitives},
-    input::{CameraAction, InputState},
+    debug::{DebugMode, combat_primitives, debug_primitives},
+    encounter::{EncounterMode, EncounterScene},
+    input::{CameraAction, CombatAction, InputState},
     lighting::Weather,
     renderer::{RenderOutcome, Renderer},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
@@ -42,6 +45,9 @@ const CACHE_DIR_VARIABLE: &str = "VELDWAKE_CACHE_DIR";
 /// can be aligned with one interval line rather than with two clocks.
 const CHARACTER_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How often the encounter's state is reported, on the same cadence again.
+const COMBAT_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Where the camera starts.
 ///
 /// `VELDWAKE_POSE` names either one of the world's golden terrain poses or
@@ -54,9 +60,15 @@ fn spawn_camera() -> Camera {
     let requested = requested_pose();
     if let Some(name) = requested.as_deref()
         && let Some(generator) = world.generator()
-        && let Some(camera) = spawn_character_camera(name, &generator)
     {
-        return camera;
+        // A combat pose first: it frames the arena, and a frozen moment needs a
+        // fixed camera rather than one that follows a body.
+        if let Some(camera) = arena::spawn_combat_camera(name, &generator) {
+            return camera;
+        }
+        if let Some(camera) = spawn_character_camera(name, &generator) {
+            return camera;
+        }
     }
     world.spawn_camera(requested.as_deref())
 }
@@ -110,6 +122,13 @@ struct App {
     /// The character, its state, and the diagnostic course driving it.
     character: Option<CharacterScene>,
     last_character_report: Instant,
+    /// The fight, its clock, and what drives it. `None` when the encounter is off.
+    encounter: Option<EncounterScene>,
+    /// The third-person camera, when one is following the player.
+    follow: Option<FollowController>,
+    /// Whether `F4` has detached the camera for a look around.
+    camera_detached: bool,
+    last_combat_report: Instant,
 }
 
 impl Default for App {
@@ -127,6 +146,10 @@ impl Default for App {
             terrain: None,
             character: None,
             last_character_report: Instant::now(),
+            encounter: None,
+            follow: None,
+            camera_detached: false,
+            last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
             weather: Weather::default(),
@@ -137,7 +160,7 @@ impl Default for App {
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), AppRunError> {
         let attributes = Window::default_attributes()
-            .with_title("Veldwake - M3B Streaming Runtime")
+            .with_title("Veldwake")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_visible(false);
         let window = Arc::new(
@@ -203,7 +226,79 @@ impl App {
         // parts make its geometry static, so nothing here runs again.
         let selection = CharacterSelection::from_environment();
         self.terrain = world.generator();
-        let character = if selection.is_off() {
+
+        // The encounter comes first, because it owns both bodies when it is on
+        // and the M5 preview character would otherwise draw over actor zero.
+        let encounter_mode = EncounterMode::from_environment();
+        if !encounter_mode.is_off() {
+            let Some(generator) = self.terrain.as_ref() else {
+                return Err(AppRunError(
+                    "VELDWAKE_ENCOUNTER needs generated terrain; the diagnostic corridor has no \
+                     walkable surface to fight on"
+                        .to_owned(),
+                ));
+            };
+            let ground = TerrainGround::new(generator);
+            let scene = EncounterScene::new(encounter_mode, generator, Some(&ground))
+                .map_err(|error| AppRunError(format!("the encounter did not build: {error}")))?;
+            for side in SIDES {
+                renderer
+                    .upload_actor(
+                        scene.encounter().character(side),
+                        Some(scene.encounter().weapon()),
+                    )
+                    .map_err(|error| {
+                        AppRunError(format!("{} did not upload: {error}", side.name()))
+                    })?;
+            }
+            let stats = renderer.character_stats();
+            let player = scene.encounter().combatant(Side::Player);
+            let adversary = scene.encounter().combatant(Side::Adversary);
+            info!(
+                mode = encounter_mode.name(),
+                arena = ?arena::centre().to_array(),
+                arena_radius = arena::ARENA_RADIUS,
+                tick_hz = veldwake_combat::COMBAT_TICK_HZ,
+                max_ticks_per_frame = veldwake_combat::MAX_TICKS_PER_FRAME,
+                weapon = format_args!("{:#018x}", scene.encounter().weapon().fingerprint()),
+                player = format_args!("{:#018x}", scene.encounter().character(Side::Player).fingerprint()),
+                adversary =
+                    format_args!("{:#018x}", scene.encounter().character(Side::Adversary).fingerprint()),
+                player_health = player.health().max(),
+                adversary_health = adversary.health().max(),
+                actors = stats.actors,
+                weapons = stats.weapons,
+                parts = stats.parts,
+                quads = stats.quads,
+                gpu_bytes = stats.vertex_bytes + stats.index_bytes + stats.uniform_bytes,
+                dynamic_upload_bytes_per_frame = stats.dynamic_upload_bytes,
+                world_draws = stats.world_draws,
+                shadow_draws = stats.shadow_draws,
+                frozen = scene.is_frozen(),
+                moment_tick = scene.moment_tick(),
+                played = encounter_mode.is_played(),
+                clearing_level_radius = arena::LEVEL_RADIUS,
+                clearing_clear_radius = arena::CLEAR_RADIUS,
+                clearing_open_radius = arena::OPEN_RADIUS,
+                clearing_open_rise = arena::OPEN_RISE,
+                "encounter ready"
+            );
+            // A frozen moment or a named combat pose keeps its fixed camera; a
+            // fight that is being played gets a camera that follows the player.
+            let fixed_pose = requested_pose()
+                .as_deref()
+                .and_then(arena::combat_camera_pose)
+                .is_some();
+            if encounter_mode.follows_the_player() && !fixed_pose && !scene.is_frozen() {
+                self.follow = Some(FollowController::behind(
+                    scene.camera_target(),
+                    player.state().facing,
+                ));
+            }
+            self.encounter = Some(scene);
+        }
+
+        let character = if selection.is_off() || self.encounter.is_some() {
             None
         } else {
             let ground = self.terrain.as_ref().map(TerrainGround::new);
@@ -218,6 +313,13 @@ impl App {
                 })?;
             Some(scene)
         };
+        if self.encounter.is_some() && !selection.is_off() {
+            info!(
+                selection = selection.name(),
+                "VELDWAKE_CHARACTER is ignored while an encounter is running: the two combatants \
+                 are the characters"
+            );
+        }
         if let Some(scene) = &character {
             let stats = renderer.character_stats();
             info!(
@@ -268,9 +370,16 @@ impl App {
         window.request_redraw();
         info!(
             "controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
-             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, F3 toggles weather, \
+             F1 cycles debug views (off/lod/residency/boundaries/combat), F2 toggles debug boxes, F3 toggles weather, \
              Escape exits"
         );
+        if self.encounter.is_some() {
+            info!(
+                "combat controls: WASD moves relative to the camera, J or left mouse attacks, \
+                 K or Space dodges, F4 detaches the camera to look around, F1 to the combat view \
+                 shows the volumes a hit is decided by"
+            );
+        }
         Ok(())
     }
 
@@ -293,11 +402,23 @@ impl App {
             return;
         }
 
+        // Combat verbs are latched on the key-down edge, because a frame can run
+        // no ticks or four and a held flag would be lost or repeated.
+        if let Some(action) = combat_action(code) {
+            self.input.set_combat_action(action, pressed);
+        }
+
         if pressed && let Some(action) = debug_action(code) {
             match action {
                 DebugAction::CycleMode => self.debug_mode = self.debug_mode.next(),
                 DebugAction::ToggleBoxes => self.debug_boxes = !self.debug_boxes,
                 DebugAction::CycleWeather => self.weather = self.weather.next(),
+                DebugAction::DetachCamera => {
+                    self.camera_detached = !self.camera_detached;
+                    // The free-fly camera starts from wherever the follow camera
+                    // left off, so a detach is a step back rather than a jump.
+                    info!(detached = self.camera_detached, "camera detach toggled");
+                }
             }
             info!(
                 mode = self.debug_mode.name(),
@@ -322,8 +443,30 @@ impl App {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
-        self.controller
-            .update(&mut self.camera, &mut self.input, elapsed);
+        // The camera moves before the fight does: a player's movement intent is
+        // expressed in the camera's frame, so the two must not disagree by a frame.
+        let following = self.follow.is_some() && !self.camera_detached;
+        if following {
+            let ground = self.terrain.as_ref().map(TerrainGround::new);
+            let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+            let target = self
+                .encounter
+                .as_ref()
+                .map_or(self.camera.position(), EncounterScene::camera_target);
+            if let Some(follow) = self.follow.as_mut() {
+                follow.update(
+                    &mut self.camera,
+                    &mut self.input,
+                    target,
+                    glam::Vec3::ZERO,
+                    elapsed,
+                    sampler,
+                );
+            }
+        } else {
+            self.controller
+                .update(&mut self.camera, &mut self.input, elapsed);
+        }
 
         let (Some(renderer), Some(streaming)) = (self.renderer.as_mut(), self.streaming.as_mut())
         else {
@@ -340,10 +483,33 @@ impl App {
                 return;
             }
         };
-        // The character is posed on the CPU and reaches the GPU as sixteen
-        // transforms. Its geometry is never re-uploaded.
+        // The fight advances in whole ticks, however long the frame was. Its
+        // geometry is never re-uploaded; a frame writes transforms only.
         let ground = self.terrain.as_ref().map(TerrainGround::new);
         let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+        if let Some(scene) = self.encounter.as_mut() {
+            let outcome = scene.update(elapsed, &mut self.input, &self.camera, sampler);
+            for side in SIDES {
+                let combatant = scene.encounter().combatant(side);
+                renderer.set_actor_pose(
+                    side.index(),
+                    combatant.posed(),
+                    Some(scene.encounter().weapon_matrix(side)),
+                );
+            }
+            self.frame_stats.record_combat(outcome, scene.events());
+            if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
+                self.last_combat_report = now;
+                let (attack_latched, dodge_latched) = self.input.combat_latches();
+                report_combat(
+                    scene,
+                    &self.frame_stats,
+                    attack_latched || dodge_latched,
+                    attack_latched,
+                    dodge_latched,
+                );
+            }
+        }
         if let Some(scene) = self.character.as_mut() {
             let posed = scene.update(elapsed.as_secs_f32(), sampler);
             renderer.set_character_pose(&posed);
@@ -389,7 +555,10 @@ impl App {
         // Off produces no primitives, debug-slot allocations, debug uniform
         // writes, or debug draws. Fixed startup resources and any reusable
         // slots retained after prior debug use still exist.
-        let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
+        let primitives = match (self.debug_mode.shows_combat(), self.encounter.as_ref()) {
+            (true, Some(scene)) => combat_primitives(scene.encounter(), self.debug_boxes),
+            _ => debug_primitives(streaming, self.debug_mode, self.debug_boxes),
+        };
         renderer.set_debug_primitives(&primitives);
         renderer.update_scene(&self.camera, self.weather, self.debug_mode.lod_tint());
         let render_started = Instant::now();
@@ -465,6 +634,13 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => self.input.set_look_active(state == ElementState::Pressed),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => self
+                .input
+                .set_combat_action(CombatAction::Attack, state == ElementState::Pressed),
             WindowEvent::Focused(focused) => {
                 self.last_frame = Instant::now();
                 if !focused {
@@ -515,6 +691,82 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Two aggregate lines about the fight, on the same five-second cadence the
+/// streaming and character reports use, so one capture aligns with one interval.
+fn report_combat(
+    scene: &EncounterScene,
+    stats: &FrameStats,
+    input_latched: bool,
+    attack_latched: bool,
+    dodge_latched: bool,
+) {
+    let encounter = scene.encounter();
+    let counters = encounter.counters();
+    let player = encounter.combatant(Side::Player);
+    let adversary = encounter.combatant(Side::Adversary);
+    info!(
+        mode = scene.mode().name(),
+        armed = encounter.is_armed(),
+        frozen = scene.is_frozen(),
+        tick = encounter.tick_index(),
+        scene_ticks = scene.ticks(),
+        events_this_frame = scene.events().len(),
+        input_latched,
+        input_attack_latched = attack_latched,
+        input_dodge_latched = dodge_latched,
+        distance = scene.distance(),
+        player_action = player.action().label(encounter.attack_spec(Side::Player)),
+        player_elapsed = player.action().elapsed(),
+        player_health = player.health().current(),
+        player_x = player.position().x,
+        player_z = player.position().y,
+        player_facing_degrees = player.state().facing.to_degrees(),
+        player_grounded = player.state().grounded,
+        adversary_action = adversary
+            .action()
+            .label(encounter.attack_spec(Side::Adversary)),
+        adversary_elapsed = adversary.action().elapsed(),
+        adversary_health = adversary.health().current(),
+        adversary_x = adversary.position().x,
+        adversary_z = adversary.position().y,
+        brain = encounter.brain().state().name(),
+        brain_timer = encounter.brain().timer(),
+        outcome = encounter.outcome().map(Side::name),
+        "combat state"
+    );
+    info!(
+        ticks = counters.ticks,
+        ticks_this_run = stats.combat_ticks,
+        ticks_dropped = stats.combat_ticks_dropped,
+        ticks_max_per_frame = stats.combat_ticks_max,
+        frames_without_a_tick = stats.combat_frames_idle,
+        clock_dropped = scene.clock().dropped(),
+        clock_capped_frames = scene.clock().capped_frames(),
+        player_swings = counters.swings[0],
+        adversary_swings = counters.swings[1],
+        player_hits = counters.hits[0],
+        adversary_hits = counters.hits[1],
+        player_whiffs = counters.whiffs[0],
+        adversary_whiffs = counters.whiffs[1],
+        player_dodges = counters.dodges[0],
+        dodges_refused = counters.dodges_refused[0],
+        player_staggers = counters.staggers[0],
+        adversary_staggers = counters.staggers[1],
+        defeats_player = counters.defeats[0],
+        defeats_adversary = counters.defeats[1],
+        resets = counters.resets,
+        separations = counters.separations,
+        blocked_moves_player = counters.blocked_moves[0],
+        blocked_moves_adversary = counters.blocked_moves[1],
+        hit_queries = counters.hit_queries,
+        sweep_substeps_max = counters.sweep_substeps_max,
+        multi_hit_suppressed = counters.multi_hit_suppressed,
+        events_dropped = counters.events_dropped,
+        frame_events_dropped = stats.combat_events_dropped,
+        "combat work"
+    );
+}
+
 /// Keyboard control of the debug views. Separate from camera actions so the
 /// mapping is testable without a window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -522,6 +774,7 @@ enum DebugAction {
     CycleMode,
     ToggleBoxes,
     CycleWeather,
+    DetachCamera,
 }
 
 const fn debug_action(key: KeyCode) -> Option<DebugAction> {
@@ -529,6 +782,20 @@ const fn debug_action(key: KeyCode) -> Option<DebugAction> {
         KeyCode::F1 => Some(DebugAction::CycleMode),
         KeyCode::F2 => Some(DebugAction::ToggleBoxes),
         KeyCode::F3 => Some(DebugAction::CycleWeather),
+        KeyCode::F4 => Some(DebugAction::DetachCamera),
+        _ => None,
+    }
+}
+
+/// The two combat verbs.
+///
+/// `Space` doubles as the dodge because the free-fly camera's vertical axis is not
+/// used while a fight is on, and a keyboard alias for each verb is what lets the
+/// driven smoke inject them: the evidence harness sends key events, not clicks.
+const fn combat_action(key: KeyCode) -> Option<CombatAction> {
+    match key {
+        KeyCode::KeyJ => Some(CombatAction::Attack),
+        KeyCode::KeyK | KeyCode::Space => Some(CombatAction::Dodge),
         _ => None,
     }
 }
@@ -620,9 +887,54 @@ struct FrameStats {
     removals: u64,
     deferred_uploads: u64,
     demand_changes: u64,
+    /// Combat ticks run, and the ones a frame spike had to discard.
+    combat_ticks: u64,
+    combat_ticks_dropped: u64,
+    /// Highest number of ticks one frame ran, which is how close the catch-up cap
+    /// gets to being hit.
+    combat_ticks_max: u32,
+    /// Frames that ran no tick at all: ordinary at a high frame rate, and the case
+    /// an unlatched key press would be lost in.
+    combat_frames_idle: u64,
+    /// Events a frame could not hold. Must stay zero.
+    combat_events_dropped: u64,
+    combat_hits: [u64; 2],
+    combat_swings: [u64; 2],
 }
 
 impl FrameStats {
+    /// Records what one frame's combat ticks did.
+    fn record_combat(
+        &mut self,
+        outcome: crate::encounter::FrameOutcome,
+        events: &crate::encounter::FrameEvents,
+    ) {
+        self.combat_ticks = self.combat_ticks.saturating_add(u64::from(outcome.ticks));
+        self.combat_ticks_dropped = self
+            .combat_ticks_dropped
+            .saturating_add(outcome.dropped_ticks);
+        self.combat_ticks_max = self.combat_ticks_max.max(outcome.ticks);
+        if outcome.ticks == 0 {
+            self.combat_frames_idle = self.combat_frames_idle.saturating_add(1);
+        }
+        self.combat_events_dropped = self
+            .combat_events_dropped
+            .saturating_add(u64::from(events.dropped()));
+        for event in events.iter() {
+            match event {
+                CombatEvent::Hit { attacker, .. } => {
+                    let index = attacker.index();
+                    self.combat_hits[index] = self.combat_hits[index].saturating_add(1);
+                }
+                CombatEvent::SwingStarted { side, .. } => {
+                    let index = side.index();
+                    self.combat_swings[index] = self.combat_swings[index].saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             report_started: Instant::now(),
@@ -638,6 +950,13 @@ impl FrameStats {
             removals: 0,
             deferred_uploads: 0,
             demand_changes: 0,
+            combat_ticks: 0,
+            combat_ticks_dropped: 0,
+            combat_ticks_max: 0,
+            combat_frames_idle: 0,
+            combat_events_dropped: 0,
+            combat_hits: [0; 2],
+            combat_swings: [0; 2],
         }
     }
 
@@ -874,9 +1193,9 @@ impl FrameStats {
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugAction, camera_action, debug_action};
+    use super::{DebugAction, camera_action, combat_action, debug_action};
     use crate::debug::DebugMode;
-    use crate::input::CameraAction;
+    use crate::input::{CameraAction, CombatAction};
     use winit::keyboard::KeyCode;
 
     #[test]
@@ -884,14 +1203,29 @@ mod tests {
         assert_eq!(debug_action(KeyCode::F1), Some(DebugAction::CycleMode));
         assert_eq!(debug_action(KeyCode::F2), Some(DebugAction::ToggleBoxes));
         assert_eq!(debug_action(KeyCode::F3), Some(DebugAction::CycleWeather));
-        assert_eq!(debug_action(KeyCode::F4), None);
+        assert_eq!(debug_action(KeyCode::F4), Some(DebugAction::DetachCamera));
+        assert_eq!(debug_action(KeyCode::F5), None);
         assert_eq!(debug_action(KeyCode::KeyW), None);
         assert_eq!(camera_action(KeyCode::F1), None);
         assert_eq!(camera_action(KeyCode::F2), None);
+        assert_eq!(camera_action(KeyCode::F4), None);
 
-        // Four presses of F1 return to the shipped rendering.
+        // The combat verbs have keyboard aliases so a driven smoke can inject
+        // them, and they do not collide with the camera's own keys.
+        assert_eq!(combat_action(KeyCode::KeyJ), Some(CombatAction::Attack));
+        assert_eq!(combat_action(KeyCode::KeyK), Some(CombatAction::Dodge));
+        assert_eq!(combat_action(KeyCode::Space), Some(CombatAction::Dodge));
+        assert_eq!(combat_action(KeyCode::KeyW), None);
+        assert_eq!(combat_action(KeyCode::F1), None);
+        // `Space` is the one key with two meanings: the free-fly camera's rise and
+        // the dodge. The two never apply at once, because the follow camera
+        // ignores the vertical axis.
+        assert_eq!(camera_action(KeyCode::Space), Some(CameraAction::Up));
+
+        // Five presses of F1 return to the shipped rendering: M6 added the
+        // combat-volume view to the cycle.
         let mut mode = DebugMode::Off;
-        for _ in 0..4 {
+        for _ in 0..5 {
             mode = mode.next();
         }
         assert_eq!(mode, DebugMode::Off);

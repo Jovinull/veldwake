@@ -13,6 +13,7 @@ pollster = { version = "=1.0.1", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt"] }
 veldwake-character = { version = "=0.0.0", path = "../../crates/character" }
+veldwake-combat = { version = "=0.0.0", path = "../../crates/combat" }
 veldwake-procedural = { version = "=0.0.0", path = "../../crates/procedural" }
 veldwake-streaming = { version = "=0.0.0", path = "../../crates/streaming" }
 veldwake-voxel = { version = "=0.0.0", path = "../../crates/voxel" }

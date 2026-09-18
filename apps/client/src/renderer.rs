@@ -12,6 +12,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
 use veldwake_character::{BONE_COUNT, CompiledCharacter, PosedCharacter};
+use veldwake_combat::CompiledWeapon;
 use veldwake_procedural::TerrainMaterial;
 use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
@@ -328,6 +329,30 @@ impl PartUniform {
     }
 }
 
+/// One uploaded rigid part and what it cost.
+struct UploadedPart {
+    part: GpuCharacterPart,
+    vertex_bytes: usize,
+    index_bytes: usize,
+    quads: usize,
+}
+
+/// Turns a borrowed label into the `'static` one the error type carries.
+///
+/// The upload errors name a bone, and every bone name in the character crate is
+/// already `'static`; a weapon has one name, so this maps the two cases it can
+/// actually see and refuses to invent a leak for anything else.
+fn leaked(label: &str) -> &'static str {
+    match label {
+        "weapon" => "weapon",
+        other => veldwake_character::skeleton::ALL_BONES
+            .into_iter()
+            .map(|bone| bone.name())
+            .find(|name| *name == other)
+            .unwrap_or("unknown part"),
+    }
+}
+
 /// One compiled body part on the GPU, uploaded once and never re-uploaded.
 struct GpuCharacterPart {
     vertex_buffer: wgpu::Buffer,
@@ -337,21 +362,41 @@ struct GpuCharacterPart {
     bind_group: wgpu::BindGroup,
 }
 
-/// The whole character on the GPU.
+/// One drawn body on the GPU, and the weapon in its hand.
 ///
-/// Rigid parts make the geometry static: the buffers are immutable after
-/// upload and a frame writes only the part transforms.
-struct GpuCharacter {
+/// Rigid parts make the geometry static: the buffers are immutable after upload
+/// and a frame writes only the transforms. **A weapon is a rigid part like any
+/// other** — the same vertex layout, the same eighty-byte uniform, the same
+/// pipeline and the same shared lighting function — so drawing one costs no new
+/// shader and no second shading policy. All it needs is its own palette.
+struct GpuActor {
     parts: Vec<GpuCharacterPart>,
+    weapon: Option<GpuCharacterPart>,
     vertex_bytes: usize,
     index_bytes: usize,
     uniform_bytes: usize,
     quads: usize,
 }
 
-/// What the character costs the renderer, for the milestone measurements.
+impl GpuActor {
+    /// Every drawable part of this actor, the weapon last.
+    fn drawables(&self) -> impl Iterator<Item = &GpuCharacterPart> {
+        self.parts.iter().chain(self.weapon.iter())
+    }
+
+    fn draw_count(&self) -> usize {
+        self.parts.len() + usize::from(self.weapon.is_some())
+    }
+}
+
+/// What the drawn bodies cost the renderer, for the milestone measurements.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CharacterGpuStats {
+    /// How many bodies are resident.
+    pub actors: usize,
+    /// How many weapons are resident.
+    pub weapons: usize,
+    /// Body parts across every actor, weapons excluded.
     pub parts: usize,
     pub quads: usize,
     pub vertex_bytes: usize,
@@ -554,7 +599,9 @@ pub struct Renderer {
     character_pipeline: wgpu::RenderPipeline,
     character_shadow_pipeline: wgpu::RenderPipeline,
     part_layout: wgpu::BindGroupLayout,
-    character: Option<GpuCharacter>,
+    /// The drawn bodies. One for the M5 preview, two for a fight; the renderer
+    /// holds no scene graph and nothing here is an entity.
+    actors: Vec<GpuActor>,
 }
 
 impl Renderer {
@@ -1047,7 +1094,7 @@ impl Renderer {
             character_pipeline,
             character_shadow_pipeline,
             part_layout,
-            character: None,
+            actors: Vec::new(),
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -1219,10 +1266,10 @@ impl Renderer {
                     .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 shadow_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
-            if let Some(character) = &self.character {
+            if !self.actors.is_empty() {
                 shadow_pass.set_pipeline(&self.character_shadow_pipeline);
                 shadow_pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
-                for part in &character.parts {
+                for part in self.actors.iter().flat_map(GpuActor::drawables) {
                     shadow_pass.set_bind_group(1, &part.bind_group, &[]);
                     shadow_pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
                     shadow_pass
@@ -1279,10 +1326,10 @@ impl Renderer {
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
-            if let Some(character) = &self.character {
+            if !self.actors.is_empty() {
                 pass.set_pipeline(&self.character_pipeline);
                 pass.set_bind_group(0, &self.scene_bind_group, &[]);
-                for part in &character.parts {
+                for part in self.actors.iter().flat_map(GpuActor::drawables) {
                     pass.set_bind_group(1, &part.bind_group, &[]);
                     pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
                     pass.set_index_buffer(part.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1367,16 +1414,27 @@ impl Renderer {
 
     /// Whether `coord` holds a staged replacement, including a staged empty
     /// mesh (a commit that removes the chunk).
-    /// Uploads a compiled character once.
+    /// Uploads a compiled character once, as the only actor, with no weapon.
     ///
-    /// Rigid parts make the geometry static, so this happens at startup and
-    /// never again; a frame writes only the part transforms. Any character
-    /// already resident is released first.
+    /// The M5 path, kept exactly as it was: one body, no weapon, actor zero.
     pub fn upload_character(
         &mut self,
         character: &CompiledCharacter,
     ) -> Result<(), CharacterUploadError> {
-        self.character = None;
+        self.actors.clear();
+        self.upload_actor(character, None).map(|_| ())
+    }
+
+    /// Uploads one body and, optionally, the weapon in its hand.
+    ///
+    /// Returns the actor's index, which is what a later pose refers to. Rigid
+    /// parts make the geometry static, so this happens at startup and never
+    /// again; a frame writes only the transforms.
+    pub fn upload_actor(
+        &mut self,
+        character: &CompiledCharacter,
+        weapon: Option<&CompiledWeapon>,
+    ) -> Result<usize, CharacterUploadError> {
         if character.parts().len() != BONE_COUNT {
             return Err(CharacterUploadError::PartCount {
                 found: character.parts().len(),
@@ -1389,100 +1447,139 @@ impl Renderer {
         let mut index_bytes = 0;
         let mut quads = 0;
         for part in character.parts() {
-            let mesh = part.mesh();
-            if mesh.vertices().is_empty() || mesh.indices().is_empty() {
-                return Err(CharacterUploadError::EmptyMesh {
-                    bone: part.bone().name(),
-                });
-            }
-            let index_count = u32::try_from(mesh.indices().len()).map_err(|_| {
-                CharacterUploadError::TooManyIndices {
-                    bone: part.bone().name(),
-                    count: mesh.indices().len(),
-                }
+            let uploaded = self.upload_part(part.mesh(), part.bone().name(), &|voxel| {
+                palette.appearance(voxel)
             })?;
-            let vertices = mesh
-                .vertices()
-                .iter()
-                .map(|vertex| -> Result<Vertex, CharacterUploadError> {
-                    // A character material answers for itself, from the one
-                    // table in `veldwake-character`. A vertex that is not a
-                    // character identifier is a compiler bug, and drawing it in
-                    // the terrain palette would hide that, so it is reported.
-                    let (color, specular) = palette.appearance(vertex.voxel).ok_or(
-                        CharacterUploadError::NonCharacterMaterial {
-                            bone: part.bone().name(),
-                            voxel: vertex.voxel,
-                        },
-                    )?;
-                    Ok(Vertex {
-                        position: vertex.position,
-                        normal: vertex.normal,
-                        color,
-                        specular,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let vertex_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("M5 character part vertices"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-            let index_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("M5 character part indices"),
-                    contents: bytemuck::cast_slice(mesh.indices()),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-            let uniform_buffer =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("M5 character part uniform"),
-                        contents: bytemuck::bytes_of(&PartUniform::from_matrix(
-                            glam::Mat4::IDENTITY,
-                        )),
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    });
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("M5 character part bind group"),
-                layout: &self.part_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
-            vertex_bytes += vertices.len() * size_of::<Vertex>();
-            index_bytes += size_of_val(mesh.indices());
-            quads += mesh.quad_count();
-            parts.push(GpuCharacterPart {
-                vertex_buffer,
-                index_buffer,
-                index_count,
-                uniform_buffer,
-                bind_group,
-            });
+            vertex_bytes += uploaded.vertex_bytes;
+            index_bytes += uploaded.index_bytes;
+            quads += uploaded.quads;
+            parts.push(uploaded.part);
         }
-        let uniform_bytes = parts.len() * size_of::<PartUniform>();
+
+        // A weapon is a rigid part with its own palette and nothing else new.
+        let weapon_part = match weapon {
+            Some(weapon) => {
+                let weapon_palette = weapon.palette();
+                let uploaded = self.upload_part(weapon.mesh(), "weapon", &|voxel| {
+                    weapon_palette.appearance(voxel)
+                })?;
+                vertex_bytes += uploaded.vertex_bytes;
+                index_bytes += uploaded.index_bytes;
+                quads += uploaded.quads;
+                Some(uploaded.part)
+            }
+            None => None,
+        };
+
+        let draws = parts.len() + usize::from(weapon_part.is_some());
+        let uniform_bytes = draws * size_of::<PartUniform>();
         info!(
+            actor = self.actors.len(),
             parts = parts.len(),
+            weapon = weapon_part.is_some(),
             quads,
             vertex_bytes,
             index_bytes,
             uniform_bytes,
             fingerprint = format_args!("{:#018x}", character.fingerprint()),
-            "character uploaded"
+            weapon_fingerprint =
+                format_args!("{:#018x}", weapon.map_or(0, CompiledWeapon::fingerprint)),
+            "actor uploaded"
         );
-        self.character = Some(GpuCharacter {
+        self.actors.push(GpuActor {
             parts,
+            weapon: weapon_part,
             vertex_bytes,
             index_bytes,
             uniform_bytes,
             quads,
         });
-        Ok(())
+        Ok(self.actors.len() - 1)
+    }
+
+    /// Uploads one rigid mesh and its per-frame uniform.
+    ///
+    /// The one place a mesh becomes GPU buffers, so a body part and a weapon
+    /// cannot drift apart in layout. The appearance lookup is the caller's,
+    /// because the two carry different palettes and neither may read the other's.
+    fn upload_part(
+        &self,
+        mesh: &Mesh,
+        label: &str,
+        appearance: &dyn Fn(VoxelId) -> Option<([f32; 3], f32)>,
+    ) -> Result<UploadedPart, CharacterUploadError> {
+        if mesh.vertices().is_empty() || mesh.indices().is_empty() {
+            return Err(CharacterUploadError::EmptyMesh {
+                bone: leaked(label),
+            });
+        }
+        let index_count = u32::try_from(mesh.indices().len()).map_err(|_| {
+            CharacterUploadError::TooManyIndices {
+                bone: leaked(label),
+                count: mesh.indices().len(),
+            }
+        })?;
+        let vertices = mesh
+            .vertices()
+            .iter()
+            .map(|vertex| -> Result<Vertex, CharacterUploadError> {
+                // A material answers for itself, from the one table its own crate
+                // owns. A vertex that is not one of its identifiers is a compiler
+                // bug, and drawing it in another domain's palette would hide that.
+                let (color, specular) =
+                    appearance(vertex.voxel).ok_or(CharacterUploadError::NonCharacterMaterial {
+                        bone: leaked(label),
+                        voxel: vertex.voxel,
+                    })?;
+                Ok(Vertex {
+                    position: vertex.position,
+                    normal: vertex.normal,
+                    color,
+                    specular,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M5 rigid part vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M5 rigid part indices"),
+                contents: bytemuck::cast_slice(mesh.indices()),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("M5 rigid part uniform"),
+                contents: bytemuck::bytes_of(&PartUniform::from_matrix(glam::Mat4::IDENTITY)),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("M5 rigid part bind group"),
+            layout: &self.part_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+        Ok(UploadedPart {
+            vertex_bytes: vertices.len() * size_of::<Vertex>(),
+            index_bytes: size_of_val(mesh.indices()),
+            quads: mesh.quad_count(),
+            part: GpuCharacterPart {
+                vertex_buffer,
+                index_buffer,
+                index_count,
+                uniform_buffer,
+                bind_group,
+            },
+        })
     }
 
     /// Writes one frame of part transforms.
@@ -1490,16 +1587,33 @@ impl Renderer {
     /// The only per-frame character work there is. The matrices are composed by
     /// `veldwake-character`, so the renderer decides nothing about a pose.
     pub fn set_character_pose(&self, posed: &PosedCharacter) {
-        let Some(character) = &self.character else {
+        self.set_actor_pose(0, posed, None);
+    }
+
+    /// Writes one actor's transforms, and its weapon's if it has one.
+    ///
+    /// A weapon matrix the caller does not supply leaves the weapon where it was,
+    /// which is what a body with no weapon wants.
+    pub fn set_actor_pose(&self, actor: usize, posed: &PosedCharacter, weapon: Option<glam::Mat4>) {
+        let Some(actor) = self.actors.get(actor) else {
             return;
         };
-        // Upload only follows a successful `upload_character`, which requires
-        // the compiler's fixed sixteen-part contract. `part_matrices` is the
-        // same fixed-size array, so indexing makes an accidental mismatch
-        // impossible to hide by truncating a `zip`.
+        // Upload only follows a successful `upload_actor`, which requires the
+        // compiler's fixed sixteen-part contract. `part_matrices` is the same
+        // fixed-size array, so indexing makes an accidental mismatch impossible
+        // to hide by truncating a `zip`.
         for index in 0..BONE_COUNT {
-            let part = &character.parts[index];
+            let Some(part) = actor.parts.get(index) else {
+                return;
+            };
             let matrix = posed.part_matrices()[index];
+            self.queue.write_buffer(
+                &part.uniform_buffer,
+                0,
+                bytemuck::bytes_of(&PartUniform::from_matrix(matrix)),
+            );
+        }
+        if let (Some(part), Some(matrix)) = (actor.weapon.as_ref(), weapon) {
             self.queue.write_buffer(
                 &part.uniform_buffer,
                 0,
@@ -1508,21 +1622,22 @@ impl Renderer {
         }
     }
 
-    /// What the resident character costs, or zeroes when there is none.
+    /// What the resident bodies cost, or zeroes when there are none.
     pub fn character_stats(&self) -> CharacterGpuStats {
-        let Some(character) = &self.character else {
-            return CharacterGpuStats::default();
-        };
-        CharacterGpuStats {
-            parts: character.parts.len(),
-            quads: character.quads,
-            vertex_bytes: character.vertex_bytes,
-            index_bytes: character.index_bytes,
-            uniform_bytes: character.uniform_bytes,
-            dynamic_upload_bytes: character.uniform_bytes,
-            world_draws: character.parts.len(),
-            shadow_draws: character.parts.len(),
+        let mut stats = CharacterGpuStats::default();
+        for actor in &self.actors {
+            stats.actors += 1;
+            stats.weapons += usize::from(actor.weapon.is_some());
+            stats.parts += actor.parts.len();
+            stats.quads += actor.quads;
+            stats.vertex_bytes += actor.vertex_bytes;
+            stats.index_bytes += actor.index_bytes;
+            stats.uniform_bytes += actor.uniform_bytes;
+            stats.world_draws += actor.draw_count();
+            stats.shadow_draws += actor.draw_count();
         }
+        stats.dynamic_upload_bytes = stats.uniform_bytes;
+        stats
     }
 
     fn has_staged(&self, coord: ChunkCoord) -> bool {
@@ -1957,6 +2072,7 @@ mod tests {
             shape: DebugShape::Box,
             inset: 4.0,
             color: [0.25, 0.5, 0.75],
+            world: None,
         };
         let uniform = DebugPrimitiveUniform::from_primitive(&primitive);
         assert_eq!(uniform.placement, [68.0, -28.0, 4.0, 24.0]);

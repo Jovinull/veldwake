@@ -1456,6 +1456,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "veldwake-character",
+ "veldwake-combat",
  "veldwake-procedural",
  "veldwake-streaming",
  "veldwake-voxel",
