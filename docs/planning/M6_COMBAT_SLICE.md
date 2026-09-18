@@ -17,7 +17,7 @@ Nothing else. This is a vertical slice of combat, not a combat system.
 
 | phase | contents | status |
 |---|---|---|
-| M6A | `veldwake-combat`: tick clock, weapon compiler, attack specs, combatants, actions, hit sweep, movement, adversary, encounter, fixtures, `combat-probe` | in progress |
+| M6A | `veldwake-combat`: tick clock, weapon compiler, attack specs, combatants, actions, hit sweep, movement, adversary, encounter, fixtures, `combat-probe` | complete |
 | M6B | client: input, encounter modes, accumulator, two actors, weapons, follow camera, armed gate, health readout, debug volumes, first real-game run | not started |
 | M6C | action motion, reaction, knockback, hitstop, camera shake, named moments, capture cycle | not started |
 | M6D | VFX and procedural impact audio, with measurements | not started |
@@ -126,6 +126,92 @@ The rules are: a proposed planar move is accepted only if the destination is ins
 A small explicit state machine — `Idle`, `Approach`, `Reposition`, `Recover` — that produces *intent* and nothing else. It does not carry a second attack timeline: while the authoritative action is not `Free` the brain holds. Six states and a behaviour-tree library for eight transitions is the overengineering R-002 names, and a utility system needs utility functions to choose between three options.
 
 Variation comes from a named deterministic stream (`CombatSeed::stream(label)` plus an explicit decision index), never from ambient or sequential randomness.
+
+### Headless evidence, M6A
+
+The workspace has **586 tests** (38 voxel, 69 procedural, 97 streaming, 126 character, 168 combat, 88 client). Every M5 signature is unchanged, which is the point: `pose()` is untouched, so `GOLDEN_POSE_SIGNATURE`, the geometry, skeleton and collision fingerprints and all three behaviour signatures are byte for byte what M5 locked. The character crate gained one new locked constant, `GOLDEN_ACTION_POSE_SIGNATURE`, for the eleven named action poses.
+
+**The weapon**, from `combat-probe weapon`:
+
+| measure | value |
+|---|---|
+| volume | `6 x 23 x 4` character voxels, origin `[-3, -19, -2]`, hand row `19` |
+| bands (grid `y`) | blade `[0, 14)`, guard `[14, 16)`, grip `[16, 21)`, pommel `[21, 23)` |
+| solid voxels / quads | 212 / 352 |
+| CPU mesh payload | 47,872 bytes |
+| transient scratch | 65,536 bytes, one reused `32³` grid |
+| blade segment, derived | base `(3, 14, 2)`, tip `(3, 0, 2)`, radius `1` voxel |
+| blade length / radius | `1.1667` / `0.0833` world units |
+| reach from the wrist | `1.5833` world units |
+| identity / geometry | `0x084bf386500bb0e4` / `0x8a6b18edd4a2b879` |
+
+**The two combatants**, from `combat-probe bodies`. The adversary got its own descriptor because a test refused the first design: reusing M5's `sturdy` fixture as the enemy gave a body that is *shorter* than the player and shares its absolute hip width of eight voxels and its limb thickness of three.
+
+| measure | player | adversary |
+|---|---|---|
+| height | 28 voxels (`2.3333` units) | 33 voxels (`2.7500` units) |
+| shoulder span / hip / waist | 12 / 8 / 6 | 16 / 10 / 8 |
+| limb thickness | 3 | 4 |
+| arm / leg / foot | 12 / 14 / 5 | 14 / 15 / 8 |
+| hurt capsule radius | `0.6274` | `0.8563` |
+
+The palette carries a second finding. **M5's three garment schemes share one luminance ladder on purpose**, so their primary tunics sit within a ten-thousandth of each other and no choice of scheme can separate two characters by value on the garment. The two are separated by size, by hue on the tunic — rust linen is led by red, slate wool by blue — and by value on the skin, where the declared tones do differ.
+
+**The timelines**, from `combat-probe spec`, at `120` Hz:
+
+| | windup | active | recovery | total | stagger | hitstop | damage | step-in | knockback |
+|---|---|---|---|---|---|---|---|---|---|
+| player | 22 (`0.183` s) | 12 (`0.100` s) | 41 (`0.342` s) | 75 (`0.625` s) | 36 | 8 | 24 | `0.35` | `0.35` |
+| adversary | 54 (`0.450` s) | 14 (`0.117` s) | 72 (`0.600` s) | 140 (`1.167` s) | 36 | 8 | 18 | `0.45` | `0.30` |
+
+Active windows are the half-open tick ranges `[22, 34)` and `[54, 68)`. The dodge is 36 ticks over `2.2` world units, so `7.33` u/s against a walk of `3.4`; its cooldown is 30 further ticks. Both bodies have 96 health, so the player falls in six of the adversary's hits and the adversary in four of the player's.
+
+**The swing envelope**, from `combat-probe reach`, which is what the ranges were chosen against rather than from arithmetic:
+
+| | max tip reach | active reach | active height | connects out to |
+|---|---|---|---|---|
+| player | `2.0561` | `0.7660` to `2.0561` | `0.9356` to `2.9037` | `2.9124` |
+| adversary | `2.1165` | `0.7352` to `2.1165` | `1.1775` to `3.1654` | `2.7439` |
+
+The adversary commits at `2.2` centre to centre. **The first draft of that number was `2.6`, which is outside its own reach**: the swing only landed because of the step-in, so the telegraph was a bluff. It is now comfortably inside.
+
+**The dodge window**, from `combat-probe dodge`. The adversary's swing is 140 ticks; a dodge pressed on each of them, in a fresh encounter each time, either escapes or does not:
+
+| dodge direction | escapes when pressed | last escaping press | of a telegraph of |
+|---|---|---|---|
+| away | ticks 1 to 51 | 51 | 54 |
+| lateral | ticks 1 to 45 | 45 | 54 |
+
+So a player has about four tenths of a second to read the swing, and the window closes three ticks — twenty-five milliseconds — before the blade goes live. Dodging away buys distance; dodging sideways leaves the plane the blade sweeps in, and the two have different margins for different reasons. **Hand arithmetic over reach, radius and step-in got this wrong**, because the blade's height matters as much as its reach: the first active ticks pass above a body and the last ones pass through it.
+
+**The reference encounter**, from `combat-probe script` and `combat-probe moments`: 4,500 ticks (37.5 s) of `arena-exchange` on flat ground.
+
+| counter | player | adversary |
+|---|---|---|
+| swings | 8 | 14 |
+| hits landed | 6 | 6 |
+| whiffs | 2 | 5 |
+| dodges | 7 | 0 |
+| staggers taken | 6 | 5 |
+| defeats | 0 | 1 |
+| lowest health | 6 | 0 |
+
+One reset, 693 separations, 160 hit queries, worst sweep 4 substeps of a bound of 16, 91 multi-hit contacts suppressed, **zero events dropped**, and a worst body overlap after separation of `0.0000` world units. The player wins, and with six health left out of ninety-six — a reference fight that is a fight. All eleven named moments occur, the earliest at tick 1 and the last, the defeat, at tick 3,054.
+
+**Partition equivalence**, from `combat-probe partition`: 20 s of wall time delivered at 30, 60 and 144 frames a second produced **2,399 ticks and the identical trace `0x0807fcad37689f9f`** in all three, with no capped frames and no dropped ticks. 144 does not divide a second exactly in nanoseconds, so the agreement is the clock's carried remainder working rather than an accident of the numbers.
+
+**Cost**, release build on the audited Windows 11 / Intel Iris Xe host, as observations on that host:
+
+| measure | value |
+|---|---|
+| combat tick, mean over 12,000 ticks after a warm-up | `5.1`–`8.9` µs across four runs |
+| implied cost of a second of play at 120 Hz | `0.61`–`1.07` ms |
+| combat tick, worst | `0.59`–`0.65` ms |
+| ground queries per tick | `14.96` |
+| one hit query at 16 substeps | `0.168` µs |
+| weapon compile, median of 64 | `95.2` µs (min `84.1`, max `223.3`) |
+
+The worst-case tick is two orders of magnitude above the mean and does not move with the work, so it is desktop scheduling rather than a tick: the figure to read is the mean, and a second of simulation costs about a millisecond of one core.
 
 ## M6B — the playable loop in the client
 

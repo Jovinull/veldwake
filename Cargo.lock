@@ -1464,6 +1464,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "veldwake-combat"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "veldwake-character",
+ "veldwake-voxel",
+]
+
+[[package]]
 name = "veldwake-foundation"
 version = "0.0.0"
 

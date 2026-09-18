@@ -37,11 +37,13 @@
 //! | [`ground`] | what is under the foot? |
 //! | [`ik`] | how does the leg reach it? |
 //! | [`mod@pose`] | where is every part, in the world, right now? |
+//! | [`mod@action`] | what is it doing that is not walking? |
 //! | [`course`] | a reproducible path for evidence |
 //! | [`fixture`] | which characters, poses, and values are locked |
 
 mod hash;
 
+pub mod action;
 pub mod collision;
 pub mod compiler;
 pub mod course;
@@ -55,6 +57,7 @@ pub mod material;
 pub mod pose;
 pub mod skeleton;
 
+pub use action::{ActionKind, ActionOverlay, ActionPose, ArmAngles};
 pub use compiler::{CharacterCompiler, CharacterError, CompiledCharacter, CompiledPart};
 pub use course::{CharacterCourse, CourseLeg, CourseSample};
 pub use descriptor::{
@@ -64,5 +67,5 @@ pub use descriptor::{
 };
 pub use ground::GroundSampler;
 pub use material::{CHARACTER_ID_END, CHARACTER_ID_FIRST, CharacterMaterial, CompiledPalette};
-pub use pose::{CharacterState, FootContact, PosedCharacter, pose, rest_pose};
+pub use pose::{CharacterState, FootContact, PosedCharacter, pose, pose_with, rest_pose};
 pub use skeleton::{BONE_COUNT, BoneId, Skeleton, Transform};

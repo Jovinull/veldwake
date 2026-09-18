@@ -1,0 +1,19 @@
+[package]
+name = "veldwake-combat"
+version = "0.0.0"
+description = "Deterministic headless combat rules, weapon compilation, and one encounter for Veldwake"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+glam = { version = "=0.33.7", default-features = false, features = ["std"] }
+veldwake-character = { path = "../character", version = "=0.0.0" }
+veldwake-voxel = { path = "../voxel", version = "=0.0.0" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "combat-probe"
+path = "src/bin/combat-probe.rs"

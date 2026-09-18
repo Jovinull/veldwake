@@ -2,6 +2,7 @@
 members = [
     "apps/client",
     "crates/character",
+    "crates/combat",
     "crates/foundation",
     "crates/procedural",
     "crates/streaming",

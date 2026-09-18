@@ -20,6 +20,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+use crate::action::ActionOverlay;
 use crate::compiler::CompiledCharacter;
 use crate::descriptor::CHARACTER_VOXEL_SIZE;
 use crate::ground::GroundSampler;
@@ -395,15 +396,37 @@ fn sole_height(character: &CompiledCharacter, matrix: Mat4, bone: BoneId) -> f32
 /// With `ground` set to `None` the result is the animation alone, which is what
 /// the neutral preview scene and the pure-animation tests want. With a sampler
 /// the legs are solved against the surface.
+///
+/// This is [`pose_with`] and no action, and it is deliberately unchanged from
+/// M5: every locked pose fixture is a value of this function.
 #[must_use]
 pub fn pose(
     character: &CompiledCharacter,
     state: &CharacterState,
     ground: Option<&dyn GroundSampler>,
 ) -> PosedCharacter {
+    pose_with(character, state, ground, None)
+}
+
+/// Poses a character that is also doing something.
+///
+/// The overlay is an [`ActionOverlay`]: an attack, a dodge, a recoil, or simply
+/// carrying a weapon. It composes over the locomotion angles before any
+/// transform is built, so the leg IK below still runs last and terrain contact
+/// is unaffected by what the upper body is doing.
+#[must_use]
+pub fn pose_with(
+    character: &CompiledCharacter,
+    state: &CharacterState,
+    ground: Option<&dyn GroundSampler>,
+    overlay: Option<&ActionOverlay>,
+) -> PosedCharacter {
     let gait = character.gait();
     let blend = gait.blend(state.speed);
-    let angles = animate(gait, blend, state.phase, state.time);
+    let mut angles = animate(gait, blend, state.phase, state.time);
+    if let Some(overlay) = overlay {
+        angles = crate::action::apply(angles, overlay);
+    }
     let mut locals = locals_from_angles(character, &angles);
 
     let skeleton = character.skeleton();
