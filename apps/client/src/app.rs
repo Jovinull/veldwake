@@ -17,8 +17,11 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use veldwake_character::GroundSampler;
+
 use crate::{
     camera::{Camera, CameraController},
+    character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
     debug::{DebugMode, debug_primitives},
     input::{CameraAction, InputState},
     lighting::Weather,
@@ -32,6 +35,31 @@ const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 /// Opt-in directory for the experimental M3D chunk cache. Unset means no
 /// cache and no filesystem access from the streaming worker.
 const CACHE_DIR_VARIABLE: &str = "VELDWAKE_CACHE_DIR";
+
+/// How often the character's state is reported, in seconds.
+///
+/// The same five-second cadence the streaming report uses, so a capture
+/// can be aligned with one interval line rather than with two clocks.
+const CHARACTER_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Where the camera starts.
+///
+/// `VELDWAKE_POSE` names either one of the world's golden terrain poses or
+/// one of the character poses, which frame the body rather than the valley.
+/// Character poses need the world's generator to know what the character is
+/// standing on, so the two are resolved together here rather than in either
+/// module alone.
+fn spawn_camera() -> Camera {
+    let world = WorldSelection::from_environment();
+    let requested = requested_pose();
+    if let Some(name) = requested.as_deref()
+        && let Some(generator) = world.generator()
+        && let Some(camera) = spawn_character_camera(name, &generator)
+    {
+        return camera;
+    }
+    world.spawn_camera(requested.as_deref())
+}
 
 pub fn run() -> Result<(), AppRunError> {
     let event_loop = EventLoop::new().map_err(|error| AppRunError(error.to_string()))?;
@@ -76,6 +104,12 @@ struct App {
     debug_boxes: bool,
     /// Current weather state, toggled by `F3`. A switch, not a simulation.
     weather: Weather,
+    /// The terrain generator the character's ground query borrows from.
+    /// `None` for the diagnostic corridor, which is not generated terrain.
+    terrain: Option<veldwake_procedural::TerrainGenerator>,
+    /// The character, its state, and the diagnostic course driving it.
+    character: Option<CharacterScene>,
+    last_character_report: Instant,
 }
 
 impl Default for App {
@@ -83,13 +117,16 @@ impl Default for App {
         Self {
             renderer: None,
             streaming: None,
-            camera: WorldSelection::from_environment().spawn_camera(requested_pose().as_deref()),
+            camera: spawn_camera(),
             controller: CameraController::default(),
             input: InputState::default(),
             last_frame: Instant::now(),
             frame_stats: FrameStats::new(),
             occluded: false,
             fatal_error: None,
+            terrain: None,
+            character: None,
+            last_character_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
             weather: Weather::default(),
@@ -155,17 +192,64 @@ impl App {
             cache,
         )
         .map_err(|error| AppRunError(error.to_string()))?;
-        let renderer = pollster::block_on(Renderer::new(
+        let mut renderer = pollster::block_on(Renderer::new(
             event_loop.owned_display_handle(),
             Arc::clone(&window),
             &self.camera,
         ))
         .map_err(|error| AppRunError(error.to_string()))?;
 
+        // The character is compiled on the CPU and uploaded once: rigid
+        // parts make its geometry static, so nothing here runs again.
+        let selection = CharacterSelection::from_environment();
+        self.terrain = world.generator();
+        let character = if selection.is_off() {
+            None
+        } else {
+            let ground = self.terrain.as_ref().map(TerrainGround::new);
+            let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+            match CharacterScene::new(selection, sampler) {
+                Ok(scene) => {
+                    renderer.upload_character(scene.character());
+                    Some(scene)
+                }
+                Err(error) => {
+                    // A character that will not compile is a defect, not a
+                    // reason to stop the client: the world still renders and
+                    // the log says exactly what was rejected.
+                    warn!(%error, "the character did not compile; continuing without one");
+                    None
+                }
+            }
+        };
+        if let Some(scene) = &character {
+            let stats = renderer.character_stats();
+            info!(
+                selection = selection.name(),
+                fingerprint = format_args!("{:#018x}", scene.character().fingerprint()),
+                geometry = format_args!("{:#018x}", scene.character().geometry_fingerprint()),
+                height_voxels = scene.character().body().height,
+                height_units = scene.character().body().height_units(),
+                parts = stats.parts,
+                quads = stats.quads,
+                gpu_bytes = stats.vertex_bytes + stats.index_bytes + stats.uniform_bytes,
+                dynamic_upload_bytes_per_frame = stats.dynamic_upload_bytes,
+                world_draws = stats.world_draws,
+                shadow_draws = stats.shadow_draws,
+                grounded = scene.state().grounded,
+                "character ready"
+            );
+        } else {
+            info!(selection = selection.name(), "no character in this run");
+        }
+        self.character = character;
+
         info!(
             world = world.name(),
             world_fingerprint = format_args!("{world_fingerprint:#018x}"),
-            pose = resolve_pose(requested_pose().as_deref()).name,
+            pose = requested_pose().unwrap_or_else(|| {
+                resolve_pose(None).name.to_owned()
+            }),
             camera_position = ?self.camera.position(),
             weather = self.weather.name(),
             profile = profile.name(),
@@ -260,6 +344,52 @@ impl App {
                 return;
             }
         };
+        // The character is posed on the CPU and reaches the GPU as sixteen
+        // transforms. Its geometry is never re-uploaded.
+        let ground = self.terrain.as_ref().map(TerrainGround::new);
+        let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+        if let Some(scene) = self.character.as_mut() {
+            let posed = scene.update(elapsed.as_secs_f32(), sampler);
+            renderer.set_character_pose(&posed);
+            if now.saturating_duration_since(self.last_character_report)
+                >= CHARACTER_REPORT_INTERVAL
+            {
+                self.last_character_report = now;
+                let state = scene.state();
+                let left = posed.contacts()[0];
+                let right = posed.contacts()[1];
+                info!(
+                    selection = scene.selection().name(),
+                    elapsed = scene.elapsed(),
+                    x = state.x,
+                    z = state.z,
+                    base_height = state.base_height,
+                    facing_degrees = state.facing.to_degrees(),
+                    speed = state.speed,
+                    phase = state.phase,
+                    moving = posed.blend().moving,
+                    run = posed.blend().run,
+                    grounded = state.grounded,
+                    left_stance = left.stance,
+                    left_clearance = left.clearance(),
+                    right_stance = right.stance,
+                    right_clearance = right.clearance(),
+                    landform = ground.as_ref().map(|ground| {
+                        ground
+                            .sample(f64::from(state.x), f64::from(state.z))
+                            .landform
+                            .name()
+                    }),
+                    zone = ground.as_ref().map(|ground| {
+                        ground
+                            .sample(f64::from(state.x), f64::from(state.z))
+                            .zone
+                            .name()
+                    }),
+                    "character state"
+                );
+            }
+        }
         // Off produces no primitives, debug-slot allocations, debug uniform
         // writes, or debug draws. Fixed startup resources and any reusable
         // slots retained after prior debug use still exist.
@@ -788,6 +918,7 @@ mod tests {
             StreamingProfile::parse("banded"),
             Some(StreamingProfile::M3cBanded)
         );
+        assert_eq!(StreamingProfile::parse("m5-character"), None);
         assert_eq!(StreamingProfile::parse("m3d"), None);
         assert_eq!(
             StreamingProfile::Default.config(),

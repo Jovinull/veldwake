@@ -1455,6 +1455,7 @@ dependencies = [
  "pollster",
  "tracing",
  "tracing-subscriber",
+ "veldwake-character",
  "veldwake-procedural",
  "veldwake-streaming",
  "veldwake-voxel",
