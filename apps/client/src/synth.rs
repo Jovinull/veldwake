@@ -618,6 +618,97 @@ mod tests {
         assert!(VoiceParams::unpack(3).is_none());
     }
 
+    /// Writes a deterministic `.wav` of every sound the fight makes, for a
+    /// person to listen to.
+    ///
+    /// Ignored by default and run on demand:
+    ///
+    /// ```text
+    /// cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
+    /// ```
+    ///
+    /// This exists because of a limit rather than a feature. Everything above
+    /// asserts something measurable — amplitude, envelope, decay, band energy,
+    /// voice limits, determinism — and none of it can decide whether an impact
+    /// *sounds* like an impact. That judgement needs ears, so the fixture puts
+    /// the sounds somewhere ears can reach them. It is written to the system
+    /// temporary directory and is deliberately not versioned: it is generated
+    /// from the code beside it and regenerating is cheaper than storing.
+    #[test]
+    #[ignore = "writes a wav for a person to listen to; nothing here asserts taste"]
+    fn the_listening_fixture() {
+        // Light hit, heavy hit, a whiff, a fast exchange, then eight at once.
+        let script: &[(f32, VoiceKind, f32, f32)] = &[
+            (0.20, VoiceKind::Hit, 0.35, 0.20),
+            (0.80, VoiceKind::Hit, 1.00, 0.20),
+            (1.40, VoiceKind::Hit, 1.00, 1.00),
+            (2.00, VoiceKind::Whiff, 0.75, 0.20),
+            (2.60, VoiceKind::Whiff, 0.75, 1.00),
+            (3.20, VoiceKind::Hit, 0.60, 0.60),
+            (3.45, VoiceKind::Whiff, 0.75, 0.60),
+            (3.70, VoiceKind::Hit, 0.90, 0.60),
+            (3.95, VoiceKind::Hit, 0.50, 0.60),
+            (4.60, VoiceKind::Hit, 1.00, 0.30),
+            (4.60, VoiceKind::Hit, 1.00, 0.40),
+            (4.60, VoiceKind::Hit, 1.00, 0.50),
+            (4.60, VoiceKind::Hit, 1.00, 0.60),
+            (4.60, VoiceKind::Hit, 1.00, 0.70),
+            (4.60, VoiceKind::Hit, 1.00, 0.80),
+            (4.60, VoiceKind::Hit, 1.00, 0.90),
+            (4.60, VoiceKind::Hit, 1.00, 1.00),
+        ];
+        let seconds = 6.0_f32;
+        let frames = (RATE * seconds) as usize;
+        let mut synth = Synth::new(RATE);
+        let mut samples = Vec::with_capacity(frames);
+        let mut next = 0;
+        for frame in 0..frames {
+            while let Some((at, kind, intensity, weight)) = script.get(next).copied() {
+                if (at * RATE) as usize > frame {
+                    break;
+                }
+                synth.start(VoiceParams::new(kind, intensity, weight));
+                next += 1;
+            }
+            let mut one = [0.0_f32; 1];
+            synth.render(&mut one, 1);
+            samples.push(one[0]);
+        }
+        assert_eq!(next, script.len(), "the script did not finish");
+        assert!(samples.iter().all(|s| s.is_finite()));
+
+        // Sixteen-bit mono PCM, written by hand: a wav header is forty-four
+        // bytes and is not worth a dependency.
+        let data_bytes = samples.len() * 2;
+        let mut wav = Vec::with_capacity(44 + data_bytes);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(
+            &u32::try_from(36 + data_bytes)
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&(RATE as u32).to_le_bytes());
+        wav.extend_from_slice(&((RATE as u32) * 2).to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&u32::try_from(data_bytes).unwrap_or(u32::MAX).to_le_bytes());
+        for sample in &samples {
+            let scaled = (sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+            wav.extend_from_slice(&scaled.to_le_bytes());
+        }
+
+        let path = std::env::temp_dir().join("veldwake-m6-combat-sounds.wav");
+        match std::fs::write(&path, &wav) {
+            Ok(()) => println!("listening fixture written to {}", path.display()),
+            Err(error) => panic!("could not write {}: {error}", path.display()),
+        }
+    }
+
     #[test]
     fn an_impossible_request_is_clamped_rather_than_rendered() {
         // The rule is one rule: a value that is not a finite number is zero.
