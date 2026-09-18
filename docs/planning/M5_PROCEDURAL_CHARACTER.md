@@ -1,6 +1,7 @@
 # M5 — Procedural Character
 
-Status: **independent branch QA complete on `feat/m5-procedural-character`; ready for external review/PR**
+Status: **complete and merged**
+Merged through [PR #9](https://github.com/Jovinull/veldwake/pull/9) at merge commit `5bebc4fa5195b427216a296fff810a294b7bbd7b`, parents `abadadff6ad1251e4f291d272577da6121d37540` and `3c0406dfafc503aa1dc6d98ab1b92db8c33e0e07`. Post-merge CI [run 35352715367](https://github.com/Jovinull/veldwake/actions/runs/35352715367) completed `success`.
 Base: `main` at merge commit `abadadff6ad1251e4f291d272577da6121d37540`
 
 M4 proved the world can look like something. M5 has to prove that a person can stand in it and belong there — produced by systems, not by a modelling tool. The exit criterion is the same kind as M4's: a real capture of a real client on the audited host, judged against a written contract, backed by headless tests and measurements.
