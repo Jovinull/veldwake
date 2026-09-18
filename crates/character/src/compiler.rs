@@ -584,10 +584,16 @@ mod tests {
                 for z in 0..d {
                     for y in 0..h {
                         for x in 0..w {
+                            if !crate::geometry::solid_at(volume, &body, [x, y, z]) {
+                                continue;
+                            }
                             let mine = crate::geometry::material_at(volume, &body, [x, y, z]);
                             for step in [[1, 0, 0], [0, 1, 0], [0, 0, 1]] {
                                 let next = [x + step[0], y + step[1], z + step[2]];
                                 if next[0] >= w || next[1] >= h || next[2] >= d {
+                                    continue;
+                                }
+                                if !crate::geometry::solid_at(volume, &body, next) {
                                     continue;
                                 }
                                 let theirs = crate::geometry::material_at(volume, &body, next);

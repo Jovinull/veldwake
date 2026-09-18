@@ -116,9 +116,13 @@ pub fn part_volumes(body: &BodyMetrics) -> [PartVolume; BONE_COUNT] {
             },
             BoneId::Chest => PartVolume {
                 bone,
-                origin: [-(torso_half as f32), -1.0, -((body.torso_depth / 2) as f32)],
+                origin: [
+                    -(body.chest_half_width as f32),
+                    -1.0,
+                    -((body.torso_depth / 2) as f32),
+                ],
                 dims: [
-                    body.hip_width,
+                    body.chest_width,
                     body.head_bottom - body.chest_y + 2,
                     body.torso_depth,
                 ],
@@ -169,7 +173,38 @@ pub fn part_volumes(body: &BodyMetrics) -> [PartVolume; BONE_COUNT] {
     volumes
 }
 
+/// Whether one cell of one part's volume is solid.
+///
+/// Parts are boxes almost everywhere, because a box is what a rigid voxel limb
+/// is, and every exception has to earn itself in a capture. There is exactly
+/// one: the row where the chest and the head overlap.
+///
+/// That row exists so a turning head cannot open a hole at its own joint, and
+/// it is entirely inside the head — except that the chest is wider and deeper
+/// than the head, so the corners of it stuck out all the way round the jaw.
+/// The first portrait capture showed the result: a collar of tunic around the
+/// head's bottom row, the chin lost behind it, and a figure that read as a
+/// head resting on a slab rather than as a head on a neck. Narrowing that one
+/// row to a column keeps the joint covered, puts the whole column inside the
+/// head, and gives the body a neck.
+#[must_use]
+pub fn solid_at(volume: &PartVolume, _body: &BodyMetrics, cell: [i32; 3]) -> bool {
+    let [x, y, z] = cell;
+    let [width, height, depth] = volume.dims;
+    match volume.bone {
+        BoneId::Chest if y == height - 1 => {
+            let x_centre = width / 2;
+            let z_centre = depth / 2;
+            (x_centre - 1..=x_centre).contains(&x) && (z_centre - 1..=z_centre).contains(&z)
+        }
+        _ => true,
+    }
+}
+
 /// The material at one cell of one part's volume.
+///
+/// Only meaningful where [`solid_at`] is true; a cell that is not solid has no
+/// material and is never written or meshed.
 ///
 /// A pure function of the part, the body, and the cell, which is what makes a
 /// compiled character reproducible and what lets a test walk the whole body
@@ -190,14 +225,32 @@ pub fn material_at(volume: &PartVolume, body: &BodyMetrics, cell: [i32; 3]) -> C
         }
         BoneId::Spine => CharacterMaterial::TunicPrimary,
         BoneId::Chest => {
-            let band_low = (height - 4).max(1);
-            let band_high = (height - 2).max(band_low + 1);
+            // One tunic, one narrow trim, and nothing else. A horizontal band
+            // was tried first and read as a harness: with pale sleeves either
+            // side of it the torso became a cross rather than a chest. The trim
+            // also starts a row below the collar, because a stripe that reaches
+            // the chin reads as a beard.
+            // The outermost column of the chest takes the sleeve colour, and
+            // it is the arm's own geometry that asks for it. The shoulder is
+            // closed by putting the innermost column of the upper arm inside
+            // the chest, so from the front the sleeve shows two voxels while
+            // the forearm below it shows three, and the capture read as an
+            // arm that grew at the elbow. Painting the column the chest hides
+            // the sleeve behind gives the shoulder back its third voxel: the
+            // sleeve now runs the full width of the arm, and the tunic reads
+            // as a body with a yoke rather than as a slab with sticks.
+            if x == 0 || x == width - 1 {
+                return CharacterMaterial::TunicSecondary;
+            }
             let stripe_low = width / 2 - 1;
             let stripe_high = width / 2 + 1;
-            if z == 0 && (stripe_low..stripe_high).contains(&x) {
+            let collar = height - 2;
+            // Down to the hem, not to a row above it. Stopping short left a
+            // rectangle floating in the middle of the chest that read as a
+            // patch stitched on; running it into the waistband reads as the
+            // front opening of a tunic, which is what it is.
+            if z == 0 && y < collar && (stripe_low..stripe_high).contains(&x) {
                 CharacterMaterial::Accent
-            } else if (band_low..band_high).contains(&y) {
-                CharacterMaterial::TunicSecondary
             } else {
                 CharacterMaterial::TunicPrimary
             }
@@ -211,20 +264,18 @@ pub fn material_at(volume: &PartVolume, body: &BodyMetrics, cell: [i32; 3]) -> C
                 CharacterMaterial::SkinShade
             } else if y >= cap || (y == cap - 1 && z == depth - 1) {
                 CharacterMaterial::Hair
-            } else if y == 1 && z == 0 && (x == 0 || x == width - 1) {
+            } else if y == 1 && z == 0 && (x == 1 || x == width - 2) {
                 CharacterMaterial::EyeDark
             } else {
                 CharacterMaterial::Skin
             }
         }
-        BoneId::UpperArmL | BoneId::UpperArmR => CharacterMaterial::TunicPrimary,
-        BoneId::ForearmL | BoneId::ForearmR => {
-            if y >= height - 2 {
-                CharacterMaterial::TunicPrimary
-            } else {
-                CharacterMaterial::Skin
-            }
-        }
+        // The sleeves take the band colour rather than the tunic's. An arm is
+        // only two voxels wider than the chest it hangs beside, which is a
+        // silhouette a viewer loses immediately; a value break is what makes
+        // the arm read as an arm at the distance the whole body fits a frame.
+        BoneId::UpperArmL | BoneId::UpperArmR => CharacterMaterial::TunicSecondary,
+        BoneId::ForearmL | BoneId::ForearmR => CharacterMaterial::Skin,
         BoneId::HandL | BoneId::HandR => {
             if y == 0 {
                 CharacterMaterial::SkinShade
@@ -373,6 +424,9 @@ impl PartScratch {
         for z in 0..depth {
             for y in 0..height {
                 for x in 0..width {
+                    if !solid_at(volume, body, [x, y, z]) {
+                        continue;
+                    }
                     let material = material_at(volume, body, [x, y, z]);
                     counts[material_index(material)] += 1;
                     solids += 1;
@@ -477,10 +531,10 @@ mod tests {
         let body = body();
         let volumes = part_volumes(&body);
         let dims = |bone: BoneId| volumes[bone.index()].dims;
-        assert_eq!(dims(BoneId::Root), [8, 4, 5]);
-        assert_eq!(dims(BoneId::Spine), [6, 3, 3]);
-        assert_eq!(dims(BoneId::Chest), [8, 6, 5]);
-        assert_eq!(dims(BoneId::Head), [4, 5, 3]);
+        assert_eq!(dims(BoneId::Root), [8, 4, 6]);
+        assert_eq!(dims(BoneId::Spine), [6, 3, 4]);
+        assert_eq!(dims(BoneId::Chest), [8, 6, 6]);
+        assert_eq!(dims(BoneId::Head), [6, 5, 5]);
         assert_eq!(dims(BoneId::UpperArmR), [3, 6, 3]);
         assert_eq!(dims(BoneId::ForearmR), [3, 5, 3]);
         assert_eq!(dims(BoneId::HandR), [3, 4, 4]);
@@ -520,7 +574,14 @@ mod tests {
                 Ok(parts) => parts,
                 Err(error) => panic!("{} failed to build: {error}", volume.bone.name()),
             };
-            assert_eq!(solids as i32, volume.cell_count());
+            let carved = (0..volume.dims[2])
+                .flat_map(|z| {
+                    (0..volume.dims[1])
+                        .flat_map(move |y| (0..volume.dims[0]).map(move |x| [x, y, z]))
+                })
+                .filter(|cell| !super::solid_at(volume, &body, *cell))
+                .count() as i32;
+            assert_eq!(solids as i32, volume.cell_count() - carved);
             assert_eq!(counts.iter().sum::<u32>(), solids);
             assert!(mesh.quad_count() > 0, "{} is empty", volume.bone.name());
             assert_eq!(mesh.indices().len() % 6, 0);
@@ -540,12 +601,18 @@ mod tests {
         assert_eq!(again.0, fresh.0, "the scratch grid was left dirty");
     }
 
+    /// Every part but the chest is a solid box, and a solid box meshes to
+    /// exactly its own six faces. The chest is the one carved part, so it is
+    /// measured against the box it would have been rather than skipped.
     #[test]
     fn a_solid_box_meshes_to_exactly_its_own_surface() {
         let body = body();
         let volumes = part_volumes(&body);
         let mut scratch = PartScratch::new();
         for volume in &volumes {
+            if volume.bone == BoneId::Chest {
+                continue;
+            }
             let [w, h, d] = volume.dims;
             let expected = 2 * (w * h + h * d + w * d);
             let (mesh, _, _) = match scratch.build(volume, &body) {

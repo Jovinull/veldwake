@@ -245,37 +245,40 @@ impl GarmentScheme {
         }
     }
 
-    /// Tunic, band, trousers, belt, boots, and trim, in that order.
+    /// Tunic, sleeves, trousers, belt, boots, and trim, in that order.
     ///
     /// The values are a deliberate luminance ladder rather than six chosen
-    /// hues: belt below tunic, tunic below band, band below trim, trousers
-    /// between belt and band, boots just above belt. That ladder is what makes
-    /// every boundary on the body read without depending on hue.
+    /// hues, and the ladder has one hard constraint that decided most of it:
+    /// the sleeves touch bare skin at the wrist, and the three declared skin
+    /// tones between them occupy `0.388` to `0.618`, so anything within eight
+    /// hundredths of that whole span is unusable there. The sleeves are
+    /// therefore pale, well above every skin tone, which is also what makes
+    /// an arm read against the torso it hangs beside.
     const fn slots(self) -> [[f32; 3]; 6] {
         match self {
             Self::MossWool => [
-                [0.196, 0.280, 0.185],
-                [0.334, 0.412, 0.267],
-                [0.313, 0.294, 0.250],
+                [0.196, 0.28, 0.185],
+                [0.688, 0.74, 0.621],
+                [0.313, 0.294, 0.25],
                 [0.199, 0.161, 0.102],
                 [0.208, 0.181, 0.154],
-                [0.591, 0.534, 0.307],
+                [0.51, 0.449, 0.286],
             ],
             Self::RustLinen => [
                 [0.389, 0.224, 0.165],
-                [0.503, 0.364, 0.246],
+                [0.763, 0.714, 0.656],
                 [0.309, 0.289, 0.316],
                 [0.182, 0.163, 0.135],
                 [0.214, 0.178, 0.171],
-                [0.613, 0.526, 0.329],
+                [0.526, 0.444, 0.284],
             ],
             Self::SlateWool => [
                 [0.222, 0.257, 0.329],
-                [0.353, 0.387, 0.456],
+                [0.69, 0.724, 0.766],
                 [0.299, 0.292, 0.312],
                 [0.194, 0.161, 0.116],
                 [0.195, 0.182, 0.188],
-                [0.528, 0.534, 0.497],
+                [0.444, 0.451, 0.462],
             ],
         }
     }

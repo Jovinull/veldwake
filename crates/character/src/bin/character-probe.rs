@@ -38,6 +38,10 @@ use veldwake_character::{
     skeleton::ALL_BONES,
 };
 
+/// Bytes in one part uniform: a `mat4x4<f32>` model matrix and a `vec4<f32>`
+/// of shading parameters, matching `renderer::PartUniform`.
+const PART_UNIFORM_BYTES: usize = 80;
+
 fn main() -> ExitCode {
     let mut arguments: Vec<String> = env::args().skip(1).collect();
     let fixture = match take_fixture(&mut arguments) {
@@ -234,8 +238,10 @@ fn parts(character: &CompiledCharacter) -> Result<(), String> {
         character.solid_voxels()
     );
     // Forty bytes of position, normal, colour, and specular per vertex, four
-    // bytes per index, plus one sixty-four-byte transform per part: exactly
-    // what the client uploads.
+    // bytes per index, plus one eighty-byte part uniform: a four-by-four model
+    // matrix and a four-float parameter vector. Exactly what the client
+    // uploads, and the client logs the same figure, so the two can be compared
+    // rather than assumed.
     let vertices: usize = character
         .parts()
         .iter()
@@ -250,8 +256,8 @@ fn parts(character: &CompiledCharacter) -> Result<(), String> {
         "gpu geometry: {} vertex bytes + {} index bytes + {} uniform bytes = {}",
         vertices * 40,
         indices * 4,
-        character.parts().len() * 64,
-        vertices * 40 + indices * 4 + character.parts().len() * 64
+        character.parts().len() * PART_UNIFORM_BYTES,
+        vertices * 40 + indices * 4 + character.parts().len() * PART_UNIFORM_BYTES
     );
     println!(
         "draw calls with the character enabled: {} world + {} shadow",
@@ -415,7 +421,7 @@ fn contact(character: &CompiledCharacter) -> Result<(), String> {
             std::f32::consts::FRAC_PI_2,
             Some(ground.as_ref()),
         );
-        state.speed = 1.5;
+        state.speed = character.gait().speed_for(1.5);
         let mut worst_stance = 0.0_f32;
         let mut worst_any = 0.0_f32;
         let mut samples = 0_u32;
@@ -548,17 +554,17 @@ fn bench(descriptor: &CharacterDescriptor, iterations: Option<&str>) -> Result<(
         .sum();
     println!(
         "  gpu geometry                  {:>10} bytes",
-        vertices * 40 + indices * 4 + character.parts().len() * 64
+        vertices * 40 + indices * 4 + character.parts().len() * PART_UNIFORM_BYTES
     );
     println!(
         "  dynamic upload per frame      {:>10} bytes",
-        character.parts().len() * 64
+        character.parts().len() * PART_UNIFORM_BYTES
     );
 
     // Pose cost, split so the animation and the contact work are separable.
     let ground = FlatGround::at(18.0);
     let mut state = CharacterState::standing(0.0, 0.0, 0.0, Some(&ground));
-    state.speed = 1.6;
+    state.speed = character.gait().speed_for(1.6);
     let frames = 4_000;
     let started = Instant::now();
     for _ in 0..frames {

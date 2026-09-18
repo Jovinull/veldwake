@@ -18,6 +18,10 @@ use crate::descriptor::CHARACTER_VOXEL_SIZE;
 use crate::geometry::PartVolume;
 use crate::skeleton::{BONE_COUNT, BoneId};
 
+/// How much slack the capsule keeps around the body it contains, in world
+/// units. A hundredth of a character voxel: invisible, and decisive.
+const CONTAINMENT_MARGIN: f32 = 1.0e-3;
+
 /// An upright capsule approximating the whole body, in world units, relative
 /// to the point the character stands on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,7 +174,7 @@ impl CollisionRepresentation {
                 radius_squared = radius_squared.max(point.x.mul_add(point.x, point.z * point.z));
             }
         }
-        let radius = radius_squared.sqrt().max(1.0e-4);
+        let radius = radius_squared.sqrt().max(1.0e-4) + CONTAINMENT_MARGIN;
 
         let mut cap_top = f32::NEG_INFINITY;
         let mut cap_bottom = f32::INFINITY;
@@ -180,9 +184,16 @@ impl CollisionRepresentation {
             cap_top = cap_top.max(point.y - reach);
             cap_bottom = cap_bottom.min(point.y + reach);
         }
-        // Raising the upper cap can only put more of the body inside the
-        // cylinder, so the degenerate short-and-wide case is safe to clamp.
-        let cap_top = cap_top.max(cap_bottom);
+        // The solve above puts the binding corner exactly on the capsule's
+        // surface, where containment is a floating-point coin toss. Widening
+        // the radius cannot help, because the cap centres are solved from it
+        // and the corner stays on the surface whatever it is. Separating the
+        // cap centres does: it is the one direction that gives that corner
+        // slack. Raising the upper cap also handles the degenerate
+        // short-and-wide case, because it only puts more of the body inside the
+        // cylinder.
+        let cap_bottom = cap_bottom - CONTAINMENT_MARGIN;
+        let cap_top = (cap_top + CONTAINMENT_MARGIN).max(cap_bottom);
         let base_height = cap_bottom;
         let segment_height = cap_top - cap_bottom;
 

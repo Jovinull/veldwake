@@ -11,17 +11,28 @@
 //! (`docs/audiovisual/CHARACTER_STYLE.md`), not invented here.
 
 use crate::hash::{fnv1a64, push_f64, push_u32, push_u64, signed_from_hash, sub_hash};
-use crate::material::PaletteChoice;
+use crate::material::{GarmentScheme, HairTone, PaletteChoice, SkinTone};
 
 /// Character voxels per world unit.
 ///
 /// The one place the ratio between the terrain domain (one voxel per world
 /// unit) and the character domain is declared. It is a style decision and it
 /// is versioned with the style contract, not a physical constant.
-pub const CHARACTER_VOXELS_PER_WORLD_UNIT: f64 = 16.0;
+///
+/// **Twelve, decided by capture rather than by arithmetic.** Sixteen was the
+/// first value, which made the reference humanoid `1.75` world units tall.
+/// Two frames rejected it. The scale-reference capture showed a character the
+/// M4 undergrowth dwarfed: low vegetation stands up to three world units, so
+/// a bush was nearly twice the person's height. And a terrain voxel is a
+/// whole world unit, which at that scale was taller than the character's
+/// entire leg, so it could not step onto a single terrace of its own world.
+/// At twelve the humanoid is `2.33` world units, its leg is `1.17`, a terrace
+/// is a step it can take, and a tree still stands three to five times its
+/// height.
+pub const CHARACTER_VOXELS_PER_WORLD_UNIT: f64 = 12.0;
 
 /// Edge of one character voxel, in world units.
-pub const CHARACTER_VOXEL_SIZE: f32 = 1.0 / 16.0;
+pub const CHARACTER_VOXEL_SIZE: f32 = 1.0 / 12.0;
 
 /// Version of `docs/audiovisual/CHARACTER_STYLE.md`.
 ///
@@ -157,14 +168,21 @@ impl Proportions {
     #[must_use]
     pub const fn golden() -> Self {
         Self {
-            total_height_units: 1.75,
+            total_height_units: 2.3333,
             head_height_fraction: 0.1786,
             leg_length_fraction: 0.5000,
             arm_length_fraction: 0.4286,
+            // Twelve voxels across, not fourteen. Fourteen came from the
+            // drawing board and fourteen is what the first capture rejected:
+            // with a straight chest the arms no longer reached it, and with a
+            // chest wide enough to reach them the torso became a slab. Twelve
+            // puts each arm one voxel into the chest, which closes the
+            // shoulder, and two voxels clear of it, which is the whole
+            // silhouette a viewer gets of an arm at rest.
             shoulder_span_fraction: 0.4286,
             hip_width_fraction: 0.2857,
             waist_width_fraction: 0.2143,
-            torso_depth_fraction: 0.1786,
+            torso_depth_fraction: 0.2143,
             limb_thickness_fraction: 0.1071,
             foot_length_fraction: 0.1786,
             hand_depth_fraction: 0.1429,
@@ -182,11 +200,11 @@ impl Proportions {
     #[must_use]
     pub const fn sturdy() -> Self {
         Self {
-            total_height_units: 1.50,
+            total_height_units: 2.0,
             head_height_fraction: 0.1700,
             leg_length_fraction: 0.4583,
             arm_length_fraction: 0.4167,
-            shoulder_span_fraction: 0.4167,
+            shoulder_span_fraction: 0.5000,
             hip_width_fraction: 0.3333,
             waist_width_fraction: 0.2500,
             torso_depth_fraction: 0.2400,
@@ -369,7 +387,20 @@ impl CharacterDescriptor {
             archetype: Archetype::Humanoid,
             seed: CharacterSeed::GOLDEN,
             proportions: Proportions::golden(),
-            palette: PaletteChoice::default(),
+            // Rust linen rather than moss wool: the reference humanoid stands
+            // in a green meadow among green shrubs, and the first captures
+            // showed a moss tunic dissolving into both. Value separation was
+            // satisfied and hue separation was not, which is a reminder that
+            // the value rule is a floor rather than the whole story.
+            palette: PaletteChoice {
+                skin: SkinTone::Tan,
+                // Dark rather than auburn: auburn hair over a rust tunic has
+                // almost the same value and almost the same hue, and the
+                // close-up capture showed the cap and the torso reading as one
+                // mass with a face floating in it.
+                hair: HairTone::Dark,
+                garment: GarmentScheme::RustLinen,
+            },
             build_variation: 0.0,
         }
     }
@@ -541,8 +572,12 @@ pub struct BodyMetrics {
     pub neck_y: i32,
     /// Lowest voxel row of the head box.
     pub head_bottom: i32,
-    /// Half of the character's lateral extent at the pelvis and the chest.
+    /// Half of the character's lateral extent at the pelvis.
     pub torso_half_width: i32,
+    /// Width of the chest box, which is wider than the pelvis.
+    pub chest_width: i32,
+    /// Half of the chest box's width.
+    pub chest_half_width: i32,
     /// Inner edge of a leg, on the positive side.
     pub leg_inner: i32,
     /// Inner edge of an arm, on the positive side.
@@ -609,9 +644,15 @@ impl BodyMetrics {
         let shoulder_span = round_at_least(p.shoulder_span_fraction * scale, 0) & !1;
         // The head box follows the head's own height rather than a separate
         // control: a head whose width and height are independent is a way to
-        // produce a brick or a pole, and neither is a face.
-        let head_width = round_at_least(f64::from(head_height) * 0.9, 0) & !1;
-        let head_depth = (head_width - 1).max(MIN_FEATURE_VOXELS);
+        // produce a brick or a pole, and neither is a face. Slightly wider
+        // than tall, because the first captures showed a head that read as
+        // too small against the shoulders at conversational distance.
+        let head_width = round_at_least(f64::from(head_height) * 1.1, 0) & !1;
+        // Strictly shallower than the torso, so the head's bottom row sits
+        // inside the chest instead of sharing a face plane with it.
+        let head_depth = (head_width - 1)
+            .min(torso_depth - 1)
+            .max(MIN_FEATURE_VOXELS);
         let waist_depth = (torso_depth - 2).max(0);
 
         for (feature, voxels) in [
@@ -685,30 +726,46 @@ impl BodyMetrics {
         let neck_y = head_bottom + 1;
 
         let torso_half_width = hip_width / 2;
+        // The chest is exactly as wide as the pelvis, and the capture that
+        // settled it is worth stating. A chest wider than the pelvis was tried
+        // first, on the theory that the step would read as a torso. In the
+        // game it did the opposite: the chest overhung the waist as a ledge,
+        // it reached past the inner edge of the arms and swallowed the top of
+        // each sleeve, and daylight came through the notch left between the
+        // ledge, the waist and the arm. What reads as a torso is not a wider
+        // chest — it is the arms standing clear of a straight one.
+        let chest_width = hip_width;
+        let chest_half_width = chest_width / 2;
         // Like the waist, the gap between the legs is a construction rule
         // rather than a rejection: a thick limb on a narrow hip would close it
         // at some heights, and the silhouette rule says the legs must read.
-        let leg_inner = (torso_half_width - limb_thickness).max(1);
+        //
+        // Two voxels of inset rather than one, so the gap is four voxels wide.
+        // The first captures showed a two-voxel gap disappearing at any
+        // distance where the whole body fits the frame, which is exactly the
+        // distance the silhouette rule is about. A leg may end up wider than
+        // the pelvis, which reads as a stance rather than as an error.
+        let leg_inner = (torso_half_width - limb_thickness).max(2);
         // The shoulder span is what places the arms, so the control the style
         // contract measures is the control the geometry reads.
         let arm_outer = shoulder_span / 2;
         let arm_inner = arm_outer - limb_thickness;
 
+        if arm_outer <= chest_half_width {
+            return Err(CharacterDescriptorError::ArmsDoNotSeparate {
+                arm_outer,
+                chest_outer: chest_half_width,
+            });
+        }
         if f64::from(head_width) > f64::from(shoulder_span) * 0.60 {
             return Err(CharacterDescriptorError::HeadDoesNotRead {
                 head_width,
                 shoulder_span,
             });
         }
-        if arm_outer <= torso_half_width {
-            return Err(CharacterDescriptorError::ArmsDoNotSeparate {
-                arm_outer,
-                chest_outer: torso_half_width,
-            });
-        }
         // The arm must also reach back inside the chest, or the shoulder joint
         // has nothing to hide it.
-        if arm_inner >= torso_half_width {
+        if arm_inner >= chest_half_width {
             return Err(CharacterDescriptorError::JointWouldOpen { joint: "shoulder" });
         }
         if fingertip_y >= hip_y || fingertip_y < knee_y {
@@ -762,6 +819,8 @@ impl BodyMetrics {
             neck_y,
             head_bottom,
             torso_half_width,
+            chest_width,
+            chest_half_width,
             leg_inner,
             arm_inner,
         })
@@ -876,7 +935,7 @@ mod tests {
         let body = *golden().validate()?.body();
         assert_eq!(body.height, 28, "the reference body is twenty-eight voxels");
         assert_eq!(body.head_height, 5);
-        assert_eq!(body.head_width, 4);
+        assert_eq!(body.head_width, 6);
         assert_eq!(body.leg_length, 14);
         assert_eq!(body.hip_y, 14);
         assert_eq!(body.knee_y, 9);
@@ -893,10 +952,15 @@ mod tests {
         assert_eq!(body.shoulder_span, 12);
         assert_eq!(body.limb_thickness, 3);
         assert_eq!(body.foot_length, 5);
-        assert_eq!(body.torso_depth, 5);
-        assert_eq!(body.leg_inner, 1);
+        assert_eq!(body.torso_depth, 6);
+        assert_eq!(body.leg_inner, 2);
         assert_eq!(body.arm_inner, 3);
         assert_eq!(body.arm_outer(), 6);
+        assert_eq!(body.chest_width, 8);
+        // One voxel of arm inside the chest closes the shoulder; two voxels
+        // outside it are the whole silhouette of an arm at rest.
+        assert_eq!(body.chest_half_width - body.arm_inner, 1);
+        assert_eq!(body.arm_outer() - body.chest_half_width, 2);
         Ok(())
     }
 
@@ -995,7 +1059,7 @@ mod tests {
 
     #[test]
     fn a_body_outside_the_height_range_is_rejected() {
-        for units in [0.5_f64, 4.0] {
+        for units in [0.9_f64, 5.0] {
             let descriptor = CharacterDescriptor {
                 proportions: Proportions {
                     total_height_units: units,
@@ -1036,7 +1100,7 @@ mod tests {
         // hides from a purely fractional check.
         let descriptor = CharacterDescriptor {
             proportions: Proportions {
-                total_height_units: 1.30,
+                total_height_units: 1.75,
                 limb_thickness_fraction: 0.070,
                 ..Proportions::golden()
             },
@@ -1060,7 +1124,7 @@ mod tests {
     #[test]
     fn the_waist_and_the_leg_gap_read_for_every_body_that_validates() {
         let mut checked = 0;
-        for height_units in [1.30_f64, 1.45, 1.60, 1.75, 1.90, 2.10, 2.40] {
+        for height_units in [1.80_f64, 2.00, 2.15, 2.33, 2.55, 2.80, 3.20] {
             for waist in [0.150_f64, 0.2143, 0.2800, 0.3400] {
                 for limb in [0.070_f64, 0.1071, 0.1400, 0.1600] {
                     let descriptor = CharacterDescriptor {
@@ -1170,7 +1234,7 @@ mod tests {
         taller.proportions.total_height_units += 0.01;
         assert_ne!(base, CharacterIdentity::of(&taller).fingerprint());
         let mut repainted = golden();
-        repainted.palette.hair = crate::material::HairTone::Dark;
+        repainted.palette.hair = crate::material::HairTone::Flaxen;
         assert_ne!(base, CharacterIdentity::of(&repainted).fingerprint());
         assert_eq!(base, CharacterIdentity::of(&golden()).fingerprint());
         assert_eq!(golden().archetype, Archetype::Humanoid);

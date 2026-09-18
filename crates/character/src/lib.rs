@@ -12,11 +12,11 @@
 //! - `veldwake-voxel` supplies the dense grid and the exposed-face mesher, and
 //!   stays a generic container with no content semantics;
 //! - this crate owns character meaning, including the one table that maps a
-//!   [`CharacterMaterial`](material::CharacterMaterial) to a `VoxelId` and to a
+//!   [`material::CharacterMaterial`] to a `VoxelId` and to a
 //!   colour, and the declared identifier range that keeps it disjoint from
 //!   terrain;
 //! - the client renders what it is given, adapts its terrain field to
-//!   [`GroundSampler`](ground::GroundSampler), and never invents an identifier.
+//!   [`ground::GroundSampler`], and never invents an identifier.
 //!
 //! It deliberately does **not** depend on `veldwake-procedural`. A headless
 //! character crate has no business compiling a world generator, and the one
@@ -36,7 +36,7 @@
 //! | [`locomotion`] | what angle is every joint at, at this phase? |
 //! | [`ground`] | what is under the foot? |
 //! | [`ik`] | how does the leg reach it? |
-//! | [`pose`] | where is every part, in the world, right now? |
+//! | [`mod@pose`] | where is every part, in the world, right now? |
 //! | [`course`] | a reproducible path for evidence |
 //! | [`fixture`] | which characters, poses, and values are locked |
 

@@ -84,8 +84,6 @@ pub struct GaitProfile {
     pub stride_per_leg_length: f32,
     /// Fraction of the cycle a given foot is planted.
     pub duty_factor: f32,
-    /// Hip pitch amplitude, in radians.
-    pub hip_swing: f32,
     /// Extra knee flexion during swing, in radians.
     pub knee_swing: f32,
     /// Knee flexion carried through stance, in radians.
@@ -96,6 +94,17 @@ pub struct GaitProfile {
     pub elbow_flex: f32,
     /// Pelvis vertical travel, peak to peak, as a fraction of leg length.
     pub pelvis_bob: f32,
+    /// How far below its standing height the pelvis sits while in this gait,
+    /// as a fraction of leg length.
+    ///
+    /// Not decoration. A leg is exactly as long as the distance from the hip
+    /// to the ground, so a character standing straight has no horizontal reach
+    /// at all: a foot placed a few voxels forward asks the leg to span more
+    /// than its own length. Real gait solves it the same way. The value is what
+    /// makes this gait's stride reachable, and
+    /// `a_planted_foot_does_not_slide_on_level_ground` is what keeps the three
+    /// numbers — stride, duty and drop — consistent with each other.
+    pub pelvis_drop: f32,
     /// Pelvis lateral travel, peak to peak, as a fraction of hip width.
     pub pelvis_sway: f32,
     /// Pelvis yaw amplitude, in radians.
@@ -109,14 +118,20 @@ pub struct GaitProfile {
 impl GaitProfile {
     /// The walk. Every value sits inside the character style contract's bands.
     pub const WALK: Self = Self {
-        stride_per_leg_length: 0.85,
-        duty_factor: 0.62,
-        hip_swing: 0.40,
+        // Stride, duty and drop are one decision, not three. The geometry
+        // is: a planted foot must travel `duty * 2 * stride` backward relative
+        // to its hip, so half of that is how far forward of the hip it starts,
+        // and the leg can only reach `sqrt(reach^2 - (reach - drop)^2)`
+        // sideways of straight down. These three satisfy that with about a
+        // tenth of a voxel to spare.
+        stride_per_leg_length: 0.56,
+        duty_factor: 0.56,
         knee_swing: 0.95,
         knee_stance: 0.16,
         arm_swing: 0.30,
         elbow_flex: 0.38,
         pelvis_bob: 0.035,
+        pelvis_drop: 0.0857,
         pelvis_sway: 0.040,
         pelvis_yaw: 0.10,
         chest_counter: 0.80,
@@ -125,14 +140,14 @@ impl GaitProfile {
 
     /// The run.
     pub const RUN: Self = Self {
-        stride_per_leg_length: 1.25,
-        duty_factor: 0.40,
-        hip_swing: 0.62,
+        stride_per_leg_length: 0.85,
+        duty_factor: 0.42,
         knee_swing: 1.55,
         knee_stance: 0.34,
         arm_swing: 0.62,
         elbow_flex: 1.15,
         pelvis_bob: 0.062,
+        pelvis_drop: 0.1143,
         pelvis_sway: 0.022,
         pelvis_yaw: 0.16,
         chest_counter: 0.90,
@@ -144,12 +159,12 @@ impl GaitProfile {
         Self {
             stride_per_leg_length: mix(self.stride_per_leg_length, other.stride_per_leg_length),
             duty_factor: mix(self.duty_factor, other.duty_factor),
-            hip_swing: mix(self.hip_swing, other.hip_swing),
             knee_swing: mix(self.knee_swing, other.knee_swing),
             knee_stance: mix(self.knee_stance, other.knee_stance),
             arm_swing: mix(self.arm_swing, other.arm_swing),
             elbow_flex: mix(self.elbow_flex, other.elbow_flex),
             pelvis_bob: mix(self.pelvis_bob, other.pelvis_bob),
+            pelvis_drop: mix(self.pelvis_drop, other.pelvis_drop),
             pelvis_sway: mix(self.pelvis_sway, other.pelvis_sway),
             pelvis_yaw: mix(self.pelvis_yaw, other.pelvis_yaw),
             chest_counter: mix(self.chest_counter, other.chest_counter),
@@ -158,17 +173,19 @@ impl GaitProfile {
     }
 }
 
-/// Speed thresholds, in world units per second.
+/// Speed thresholds, in **leg lengths per second**.
 ///
+/// Relative rather than absolute, because a threshold in world units is a
+/// statement about how big a character is, and that is the descriptor's job.
 /// Below `IDLE_SPEED` the character is standing; between there and
 /// `WALK_SPEED` the walk fades in; above `RUN_SPEED` it is fully running.
-pub const IDLE_SPEED: f32 = 0.15;
+pub const IDLE_SPEED: f32 = 0.17;
 /// See [`IDLE_SPEED`].
-pub const WALK_SPEED: f32 = 0.70;
+pub const WALK_SPEED: f32 = 0.80;
 /// See [`IDLE_SPEED`].
-pub const RUN_BLEND_SPEED: f32 = 2.20;
+pub const RUN_BLEND_SPEED: f32 = 2.50;
 /// See [`IDLE_SPEED`].
-pub const RUN_SPEED: f32 = 3.60;
+pub const RUN_SPEED: f32 = 4.10;
 
 /// Idle breathing period, in seconds.
 pub const BREATH_PERIOD: f32 = 3.6;
@@ -191,6 +208,12 @@ pub struct GaitBlend {
 pub struct GaitParameters {
     leg_length_units: f32,
     hip_width_units: f32,
+    /// Hip joint to ankle joint, as a fraction of leg length.
+    ///
+    /// The lever the hip angle actually swings. It is shorter than the leg,
+    /// because a leg is measured from the ground and the ankle is not on it,
+    /// and it is what converts a wanted foot offset into a hip angle.
+    hip_to_ankle_fraction: f32,
 }
 
 fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
@@ -205,15 +228,23 @@ impl GaitParameters {
     /// Derives the gait from the body it belongs to.
     #[must_use]
     pub fn derive(body: &BodyMetrics) -> Self {
+        let leg = body.leg_length.max(1) as f32;
         Self {
-            leg_length_units: body.leg_length as f32 * CHARACTER_VOXEL_SIZE,
+            leg_length_units: leg * CHARACTER_VOXEL_SIZE,
             hip_width_units: body.hip_width as f32 * CHARACTER_VOXEL_SIZE,
+            hip_to_ankle_fraction: (body.hip_y - body.ankle_y).max(1) as f32 / leg,
         }
     }
 
     #[must_use]
     pub const fn leg_length_units(&self) -> f32 {
         self.leg_length_units
+    }
+
+    /// Hip joint to ankle joint, as a fraction of leg length.
+    #[must_use]
+    pub const fn hip_to_ankle_fraction(&self) -> f32 {
+        self.hip_to_ankle_fraction
     }
 
     /// How far into a gait a speed puts the character.
@@ -227,10 +258,18 @@ impl GaitParameters {
         } else {
             0.0
         };
+        let legs = speed / self.leg_length_units.max(1.0e-4);
         GaitBlend {
-            moving: smoothstep(IDLE_SPEED, WALK_SPEED, speed),
-            run: smoothstep(RUN_BLEND_SPEED, RUN_SPEED, speed),
+            moving: smoothstep(IDLE_SPEED, WALK_SPEED, legs),
+            run: smoothstep(RUN_BLEND_SPEED, RUN_SPEED, legs),
         }
+    }
+
+    /// A speed, in world units per second, from a speed in leg lengths per
+    /// second. The bridge between the thresholds above and a course.
+    #[must_use]
+    pub fn speed_for(&self, legs_per_second: f32) -> f32 {
+        legs_per_second * self.leg_length_units
     }
 
     /// The gait profile at a blend.
@@ -406,6 +445,49 @@ pub fn stance_weight(phase: f32, duty: f32) -> f32 {
     rise.min(fall)
 }
 
+/// Where a foot should be along the direction of travel, measured from its
+/// own hip, in leg lengths. Positive is forward.
+///
+/// This is the one part of the gait that is not a sinusoid, and the reason is
+/// arithmetic rather than taste. A planted foot has to travel backward
+/// relative to its hip at exactly the speed the hip travels forward, or it
+/// slides; over a stance of `duty` cycles that is `duty * stride` of offset,
+/// spent at a constant rate. A cosine cannot do it for any duty above a half,
+/// because it turns around before stance ends — measured on the golden
+/// humanoid, the best a cosine could manage was a planted foot skating about
+/// two and a half character voxels per stance, and that is with the sign
+/// right. So stance is a straight line, and the swing is the cubic that
+/// returns the foot with a matching slope at both ends, which keeps the whole
+/// cycle C1.
+#[must_use]
+pub fn foot_offset(profile: &GaitProfile, t: f32) -> f32 {
+    let t = if t.is_finite() {
+        t.rem_euclid(1.0)
+    } else {
+        0.0
+    };
+    let duty = profile.duty_factor.clamp(1.0e-3, 0.999);
+    // One cycle is two steps, so the distance a foot must give back over its
+    // stance is `duty` of two strides, not of one.
+    let travel = duty * 2.0 * profile.stride_per_leg_length;
+    let half = 0.5 * travel;
+    if t < duty {
+        return half - travel * (t / duty);
+    }
+    let u = ((t - duty) / (1.0 - duty)).clamp(0.0, 1.0);
+    // The offset's rate at the joins, converted from cycle time into `u`.
+    let slope = -travel / duty * (1.0 - duty);
+    let u2 = u * u;
+    let u3 = u2 * u;
+    (2.0 * u3 - 3.0 * u2 + 1.0).mul_add(
+        -half,
+        (u3 - 2.0 * u2 + u).mul_add(
+            slope,
+            (-2.0 * u3 + 3.0 * u2).mul_add(half, (u3 - u2) * slope),
+        ),
+    )
+}
+
 /// The analytical pose of a moving character at one phase.
 ///
 /// `phase` is the cycle position in `[0, 1)`, `time` drives the idle breath,
@@ -456,7 +538,26 @@ pub fn animate(gait: &GaitParameters, blend: GaitBlend, phase: f32, time: f32) -
             0.0
         };
 
-        let hip = -profile.hip_swing * (tau * t).cos();
+        // The sign here is the whole difference between a walk and a skate,
+        // and it was wrong until a measurement caught it. Stance is `t` in
+        // `[0, duty)`, so at `t = 0` the foot has just landed and must be
+        // **ahead** of the hip, sweeping back under the body until toe-off.
+        // `-cos` put it behind the hip at landing and swept it forward through
+        // the whole of stance: the pose still looked like a stride in a frozen
+        // frame, and in motion the planted foot slid backwards about four
+        // tenths of a world unit per stance — a treadmill. Positive hip pitch
+        // is the foot forward, so stance wants `+cos`.
+        // The hip angle is a seed: it places the foot correctly for a
+        // straight leg, and the terrain-contact stage re-solves the whole leg
+        // against the same offset once it knows where the ground is. Without a
+        // ground sampler this is the whole answer, which is what the neutral
+        // preview and the pure-animation tests see.
+        let offset = foot_offset(&profile, t);
+        // By definition the offset at the start of stance is half the span.
+        let half = foot_offset(&profile, 0.0).max(1.0e-4);
+        let hip = (offset / gait.hip_to_ankle_fraction.max(1.0e-3))
+            .clamp(-0.95, 0.95)
+            .asin();
         let knee = profile.knee_stance * bell(stance_u) + profile.knee_swing * bell(swing_u);
         // Keeping the sole parallel to the ground is what an ankle does; the
         // terrain-contact stage refines it, and the limit keeps it plausible.
@@ -466,8 +567,13 @@ pub fn animate(gait: &GaitParameters, blend: GaitBlend, phase: f32, time: f32) -
         angles.knee_flex[side] = moving * knee;
         angles.ankle_pitch[side] = moving * ankle;
 
-        // The arm on this side opposes this side's leg.
-        let arm = profile.arm_swing * (tau * t).cos();
+        // The arm on this side opposes this side's leg, and it is driven by
+        // the leg's own offset rather than by a cosine of its own. A cosine
+        // crosses zero a few hundredths of a cycle before the leg does, which
+        // left a narrow window where an arm and the leg beside it swung the
+        // same way. Sharing the curve makes the opposition exact by
+        // construction instead of nearly true.
+        let arm = -profile.arm_swing * (offset / half);
         angles.shoulder_pitch[side] = moving * arm;
         angles.shoulder_roll[side] = (1.0 - moving).mul_add(0.05, moving * 0.06);
         let forward = arm.max(0.0) / profile.arm_swing.max(1.0e-4);
@@ -475,6 +581,9 @@ pub fn animate(gait: &GaitParameters, blend: GaitBlend, phase: f32, time: f32) -
         angles.wrist_pitch[side] = moving * arm * 0.15;
     }
 
+    // Lower the pelvis while moving, or the stride is not reachable at all.
+    let drop = profile.pelvis_drop * gait.leg_length_units / CHARACTER_VOXEL_SIZE;
+    angles.pelvis_rise -= moving * drop;
     let bob = profile.pelvis_bob * gait.leg_length_units / CHARACTER_VOXEL_SIZE;
     let sway = profile.pelvis_sway * gait.hip_width_units / CHARACTER_VOXEL_SIZE;
     angles.pelvis_rise += moving * (-0.5 * bob * (2.0 * tau * phase).cos());
@@ -527,7 +636,7 @@ mod tests {
         let mut previous = gait.blend(0.0);
         assert_eq!(previous.moving, 0.0);
         let mut speed = 0.0_f32;
-        while speed <= 6.0 {
+        while speed <= 8.0 {
             let blend = gait.blend(speed);
             assert!(blend.moving >= previous.moving - 1.0e-6, "moving went back");
             assert!(blend.run >= previous.run - 1.0e-6, "run went back");
@@ -539,16 +648,16 @@ mod tests {
             previous = blend;
             speed += 0.02;
         }
-        assert!(gait.blend(IDLE_SPEED).moving < 1.0e-6);
-        assert!((gait.blend(WALK_SPEED).moving - 1.0).abs() < 1.0e-6);
-        assert!((gait.blend(RUN_SPEED).run - 1.0).abs() < 1.0e-6);
+        assert!(gait.blend(gait.speed_for(IDLE_SPEED)).moving < 1.0e-5);
+        assert!((gait.blend(gait.speed_for(WALK_SPEED)).moving - 1.0).abs() < 1.0e-5);
+        assert!((gait.blend(gait.speed_for(RUN_SPEED)).run - 1.0).abs() < 1.0e-5);
         assert!(gait.blend(f32::NAN).moving.is_finite());
     }
 
     #[test]
     fn stride_times_cadence_is_the_speed_it_was_asked_about() {
         let gait = gait();
-        for speed in [0.4_f32, 0.9, 1.6, 2.4, 3.2, 4.4] {
+        for speed in [0.5_f32, 1.2, 2.0, 3.0, 4.2, 5.6] {
             let blend = gait.blend(speed);
             let stride = gait.stride(blend);
             let cadence = gait.cadence(speed);
@@ -562,7 +671,7 @@ mod tests {
     #[test]
     fn phase_advances_with_distance_and_wraps() {
         let gait = gait();
-        let blend = gait.blend(1.4);
+        let blend = gait.blend(2.0);
         let cycle = 2.0 * gait.stride(blend);
         let start = 0.25;
         let after = gait.advance_phase(start, cycle, blend);
@@ -579,7 +688,7 @@ mod tests {
     #[test]
     fn every_pose_is_finite_and_inside_the_joint_limits() {
         let gait = gait();
-        for speed in [0.0_f32, 0.3, 0.8, 1.5, 2.6, 3.8, 9.0] {
+        for speed in [0.0_f32, 0.4, 1.1, 2.0, 3.4, 5.0, 12.0] {
             let blend = gait.blend(speed);
             let mut phase = 0.0_f32;
             while phase < 1.0 {
@@ -593,7 +702,7 @@ mod tests {
             }
         }
         // A hostile phase or time must not produce a hostile pose.
-        let blend = gait.blend(1.5);
+        let blend = gait.blend(2.0);
         assert!(animate(&gait, blend, f32::NAN, 0.0).is_finite());
         assert!(animate(&gait, blend, 0.3, f32::INFINITY).is_finite());
     }
@@ -601,7 +710,7 @@ mod tests {
     #[test]
     fn the_nominal_gaits_never_need_the_clamp() {
         let gait = gait();
-        for speed in [0.8_f32, 1.6, 2.6, 3.8] {
+        for speed in [1.1_f32, 2.0, 3.4, 5.0] {
             let blend = gait.blend(speed);
             let mut phase = 0.0_f32;
             while phase < 1.0 {
@@ -627,7 +736,7 @@ mod tests {
     #[test]
     fn the_cycle_closes_without_a_hitch() {
         let gait = gait();
-        let blend = gait.blend(1.6);
+        let blend = gait.blend(2.0);
         let end = animate(&gait, blend, 1.0 - 1.0e-4, 0.0);
         let start = animate(&gait, blend, 0.0, 0.0);
         let difference = (end.hip_pitch[RIGHT] - start.hip_pitch[RIGHT]).abs()
@@ -657,7 +766,7 @@ mod tests {
     #[test]
     fn the_two_sides_are_half_a_cycle_apart() {
         let gait = gait();
-        let blend = gait.blend(1.6);
+        let blend = gait.blend(2.0);
         let mut phase = 0.0_f32;
         while phase < 1.0 {
             let here = animate(&gait, blend, phase, 0.0);
@@ -677,7 +786,7 @@ mod tests {
     #[test]
     fn an_arm_always_opposes_the_leg_on_its_own_side() {
         let gait = gait();
-        let blend = gait.blend(2.0);
+        let blend = gait.blend(2.6);
         let mut phase = 0.0_f32;
         let mut checked = 0;
         while phase < 1.0 {

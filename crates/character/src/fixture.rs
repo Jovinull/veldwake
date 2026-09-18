@@ -38,7 +38,7 @@ pub fn sturdy_descriptor() -> CharacterDescriptor {
         palette: PaletteChoice {
             skin: SkinTone::Deep,
             hair: HairTone::Dark,
-            garment: GarmentScheme::RustLinen,
+            garment: GarmentScheme::MossWool,
         },
         ..CharacterDescriptor::golden()
     }
@@ -65,7 +65,7 @@ pub fn golden_character() -> Result<CompiledCharacter, CharacterError> {
 }
 
 /// A pose worth photographing, named so a capture can be reproduced.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NamedPose {
     pub name: &'static str,
     /// World units per second.
@@ -203,19 +203,19 @@ pub fn named_pose_signature(character: &CompiledCharacter) -> u64 {
 }
 
 /// Locked hash of the golden humanoid's compiled surface.
-pub const GOLDEN_GEOMETRY_FINGERPRINT: u64 = 0xdda5_f3d1_022b_4eef;
+pub const GOLDEN_GEOMETRY_FINGERPRINT: u64 = 0x3ebe_8c82_2f54_9151;
 /// Locked hash of the golden humanoid's bone hierarchy and rest pose.
-pub const GOLDEN_SKELETON_FINGERPRINT: u64 = 0xcfcc_86a9_547c_54ed;
+pub const GOLDEN_SKELETON_FINGERPRINT: u64 = 0x2628_aeb4_1d29_79ed;
 /// Locked hash of the golden humanoid's collision representation.
-pub const GOLDEN_COLLISION_FINGERPRINT: u64 = 0xb257_0d46_598a_ced1;
+pub const GOLDEN_COLLISION_FINGERPRINT: u64 = 0x8181_56de_8637_d934;
 /// Locked hash of everything observable about the golden humanoid.
-pub const GOLDEN_BEHAVIOUR_SIGNATURE: u64 = 0x08d9_73e1_1f15_2a08;
+pub const GOLDEN_BEHAVIOUR_SIGNATURE: u64 = 0x6ca7_52c7_0a5b_f919;
 /// Locked hash of every named pose of the golden humanoid.
-pub const GOLDEN_POSE_SIGNATURE: u64 = 0x00fa_6556_3643_ce1c;
+pub const GOLDEN_POSE_SIGNATURE: u64 = 0xfd1e_1f61_ba17_37d2;
 /// Locked hash of everything observable about the sturdy humanoid.
-pub const STURDY_BEHAVIOUR_SIGNATURE: u64 = 0x7738_d2b8_f72c_0b7e;
+pub const STURDY_BEHAVIOUR_SIGNATURE: u64 = 0xb7d6_7add_b984_5142;
 /// Locked hash of everything observable about the varied humanoid.
-pub const VARIED_BEHAVIOUR_SIGNATURE: u64 = 0xace0_5f9a_0212_b917;
+pub const VARIED_BEHAVIOUR_SIGNATURE: u64 = 0xa931_d3c2_ede0_d752;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]

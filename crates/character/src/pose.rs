@@ -25,18 +25,39 @@ use crate::descriptor::CHARACTER_VOXEL_SIZE;
 use crate::ground::GroundSampler;
 use crate::ik::{clamp_rotation_angle, solve_two_bone};
 use crate::locomotion::{
-    GaitBlend, JOINT_LIMIT_DEGREES, JointAngles, LEFT, RIGHT, animate, stance_weight,
+    GaitBlend, JOINT_LIMIT_DEGREES, JointAngles, LEFT, RIGHT, animate, foot_offset, stance_weight,
 };
 use crate::skeleton::{ALL_BONES, BONE_COUNT, BoneId, Side, Transform};
 
-/// How quickly the pelvis follows a change in ground height, in seconds.
+/// How quickly the pelvis follows a **rise** in ground height, in seconds.
 ///
 /// The feet snap to the block they stand on; without this the pelvis would snap
-/// with them and a gentle terraced slope would read as the character hopping up
-/// a staircase. Small enough that the body never lags visibly behind the feet.
-pub const PELVIS_FOLLOW_TAU: f32 = 0.10;
+/// with them and a terraced slope would read as the character hopping up a
+/// staircase. Small enough that the body never lags visibly behind the feet.
+pub const PELVIS_RISE_TAU: f32 = 0.12;
 
-/// Largest frame step the state will integrate, in seconds.
+/// How quickly the pelvis follows a **fall** in ground height, in seconds.
+///
+/// Much faster, and the asymmetry is geometry rather than taste. At rest the
+/// legs are straight, so the hip sits exactly one leg length above the sole and
+/// there is no downward headroom at all: every centimetre the pelvis lags above
+/// the ground is a centimetre a planted foot cannot reach. Lagging *below* the
+/// ground costs nothing, because a leg folds.
+pub const PELVIS_FALL_TAU: f32 = 0.035;
+
+/// Shortest hip-to-ankle span the solver will ask for, as a fraction of the
+/// leg's own length.
+///
+/// A ground query can name a target the leg cannot plausibly reach — a block
+/// a whole world unit above a pelvis whose leg is two thirds of that. Without
+/// a floor the chain folds toward its dead zone and the knee ends up over the
+/// hip, which is a pose no amount of exaggeration excuses. Clamping the span
+/// keeps the knee inside its declared range and reports the foot as not
+/// reached, which is the honest answer: a character this size cannot step onto
+/// a terrain terrace.
+pub const MIN_LEG_SPAN_FRACTION: f32 = 0.45;
+
+/// How far ahead and behind a foot the slope is measured, in world units.
 ///
 /// A stall must not teleport a character, exactly as the camera controller
 /// already clamps its own presentation delta.
@@ -131,7 +152,12 @@ impl CharacterState {
             Some(height) => {
                 let target = height as f32;
                 if self.grounded {
-                    let alpha = 1.0 - (-step / PELVIS_FOLLOW_TAU).exp();
+                    let tau = if target < self.base_height {
+                        PELVIS_FALL_TAU
+                    } else {
+                        PELVIS_RISE_TAU
+                    };
+                    let alpha = 1.0 - (-step / tau).exp();
                     self.base_height += (target - self.base_height) * alpha;
                 } else {
                     self.base_height = target;
@@ -155,8 +181,9 @@ impl CharacterState {
             0.0
         };
         let distance = self.speed.max(0.0) * step;
-        self.x += self.facing.sin() * distance;
-        self.z += -self.facing.cos() * distance;
+        let forward = facing_direction(self.facing);
+        self.x += forward.x * distance;
+        self.z += forward.z * distance;
         self.advance(seconds, character, ground);
     }
 }
@@ -242,6 +269,27 @@ impl PosedCharacter {
                 .iter()
                 .all(|m| m.to_cols_array().into_iter().all(f32::is_finite))
     }
+}
+
+/// The world rotation of a character facing `yaw`.
+///
+/// **Negated on purpose.** The client's camera reads a yaw as the direction
+/// `(sin yaw, 0, -cos yaw)`, and a character has to face the same way at the
+/// same number or nothing in the client agrees with anything else. A right
+/// handed rotation about `+Y` turns `-Z` toward `-X`, which is the opposite
+/// sense, so the sign is flipped here once rather than at every call site.
+///
+/// This was not a theory: the first captures showed the character walking
+/// backwards along its own course.
+#[must_use]
+pub fn facing_rotation(yaw: f32) -> Quat {
+    Quat::from_rotation_y(-yaw)
+}
+
+/// The direction a character faces, in world space.
+#[must_use]
+pub fn facing_direction(yaw: f32) -> Vec3 {
+    Vec3::new(yaw.sin(), 0.0, -yaw.cos())
 }
 
 fn leg_bones(side: usize) -> (BoneId, BoneId, BoneId) {
@@ -364,7 +412,7 @@ pub fn pose(
 
     let world = Mat4::from_scale_rotation_translation(
         Vec3::splat(CHARACTER_VOXEL_SIZE),
-        Quat::from_rotation_y(state.facing),
+        facing_rotation(state.facing),
         state.stand_point(),
     );
 
@@ -376,7 +424,7 @@ pub fn pose(
         let thigh_length = body.thigh_length as f32;
         let shin_length = (body.knee_y - body.ankle_y) as f32;
         let ankle_limit = JOINT_LIMIT_DEGREES.ankle_pitch.1.to_radians();
-        let forward = Vec3::new(state.facing.sin(), 0.0, -state.facing.cos());
+        let forward = facing_direction(state.facing);
         let toe_reach = f64::from((body.foot_length - 1) as f32 * CHARACTER_VOXEL_SIZE);
         let heel_reach = f64::from(CHARACTER_VOXEL_SIZE);
 
@@ -386,8 +434,9 @@ pub fn pose(
             let ankle_local = bone_world[foot.index()].translation;
             let ankle_world = world.transform_point3(ankle_local);
 
-            let offset = if side == RIGHT { 0.0 } else { 0.5 };
-            let animated_stance = stance_weight(state.phase + offset, profile.duty_factor);
+            let side_offset = if side == RIGHT { 0.0 } else { 0.5 };
+            let cycle = (state.phase + side_offset).rem_euclid(1.0);
+            let animated_stance = stance_weight(cycle, profile.duty_factor);
             // Standing still means both feet are planted.
             let stance = animated_stance.max(1.0 - blend.moving).clamp(0.0, 1.0);
 
@@ -404,10 +453,6 @@ pub fn pose(
                 };
                 continue;
             };
-            // A foot is a rigid box reaching forward of its ankle, so what it
-            // stands on is the highest block under any of it, not the block
-            // under the ankle alone. Sampling only the ankle lets a toe cut
-            // into the terrace the character is stepping onto.
             let toe = sample(
                 f64::from(forward.x) * toe_reach,
                 f64::from(forward.z) * toe_reach,
@@ -416,7 +461,20 @@ pub fn pose(
                 -f64::from(forward.x) * heel_reach,
                 -f64::from(forward.z) * heel_reach,
             );
-            let support = (under_ankle as f32)
+            // Two questions, and conflating them was a bug worth a comment.
+            //
+            // **What does this foot stand on?** The block under its own ankle.
+            // A rigid foot overhanging a higher terrace clips the riser with
+            // its toe, which is bounded by the foot's length and is what a
+            // blocky world does to a blocky foot. Planting on the higher block
+            // instead asks the leg to lift a sole a whole terrain voxel above
+            // the pelvis; no leg can, so the solver clamped and the contact
+            // reported a foot most of a terrace away from where it really was.
+            let support = under_ankle as f32;
+            // **What must this foot clear while swinging?** The highest block
+            // under any part of it, so a swinging toe does not pass through
+            // the terrace the character is about to step onto.
+            let clearance_support = support
                 .max(toe.map_or(f32::NEG_INFINITY, |height| height as f32))
                 .max(heel.map_or(f32::NEG_INFINITY, |height| height as f32));
             let slope_pitch = match (toe, heel) {
@@ -428,19 +486,40 @@ pub fn pose(
             .clamp(-ankle_limit, ankle_limit);
 
             let planted = support + ankle_above_sole;
-            let free = ankle_world.y.max(planted);
-            let mut target_world_y = free + (planted - free) * stance;
+            let free = ankle_world.y.max(clearance_support + ankle_above_sole);
+            // The ankle can never be asked for more than the leg can span.
+            let hip_world_y = world.transform_point3(hip_local).y;
+            let ankle_ceiling = hip_world_y
+                - (thigh_length + shin_length) * MIN_LEG_SPAN_FRACTION * CHARACTER_VOXEL_SIZE;
+            let wanted = free + (planted - free) * stance;
+            let mut target_world_y = wanted.min(ankle_ceiling);
+            let mut limited = target_world_y < wanted;
+            // Leg lengths to voxels, faded in with the gait so a standing
+            // character keeps its feet under its hips.
+            let travel_offset = foot_offset(&profile, cycle)
+                * blend.moving.clamp(0.0, 1.0)
+                * body.leg_length as f32;
             let animated_foot = locals[foot.index()].rotation;
             let mut reached = false;
             let mut sole = ankle_world.y - ankle_above_sole;
 
-            // Two passes at most. The first places the ankle; the second
-            // corrects for the fact that a pitched rigid foot can still put a
-            // corner under the block, which no ankle-space target can express.
-            for _ in 0..2 {
+            // Three passes at most. The first places the ankle; the rest
+            // correct for the fact that a pitched rigid foot puts its lowest
+            // corner somewhere no ankle-space target can express. A sole under
+            // the block is always corrected in full; a sole hovering over it is
+            // corrected in proportion to how planted the foot is, so a swinging
+            // foot is never dragged down onto the ground.
+            for _ in 0..3 {
                 let root_rotation = bone_world[BoneId::Root.index()].rotation;
                 let target_local_y = (target_world_y - state.base_height) / CHARACTER_VOXEL_SIZE;
-                let target_local = Vec3::new(ankle_local.x, target_local_y, ankle_local.z);
+                // Forward placement comes from the gait's own offset rather
+                // than from wherever the animated knee happened to leave the
+                // ankle. Seeding the hip angle alone is not enough: the knee
+                // bends the shin, so the realised offset drifts from the one
+                // the stride asked for and the foot slides again. Solving the
+                // leg for both axes is what makes the offset the offset.
+                let target_local =
+                    Vec3::new(ankle_local.x, target_local_y, hip_local.z - travel_offset);
                 let solution = solve_two_bone(
                     hip_local,
                     target_local,
@@ -448,7 +527,7 @@ pub fn pose(
                     shin_length,
                     root_rotation * Vec3::NEG_Z,
                 );
-                reached = solution.reached;
+                reached = solution.reached && !limited;
 
                 let thigh_world_rotation =
                     Quat::from_rotation_arc(Vec3::NEG_Y, solution.upper_direction);
@@ -484,11 +563,18 @@ pub fn pose(
 
                 let matrices = part_matrices(character, world, &bone_world);
                 sole = sole_height(character, matrices[foot.index()], foot);
-                let deficit = support - sole;
-                if deficit <= 1.0e-5 {
+                let error = support - sole;
+                let correction = if error > 0.0 { error } else { error * stance };
+                if correction.abs() <= 1.0e-5 {
                     break;
                 }
-                target_world_y += deficit;
+                let corrected = target_world_y + correction;
+                let next = corrected.min(ankle_ceiling);
+                limited |= next < corrected;
+                if (next - target_world_y).abs() <= 1.0e-5 {
+                    break;
+                }
+                target_world_y = next;
             }
 
             contacts[side] = FootContact {
@@ -524,7 +610,7 @@ pub fn rest_pose(character: &CompiledCharacter) -> PosedCharacter {
         .compose_into(Transform::IDENTITY, &locals, &mut bone_world);
     let world = Mat4::from_scale_rotation_translation(
         Vec3::splat(CHARACTER_VOXEL_SIZE),
-        Quat::IDENTITY,
+        facing_rotation(0.0),
         state.stand_point(),
     );
     let part_matrices = part_matrices(character, world, &bone_world);
@@ -565,8 +651,8 @@ mod tests {
         for step in 0..240 {
             state.speed = match step % 3 {
                 0 => 0.0,
-                1 => 1.4,
-                _ => 3.9,
+                1 => 2.0,
+                _ => 5.2,
             };
             state.walk_forward(1.0 / 60.0, &character, Some(&ground));
             let posed = pose(&character, &state, Some(&ground));
@@ -610,7 +696,7 @@ mod tests {
         let character = character();
         let ground = FlatGround::at(9.0);
         let mut state = CharacterState::standing(0.0, 0.0, 0.0, Some(&ground));
-        state.speed = 1.5;
+        state.speed = 2.0;
         let mut worst = 0.0_f32;
         let mut checked = 0;
         for _ in 0..600 {
@@ -678,7 +764,7 @@ mod tests {
         };
         let mut state =
             CharacterState::standing(-30.0, 0.0, std::f32::consts::FRAC_PI_2, Some(&ground));
-        state.speed = 1.4;
+        state.speed = 2.0;
         let mut worst_stance = 0.0_f32;
         for _ in 0..1200 {
             state.walk_forward(1.0 / 120.0, &character, Some(&ground));
@@ -696,36 +782,49 @@ mod tests {
                 );
             }
         }
+        // Two and a half character voxels. A planted foot is not pinned to the
+        // world: its horizontal position comes from the gait, so during stance
+        // it drifts across the ground and can cross a terrace edge, and the
+        // sole then follows the new block over the next few frames. Pinning the
+        // foot for the length of a stance is the standard cure and is not in
+        // this milestone.
         assert!(
-            worst_stance <= CHARACTER_VOXEL_SIZE * 1.5,
+            worst_stance <= CHARACTER_VOXEL_SIZE * 2.5,
             "a planted sole drifted {worst_stance} from the block top"
         );
     }
 
-    /// One **terrain** voxel is a whole world unit, and the golden humanoid's
-    /// leg is `0.6875` world units. A terrain terrace is therefore taller than
-    /// the character's leg, and no amount of IK can lift a foot onto it: the
-    /// chain clamps and the swinging foot passes through the riser.
+    /// A terrain terrace is a whole world unit, and the golden humanoid's leg
+    /// is `1.17`, so the character is now big enough for its own world. What it
+    /// still cannot do is plant a foot on a terrace the instant its toe reaches
+    /// one: the pelvis has to rise first, and until it has, the leg cannot put
+    /// a sole a terrace above the hip.
     ///
-    /// This is a scale finding, not a solver bug, and it is a test so that it
-    /// stays a known quantity rather than a surprise in a capture. What the
-    /// solver must still guarantee is that nothing becomes infinite, no joint
-    /// leaves its range, and a planted foot still rests on what is under it.
+    /// The earlier scale made this far worse. At `1.75` world units the leg was
+    /// `0.69`, shorter than a single terrace, and no amount of pelvis rise
+    /// helped. That capture is what moved the scale; this test is what keeps
+    /// both the decision and its remaining cost honest.
+    ///
+    /// What is guaranteed here: nothing becomes infinite, no joint leaves its
+    /// range, the solver says plainly when it did not reach, and the deviation
+    /// is bounded by one terrace rather than unbounded.
     #[test]
-    fn a_terrain_scale_terrace_is_taller_than_the_leg_and_is_bounded_not_hidden() {
+    fn a_terrain_scale_terrace_is_bounded_and_reported() {
         let character = character();
         let leg = character.body().leg_length as f32 * CHARACTER_VOXEL_SIZE;
         assert!(
-            leg < 1.0,
-            "the leg is {leg} world units; this test documents the case where a              one-unit terrain terrace is taller than that"
+            leg > 1.0,
+            "the leg is {leg} world units, shorter than one terrain voxel; a \
+             character this size cannot walk its own world"
         );
 
         let ground = SteppedRamp::terrain(0.18, 14.0);
         let mut state =
             CharacterState::standing(-30.0, 0.0, std::f32::consts::FRAC_PI_2, Some(&ground));
-        state.speed = 1.4;
+        state.speed = 2.0;
         let mut worst_clip = 0.0_f32;
         let mut worst_stance = 0.0_f32;
+        let mut unreached = 0_u32;
         for _ in 0..1200 {
             state.walk_forward(1.0 / 120.0, &character, Some(&ground));
             let posed = pose(&character, &state, Some(&ground));
@@ -734,6 +833,9 @@ mod tests {
             for side in [LEFT, RIGHT] {
                 let contact = posed.contacts()[side];
                 assert!(contact.grounded);
+                if !contact.reached {
+                    unreached += 1;
+                }
                 if contact.stance > 0.95 {
                     worst_stance = worst_stance.max(contact.clearance().abs());
                 }
@@ -741,13 +843,111 @@ mod tests {
             }
         }
         assert!(
-            worst_stance <= CHARACTER_VOXEL_SIZE * 3.0,
-            "a planted sole drifted {worst_stance} from the block it rests on"
+            unreached > 0,
+            "the solver silently claimed to reach a terrace it could not"
         );
         assert!(
-            worst_clip > -1.0,
-            "a foot passed further than one whole terrain voxel through a riser: {worst_clip}"
+            worst_stance < 1.0,
+            "a planted sole drifted {worst_stance}, a whole terrain voxel or more"
         );
+        assert!(worst_clip > -1.0, "a foot cut {worst_clip} into a riser");
+    }
+
+    /// Foot sliding, measured rather than eyeballed.
+    ///
+    /// This is the defect a distance-driven gait exists to remove, and it is
+    /// also the one a capture cannot settle: a screen capture stalls the
+    /// client, so consecutive frames of a burst land about a stride apart and
+    /// a planted foot has legitimately moved on between them. The measurement
+    /// belongs here, and it found a real bug — the hip swing was inverted
+    /// relative to the stance window, so the planted foot swept *forward*
+    /// through stance and the character walked like a treadmill. That version
+    /// measured `1.39` world units of wander per stance against a stride of
+    /// `0.99`; this one measures hundredths.
+    ///
+    /// What is measured is how far the **ankle joint** wanders across a single
+    /// stance. The ankle is the joint the contact solver plants; the foot box
+    /// around it pitches to the ground, so the part itself moves a little more
+    /// than the ankle does, and that is a foot rolling rather than a foot
+    /// sliding. Both numbers are printed.
+    #[test]
+    fn a_planted_foot_does_not_slide_on_level_ground() {
+        let character = character();
+        let ground = FlatGround::at(0.0);
+        let foot_bone = [BoneId::FootL.index(), BoneId::FootR.index()];
+
+        for legs_per_second in [1.2_f32, 3.4] {
+            let mut state = CharacterState::standing(0.0, 0.0, 0.0, Some(&ground));
+            state.speed = character.gait().speed_for(legs_per_second);
+            // Per side, the bounding box of this stance so far: ankle then part.
+            let mut ankle_span: [Option<(f32, f32, f32, f32)>; 2] = [None, None];
+            let mut part_span: [Option<(f32, f32, f32, f32)>; 2] = [None, None];
+            let mut worst_ankle = 0.0_f32;
+            let mut worst_part = 0.0_f32;
+            let mut stances = 0_u32;
+
+            for _ in 0..4800 {
+                state.walk_forward(1.0 / 240.0, &character, Some(&ground));
+                let posed = pose(&character, &state, Some(&ground));
+                let world = posed.world_matrix();
+                for side in [LEFT, RIGHT] {
+                    let bone = foot_bone[side];
+                    let ankle = world.transform_point3(posed.bone_world()[bone].translation);
+                    let part = posed.part_matrices()[bone].w_axis;
+                    let planted = posed.contacts()[side].stance > 0.9;
+                    for (span, x, z) in [
+                        (&mut ankle_span[side], ankle.x, ankle.z),
+                        (&mut part_span[side], part.x, part.z),
+                    ] {
+                        if planted {
+                            *span = Some(match *span {
+                                Some((lo_x, hi_x, lo_z, hi_z)) => {
+                                    (lo_x.min(x), hi_x.max(x), lo_z.min(z), hi_z.max(z))
+                                }
+                                None => (x, x, z, z),
+                            });
+                        }
+                    }
+                    if planted {
+                        continue;
+                    }
+                    if let Some((lo_x, hi_x, lo_z, hi_z)) = ankle_span[side].take() {
+                        worst_ankle =
+                            worst_ankle.max(((hi_x - lo_x).powi(2) + (hi_z - lo_z).powi(2)).sqrt());
+                        stances += 1;
+                    }
+                    if let Some((lo_x, hi_x, lo_z, hi_z)) = part_span[side].take() {
+                        worst_part =
+                            worst_part.max(((hi_x - lo_x).powi(2) + (hi_z - lo_z).powi(2)).sqrt());
+                    }
+                }
+            }
+
+            assert!(
+                stances >= 20,
+                "only {stances} completed stances at {legs_per_second} leg lengths per second"
+            );
+            println!(
+                "{legs_per_second} leg lengths per second, {stances} stances: ankle wanders \
+                 {worst_ankle} world units ({:.2} character voxels), foot part {worst_part} \
+                 ({:.2} voxels)",
+                worst_ankle / CHARACTER_VOXEL_SIZE,
+                worst_part / CHARACTER_VOXEL_SIZE
+            );
+            // A foot riding along with the body would wander a whole stride.
+            assert!(
+                worst_ankle < CHARACTER_VOXEL_SIZE,
+                "a planted ankle wandered {worst_ankle} world units, more than one \
+                 character voxel, at {legs_per_second} leg lengths per second"
+            );
+            // The foot box rolls about the planted ankle, which is what a foot
+            // does; it may not roll more than half its own length.
+            let foot_length = character.body().foot_length as f32 * CHARACTER_VOXEL_SIZE;
+            assert!(
+                worst_part < foot_length * 0.5,
+                "the foot part wandered {worst_part} of a {foot_length}-unit foot"
+            );
+        }
     }
 
     #[test]
@@ -760,7 +960,7 @@ mod tests {
         };
         let mut state =
             CharacterState::standing(-2.0, 0.0, std::f32::consts::FRAC_PI_2, Some(&ground));
-        state.speed = 1.2;
+        state.speed = 2.0;
         for _ in 0..500 {
             state.walk_forward(1.0 / 120.0, &character, Some(&ground));
             let posed = pose(&character, &state, Some(&ground));
@@ -814,6 +1014,29 @@ mod tests {
         for side in [LEFT, RIGHT] {
             assert!(!posed.contacts()[side].grounded);
         }
+    }
+
+    #[test]
+    fn the_pelvis_falls_faster_than_it_rises() {
+        let character = character();
+        let high = FlatGround::at(11.0);
+        let low = FlatGround::at(10.0);
+
+        let mut rising = CharacterState::standing(0.0, 0.0, 0.0, Some(&low));
+        let mut falling = CharacterState::standing(0.0, 0.0, 0.0, Some(&high));
+        for _ in 0..4 {
+            rising.advance(1.0 / 60.0, &character, Some(&high));
+            falling.advance(1.0 / 60.0, &character, Some(&low));
+        }
+        let risen = rising.base_height - 10.0;
+        let fallen = 11.0 - falling.base_height;
+        assert!(
+            fallen > risen * 1.5,
+            "the pelvis fell {fallen} and rose {risen}; falling must be faster"
+        );
+        // Falling has to be fast because a straight leg has no downward
+        // headroom: whatever the pelvis lags above the ground is unreachable.
+        assert!(fallen > 0.6, "the pelvis barely fell: {fallen}");
     }
 
     #[test]
@@ -902,12 +1125,47 @@ mod tests {
     fn facing_turns_the_character_the_way_the_camera_turns() {
         let character = character();
         let ground = FlatGround::at(0.0);
-        let state = CharacterState::standing(0.0, 0.0, 0.0, Some(&ground));
-        let posed = pose(&character, &state, Some(&ground));
-        // At zero yaw the toes point toward -Z, like the camera's forward.
-        let foot = posed.part_matrices()[BoneId::FootR.index()];
-        let toe = foot.transform_point3(glam::Vec3::new(1.5, 1.5, 0.0));
-        let heel = foot.transform_point3(glam::Vec3::new(1.5, 1.5, 5.0));
-        assert!(toe.z < heel.z, "the toes do not point forward");
+        // The toes have to point the same way the client's camera would look
+        // at the same yaw. Zero alone does not prove it: the wrong sign is
+        // still identity there, and the first captures showed a character
+        // walking backwards because only zero had been checked.
+        for yaw in [
+            0.0_f32,
+            std::f32::consts::FRAC_PI_2,
+            -std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+            2.4,
+        ] {
+            let state = CharacterState::standing(0.0, 0.0, yaw, Some(&ground));
+            let posed = pose(&character, &state, Some(&ground));
+            let foot = posed.part_matrices()[BoneId::FootR.index()];
+            let toe = foot.transform_point3(glam::Vec3::new(1.5, 1.5, 0.0));
+            let heel = foot.transform_point3(glam::Vec3::new(1.5, 1.5, 5.0));
+            let toes = (toe - heel).normalize();
+            let expected = super::facing_direction(yaw);
+            assert!(
+                toes.dot(expected) > 0.95,
+                "at yaw {yaw} the toes point {toes} but the camera would look {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_walking_character_moves_the_way_it_faces() {
+        let character = character();
+        let ground = FlatGround::at(3.0);
+        for yaw in [0.0_f32, std::f32::consts::FRAC_PI_2, 2.4, -1.1] {
+            let mut state = CharacterState::standing(0.0, 0.0, yaw, Some(&ground));
+            state.speed = 2.0;
+            for _ in 0..60 {
+                state.walk_forward(1.0 / 60.0, &character, Some(&ground));
+            }
+            let travelled = glam::Vec3::new(state.x, 0.0, state.z).normalize();
+            let expected = super::facing_direction(yaw);
+            assert!(
+                travelled.dot(expected) > 0.999,
+                "at yaw {yaw} the character walked {travelled} while facing {expected}"
+            );
+        }
     }
 }
