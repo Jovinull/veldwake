@@ -43,11 +43,12 @@ const CHARACTER_VARIABLE: &str = "VELDWAKE_CHARACTER";
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainGround<'a> {
     field: &'a TerrainField,
-    /// Inclusive world-voxel bounds of the region, so absence stays absence.
+    /// Half-open continuous world bounds of the region, so absence stays
+    /// absence without discarding the fractional half of an edge voxel.
     min_x: f64,
-    max_x: f64,
+    max_x_exclusive: f64,
     min_z: f64,
-    max_z: f64,
+    max_z_exclusive: f64,
 }
 
 impl<'a> TerrainGround<'a> {
@@ -59,9 +60,9 @@ impl<'a> TerrainGround<'a> {
         Self {
             field: generator.field(),
             min_x: f64::from(extent.min_chunk_x) * edge,
-            max_x: (f64::from(extent.max_chunk_x) + 1.0) * edge - 1.0,
+            max_x_exclusive: (f64::from(extent.max_chunk_x) + 1.0) * edge,
             min_z: f64::from(extent.min_chunk_z) * edge,
-            max_z: (f64::from(extent.max_chunk_z) + 1.0) * edge - 1.0,
+            max_z_exclusive: (f64::from(extent.max_chunk_z) + 1.0) * edge,
         }
     }
 
@@ -73,7 +74,8 @@ impl<'a> TerrainGround<'a> {
 
     #[must_use]
     fn inside(&self, x: f64, z: f64) -> bool {
-        (self.min_x..=self.max_x).contains(&x) && (self.min_z..=self.max_z).contains(&z)
+        (self.min_x..self.max_x_exclusive).contains(&x)
+            && (self.min_z..self.max_z_exclusive).contains(&z)
     }
 }
 
@@ -933,6 +935,38 @@ mod tests {
         assert_eq!(ground.surface(10_000.0, 0.0), None);
         assert_eq!(ground.surface(0.0, -10_000.0), None);
         assert_eq!(ground.surface(f64::NAN, 0.0), None);
+    }
+
+    #[test]
+    fn terrain_ground_keeps_the_fractional_edge_of_each_last_voxel_column() {
+        let generator = generator();
+        let ground = TerrainGround::new(&generator);
+        // `RegionExtent::GOLDEN` is -384 through the half-open edge at 416
+        // in both axes.  Terrain cells are discrete, but a foot query is
+        // continuous: every point in the final cell [415, 416) remains on
+        // its physical column, including its centre.
+        for (x, z, present) in [
+            (-384.0, 0.0, true),
+            (-384.000_001, 0.0, false),
+            (-383.5, 0.0, true),
+            (415.0, 0.0, true),
+            (415.5, 0.0, true),
+            (415.999_999, 0.0, true),
+            (416.0, 0.0, false),
+            (0.0, -384.0, true),
+            (0.0, -384.000_001, false),
+            (0.0, -383.5, true),
+            (0.0, 415.0, true),
+            (0.0, 415.5, true),
+            (0.0, 415.999_999, true),
+            (0.0, 416.0, false),
+        ] {
+            assert_eq!(
+                ground.surface(x, z).is_some(),
+                present,
+                "unexpected finite-region answer at ({x}, {z})"
+            );
+        }
     }
 
     /// The capture harness waits for the world to stream before it takes a

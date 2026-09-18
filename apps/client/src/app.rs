@@ -208,19 +208,15 @@ impl App {
         } else {
             let ground = self.terrain.as_ref().map(TerrainGround::new);
             let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
-            match CharacterScene::new(selection, sampler) {
-                Ok(scene) => {
-                    renderer.upload_character(scene.character());
-                    Some(scene)
-                }
-                Err(error) => {
-                    // A character that will not compile is a defect, not a
-                    // reason to stop the client: the world still renders and
-                    // the log says exactly what was rejected.
-                    warn!(%error, "the character did not compile; continuing without one");
-                    None
-                }
-            }
+            let scene = CharacterScene::new(selection, sampler).map_err(|error| {
+                AppRunError(format!("requested character did not compile: {error}"))
+            })?;
+            renderer
+                .upload_character(scene.character())
+                .map_err(|error| {
+                    AppRunError(format!("requested character did not upload: {error}"))
+                })?;
+            Some(scene)
         };
         if let Some(scene) = &character {
             let stats = renderer.character_stats();

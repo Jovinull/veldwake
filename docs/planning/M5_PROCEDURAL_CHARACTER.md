@@ -1,6 +1,6 @@
 # M5 — Procedural Character
 
-Status: **implemented on `feat/m5-procedural-character`, awaiting independent branch QA**
+Status: **implemented on `feat/m5-procedural-character`; independent branch QA is in progress**
 Base: `main` at merge commit `abadadff6ad1251e4f291d272577da6121d37540`
 
 M4 proved the world can look like something. M5 has to prove that a person can stand in it and belong there — produced by systems, not by a modelling tool. The exit criterion is the same kind as M4's: a real capture of a real client on the audited host, judged against a written contract, backed by headless tests and measurements.
@@ -296,6 +296,24 @@ Two boundaries were argued rather than assumed, and both are recorded where the 
 No third-party dependency was added. The only new dependency edge in the workspace is `veldwake-client -> veldwake-character`.
 
 ## Gates
+
+### Independent QA corrections in progress
+
+Independent QA found three correctness boundaries that the implementation
+evidence had not exercised. `TerrainGround` now uses the region's continuous
+half-open bounds (`[-384, 416)` in each golden horizontal axis), rather than
+turning the last discrete column into an inclusive continuous maximum; its
+regression covers both axes, fractional last-column positions, and negative
+edges. A requested character now fails startup when compile or GPU upload
+validation fails, rather than silently producing a world without the requested
+M5 feature; the upload path also rejects a wrong part count, empty mesh, index
+overflow, or non-character voxel identifier before drawing. Finally, the
+public two-bone solver sanitizes non-finite lengths and poles and keeps its
+degenerate reach interval non-empty, so hostile inputs cannot panic
+`f32::clamp`.
+
+The final gate table and visual assessment are not re-certified until the
+corrected branch completes its independent smoke and capture run.
 
 Every gate below was executed on the audited Windows 11 / Intel Iris Xe host with the toolchain in [`ENVIRONMENT_REPORT.md`](../environment/ENVIRONMENT_REPORT.md), and is reported with the `AGENTS.md` vocabulary.
 

@@ -11,7 +11,7 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
-use veldwake_character::{CompiledCharacter, PosedCharacter};
+use veldwake_character::{BONE_COUNT, CompiledCharacter, PosedCharacter};
 use veldwake_procedural::TerrainMaterial;
 use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
@@ -469,6 +469,42 @@ impl Display for RendererInitError {
 
 impl Error for RendererInitError {}
 
+/// Why a compiled character cannot be represented by the fixed M5 GPU path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacterUploadError {
+    PartCount { found: usize, expected: usize },
+    EmptyMesh { bone: &'static str },
+    TooManyIndices { bone: &'static str, count: usize },
+    NonCharacterMaterial { bone: &'static str, voxel: VoxelId },
+}
+
+impl Display for CharacterUploadError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PartCount { found, expected } => {
+                write!(
+                    formatter,
+                    "character has {found} parts; M5 requires {expected}"
+                )
+            }
+            Self::EmptyMesh { bone } => {
+                write!(formatter, "character part {bone} has an empty mesh")
+            }
+            Self::TooManyIndices { bone, count } => write!(
+                formatter,
+                "character part {bone} has {count} indices, beyond the u32 index format"
+            ),
+            Self::NonCharacterMaterial { bone, voxel } => write!(
+                formatter,
+                "character part {bone} carries non-character voxel identifier {}",
+                voxel.0
+            ),
+        }
+    }
+}
+
+impl Error for CharacterUploadError {}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum RenderOutcome {
     Rendered,
@@ -839,7 +875,7 @@ impl Renderer {
                     // Cast from back faces, exactly as chunks do. Casting from
                     // the lit faces was tried first and produced visible acne
                     // on the chest, because one shadow texel is `0.109` world
-                    // units and a character voxel is `0.0625`: the map cannot
+                    // units and a character voxel is `0.0833`: the map cannot
                     // resolve one part shadowing another, so the comparison
                     // dithers along the boundary.
                     //
@@ -1336,8 +1372,17 @@ impl Renderer {
     /// Rigid parts make the geometry static, so this happens at startup and
     /// never again; a frame writes only the part transforms. Any character
     /// already resident is released first.
-    pub fn upload_character(&mut self, character: &CompiledCharacter) {
+    pub fn upload_character(
+        &mut self,
+        character: &CompiledCharacter,
+    ) -> Result<(), CharacterUploadError> {
         self.character = None;
+        if character.parts().len() != BONE_COUNT {
+            return Err(CharacterUploadError::PartCount {
+                found: character.parts().len(),
+                expected: BONE_COUNT,
+            });
+        }
         let palette = character.palette();
         let mut parts = Vec::with_capacity(character.parts().len());
         let mut vertex_bytes = 0;
@@ -1345,41 +1390,39 @@ impl Renderer {
         let mut quads = 0;
         for part in character.parts() {
             let mesh = part.mesh();
-            let Ok(index_count) = u32::try_from(mesh.indices().len()) else {
-                error!(
-                    bone = part.bone().name(),
-                    indices = mesh.indices().len(),
-                    "character part has more indices than the index format allows"
-                );
-                return;
-            };
+            if mesh.vertices().is_empty() || mesh.indices().is_empty() {
+                return Err(CharacterUploadError::EmptyMesh {
+                    bone: part.bone().name(),
+                });
+            }
+            let index_count = u32::try_from(mesh.indices().len()).map_err(|_| {
+                CharacterUploadError::TooManyIndices {
+                    bone: part.bone().name(),
+                    count: mesh.indices().len(),
+                }
+            })?;
             let vertices = mesh
                 .vertices()
                 .iter()
-                .map(|vertex| {
+                .map(|vertex| -> Result<Vertex, CharacterUploadError> {
                     // A character material answers for itself, from the one
                     // table in `veldwake-character`. A vertex that is not a
                     // character identifier is a compiler bug, and drawing it in
                     // the terrain palette would hide that, so it is reported.
-                    let (color, specular) = match palette.appearance(vertex.voxel) {
-                        Some(appearance) => appearance,
-                        None => {
-                            warn!(
-                                bone = part.bone().name(),
-                                voxel = vertex.voxel.0,
-                                "character mesh carries a non-character identifier"
-                            );
-                            ([1.0, 0.0, 1.0], 0.0)
-                        }
-                    };
-                    Vertex {
+                    let (color, specular) = palette.appearance(vertex.voxel).ok_or(
+                        CharacterUploadError::NonCharacterMaterial {
+                            bone: part.bone().name(),
+                            voxel: vertex.voxel,
+                        },
+                    )?;
+                    Ok(Vertex {
                         position: vertex.position,
                         normal: vertex.normal,
                         color,
                         specular,
-                    }
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             let vertex_buffer = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1439,6 +1482,7 @@ impl Renderer {
             uniform_bytes,
             quads,
         });
+        Ok(())
     }
 
     /// Writes one frame of part transforms.
@@ -1449,11 +1493,17 @@ impl Renderer {
         let Some(character) = &self.character else {
             return;
         };
-        for (part, matrix) in character.parts.iter().zip(posed.part_matrices()) {
+        // Upload only follows a successful `upload_character`, which requires
+        // the compiler's fixed sixteen-part contract. `part_matrices` is the
+        // same fixed-size array, so indexing makes an accidental mismatch
+        // impossible to hide by truncating a `zip`.
+        for index in 0..BONE_COUNT {
+            let part = &character.parts[index];
+            let matrix = posed.part_matrices()[index];
             self.queue.write_buffer(
                 &part.uniform_buffer,
                 0,
-                bytemuck::bytes_of(&PartUniform::from_matrix(*matrix)),
+                bytemuck::bytes_of(&PartUniform::from_matrix(matrix)),
             );
         }
     }

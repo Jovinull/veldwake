@@ -37,8 +37,18 @@ pub fn solve_two_bone(
     lower_length: f32,
     pole: Vec3,
 ) -> TwoBoneSolution {
-    let upper = upper_length.max(1.0e-4);
-    let lower = lower_length.max(1.0e-4);
+    // This API is public and is also the last numerical boundary before a
+    // pose reaches a matrix.  Do not let a hostile length turn `inf - inf`
+    // into a NaN later in the cosine law.
+    let length = |value: f32| {
+        if value.is_finite() && value > 1.0e-4 {
+            value
+        } else {
+            1.0e-4
+        }
+    };
+    let upper = length(upper_length);
+    let lower = length(lower_length);
     let fallback = Vec3::NEG_Y;
 
     let to_target = target - origin;
@@ -56,8 +66,13 @@ pub fn solve_two_bone(
         };
     }
 
-    let minimum = (upper - lower).abs() + 1.0e-4;
-    let maximum = upper + lower - 1.0e-4;
+    // Keep the reachable interval strictly inside the two singular endpoints,
+    // but scale that margin down for the deliberately supported minimum-size
+    // chain. A fixed `1e-4` margin makes two `1e-4` bones invert min/max and
+    // turns `clamp` into a panic.
+    let reach_margin = (upper.min(lower) * 0.25).min(1.0e-4);
+    let minimum = (upper - lower).abs() + reach_margin;
+    let maximum = upper + lower - reach_margin;
     let distance = if distance_raw.is_finite() {
         distance_raw.clamp(minimum, maximum)
     } else {
@@ -81,6 +96,11 @@ pub fn solve_two_bone(
     // Rotate the aim direction toward the pole by that offset; the axis is
     // perpendicular to the bend plane, so the middle joint ends up on the
     // pole's side of the line.
+    let pole = if pole.is_finite() && pole.length_squared() > 1.0e-8 {
+        pole
+    } else {
+        Vec3::NEG_Z
+    };
     let mut axis = direction.cross(pole);
     if axis.length_squared() < 1.0e-8 {
         // The pole is parallel to the aim; any perpendicular axis will do and
@@ -116,13 +136,22 @@ pub fn solve_two_bone(
 
 /// Limits a rotation's angle without changing its axis.
 ///
+/// A non-finite rotation or a non-positive/non-finite limit is invalid input
+/// and resolves to identity rather than propagating an invalid transform.
+///
 /// Used where a joint range has to hold after a rotation was built from a
 /// direction rather than from an angle.
 #[must_use]
 pub fn clamp_rotation_angle(rotation: Quat, maximum: f32) -> Quat {
+    if !rotation.is_finite() || !maximum.is_finite() || maximum <= 0.0 {
+        return Quat::IDENTITY;
+    }
     let angle = 2.0 * rotation.w.clamp(-1.0, 1.0).abs().acos();
-    if !angle.is_finite() || angle <= maximum || maximum <= 0.0 {
-        return rotation;
+    if !angle.is_finite() {
+        return Quat::IDENTITY;
+    }
+    if angle <= maximum {
+        return rotation.normalize();
     }
     Quat::IDENTITY.slerp(rotation, maximum / angle)
 }
@@ -136,20 +165,54 @@ pub fn chain_tip(
     lower_length: f32,
     pole: Vec3,
 ) -> Vec3 {
-    let knee = origin + solution.upper_direction * upper_length;
+    let origin = if origin.is_finite() {
+        origin
+    } else {
+        Vec3::ZERO
+    };
+    let upper_length = if upper_length.is_finite() {
+        upper_length.max(0.0)
+    } else {
+        0.0
+    };
+    let lower_length = if lower_length.is_finite() {
+        lower_length.max(0.0)
+    } else {
+        0.0
+    };
+    let upper_direction = if solution.upper_direction.is_finite()
+        && solution.upper_direction.length_squared() > 1.0e-8
+    {
+        solution.upper_direction.normalize()
+    } else {
+        Vec3::NEG_Y
+    };
+    let pole = if pole.is_finite() && pole.length_squared() > 1.0e-8 {
+        pole
+    } else {
+        Vec3::NEG_Z
+    };
+    let knee = origin + upper_direction * upper_length;
     // The lower bone continues from the upper one, rotated by the flexion in
     // the same plane the solver used.
-    let mut axis = solution.upper_direction.cross(pole);
+    let mut axis = upper_direction.cross(pole);
     if axis.length_squared() < 1.0e-8 {
-        axis = solution.upper_direction.cross(Vec3::X);
+        axis = upper_direction.cross(Vec3::X);
         if axis.length_squared() < 1.0e-8 {
-            axis = solution.upper_direction.cross(Vec3::Z);
+            axis = upper_direction.cross(Vec3::Z);
         }
     }
     let lower_direction = if axis.length_squared() < 1.0e-8 {
-        solution.upper_direction
+        upper_direction
     } else {
-        Quat::from_axis_angle(axis.normalize(), -solution.joint_flex) * solution.upper_direction
+        Quat::from_axis_angle(
+            axis.normalize(),
+            -if solution.joint_flex.is_finite() {
+                solution.joint_flex.max(0.0)
+            } else {
+                0.0
+            },
+        ) * upper_direction
     };
     knee + lower_direction * lower_length
 }
@@ -225,9 +288,24 @@ mod tests {
             assert!(solution.upper_direction.is_finite(), "{target}");
             assert!(solution.joint_flex.is_finite(), "{target}");
         }
-        let zero_length = solve_two_bone(origin, Vec3::new(0.0, -3.0, 0.0), 0.0, 0.0, POLE);
-        assert!(zero_length.upper_direction.is_finite());
-        assert!(zero_length.joint_flex.is_finite());
+        for (upper, lower, pole) in [
+            (0.0, 0.0, POLE),
+            (-1.0, 2.0, Vec3::ZERO),
+            (f32::NAN, 2.0, Vec3::new(f32::NAN, 0.0, 0.0)),
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                Vec3::new(f32::INFINITY, 0.0, 0.0),
+            ),
+        ] {
+            let solution = solve_two_bone(origin, Vec3::new(0.0, -3.0, 0.0), upper, lower, pole);
+            assert!(
+                solution.upper_direction.is_finite(),
+                "{upper} {lower} {pole}"
+            );
+            assert!(solution.joint_flex.is_finite(), "{upper} {lower} {pole}");
+            assert!(chain_tip(Vec3::NAN, solution, upper, lower, pole).is_finite());
+        }
     }
 
     #[test]
@@ -275,6 +353,10 @@ mod tests {
         let clamped = clamp_rotation_angle(large, 0.5);
         let angle = 2.0 * clamped.w.clamp(-1.0, 1.0).abs().acos();
         assert!((angle - 0.5).abs() < 1.0e-3, "clamped to {angle}");
-        assert_eq!(clamp_rotation_angle(large, 0.0), large);
+        assert_eq!(clamp_rotation_angle(large, 0.0), Quat::IDENTITY);
+        assert_eq!(
+            clamp_rotation_angle(Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0), 0.5),
+            Quat::IDENTITY
+        );
     }
 }
