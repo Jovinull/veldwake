@@ -21,3 +21,4 @@ Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence
 | [0001](0001-rust-custom-engine-foundation.md) | Rust custom-engine foundation | Accepted | 2026-09-16 |
 | [0002](0002-presentation-independent-authority.md) | Presentation-independent authority | Accepted | 2026-09-16 |
 | [0003](0003-procedural-first-audiovisual-production.md) | Procedural-first audiovisual production | Accepted | 2026-09-16 |
+| [0004](0004-rigid-voxel-character-and-analytical-locomotion.md) | Rigid voxel character parts and analytical locomotion | Accepted | 2026-09-17 |

@@ -31,12 +31,14 @@ A character frame passes when a person can tell at a glance that they are lookin
 
 ## Visual scale
 
-- **`CHARACTER_VOXELS_PER_WORLD_UNIT = 16`.** One character voxel is `0.0625` world units. Terrain remains one voxel per world unit; this is the documented ratio between the two domains and the only place it is declared.
-- The golden humanoid is **28 character voxels tall**, that is `1.75` world units.
+- **`CHARACTER_VOXELS_PER_WORLD_UNIT = 12`.** One character voxel is `0.08333` world units. Terrain remains one voxel per world unit; this is the documented ratio between the two domains and the only place it is declared.
+- The golden humanoid is **28 character voxels tall**, that is `2.3333` world units, with a leg of `1.167`.
 - A character's total height must lie between `20` and `40` character voxels. Below twenty the head cannot carry a face; above forty the voxel grid stops reading as deliberate blocks at conversational distance.
 - **No character feature may be thinner than two voxels in any axis.** This is the character-scale analogue of the terrain rule that rejects single-voxel bumps.
 
 Scale is a visual claim, not an arithmetic one. It is judged against a tree (`8`–`11` world units), against a cliff (at least `4` world units), and against a single terrain voxel, in the captures named in the milestone document. If those captures reject the ratio, this document's version is bumped and the fixtures are re-locked.
+
+The ratio here is the second one tried, and the first one is worth recording because it was rejected by a capture rather than by an argument. At `16` voxels per world unit the humanoid stood `1.75` world units with a leg of `0.6875`: it was shorter than the M4 undergrowth it walked through, and its whole leg was shorter than one terrain voxel, so a single terrace of its own world was a step it physically could not take. Both are visible in one frame. `12` puts the leg above a terrace and the head above a shrub, which is the claim this version makes.
 
 ## Proportions
 
@@ -47,7 +49,7 @@ All fractions are of total body height unless stated. The compiler derives integ
 | head height / total height | `0.150` to `0.200` | `0.179` (5 of 28) |
 | leg length (ground to hip) / total height | `0.440` to `0.560` | `0.500` (14 of 28) |
 | arm length (shoulder to fingertip) / total height | `0.340` to `0.460` | `0.429` (12 of 28) |
-| shoulder span / head width | at least `1.80` | `3.00` (12 over 4) |
+| shoulder span / head width | at least `1.80` | `2.00` (12 over 6) |
 | hip width / shoulder span | `0.500` to `0.850` | `0.667` (8 over 12) |
 | waist width / hip width | at most `0.950` | `0.750` (6 over 8) |
 | limb thickness / total height | `0.070` to `0.160` | `0.107` (3 of 28) |
@@ -55,6 +57,8 @@ All fractions are of total body height unless stated. The compiler derives integ
 | hand depth / forearm depth | `1.20` to `1.80` | `1.33` (4 over 3) |
 
 The chest box is the hip box's width; the shoulders are made by where the arms hang, not by a wider chest. The shoulder span is therefore the control the geometry reads when it places an arm, and the waist is the abdomen box that sits narrower than both.
+
+This too is the second answer. A chest two voxels wider than the pelvis was authored first, and the first portrait capture rejected it: the chest overhung the waist as a ledge, reached past the inner edge of both arms and swallowed the top of each sleeve, and daylight came through the notch left between the ledge, the waist and the arm. A torso reads because the arms stand clear of it, not because it is wide.
 
 Head height between one fifth and one sixth of the body is the heroic band. A realistic one-seventh-and-a-half head disappears at distance; a one-third chibi head is a different game.
 
@@ -69,6 +73,7 @@ Rejection criteria, checked against the compiled bind pose without a renderer:
 - **The legs read.** At least one voxel of horizontal gap separates the two legs below the hips in the rest pose.
 - **The arms read.** At rest, each arm's outermost voxel lies outside the chest's outermost voxel on the same side.
 - **The body is one piece.** Every compiled part's volume contains its bone's joint origin, so no rotation can open a hole (see joint overlap).
+- **The head reads as a head, not as a lid.** The row where the chest and the head overlap is a column narrow enough to sit entirely inside the head, so the body has a neck and the jaw is not lost behind a collar of tunic. This is the only place a part is not a solid box.
 
 ## Construction rules
 
@@ -76,7 +81,8 @@ Three proportion rules are guaranteed by construction rather than checked after 
 
 - the **waist** is at most the hip width minus two voxels;
 - the **gap between the legs** is at least two voxels;
-- the **torso height** is derived from the head, not declared: the shoulder joint sits one neck gap below the chin, so a descriptor cannot place the head below the shoulders.
+- the **torso height** is derived from the head, not declared: the shoulder joint sits one neck gap below the chin, so a descriptor cannot place the head below the shoulders;
+- the **outermost column of the chest carries the sleeve colour**. The shoulder is closed by putting the innermost column of the upper arm inside the chest, so from the front the sleeve would show one voxel fewer than the forearm below it and the arm would appear to grow at the elbow. Painting the column the chest hides the sleeve behind gives the shoulder its third voxel back, and reads as a yoke.
 
 The remaining proportion rules are rejections with typed errors, because there is no sensible value to substitute.
 
@@ -125,6 +131,8 @@ Ten semantic slots. A palette choice fills them from declared tone tables; no co
 ## Posture
 
 - The rest pose is **symmetric** and is a measurement pose, not a presentation pose. It is what fixtures lock.
+- The stance sweep is **linear in foot offset**, not sinusoidal. A cosine turns around before stance ends at any duty factor above a half, so it cannot cancel the body's motion however its amplitude is tuned; the swing return is the cubic that rejoins it with matching slope, which keeps the cycle C1.
+- An arm is driven by the opposite side's leg offset rather than by a curve of its own, so the two cannot drift out of opposition.
 - The idle pose is **not** the rest pose. It carries a small asymmetric weight shift and a breathing cycle: chest rise between `0.15` and `0.60` of one voxel, period between `2.5` and `5.0` seconds.
 - At rest the arms hang with a small outward angle, between `3` and `10` degrees, so they do not read as fused to the torso.
 
@@ -137,6 +145,7 @@ Timing and amplitude, all as functions of the compiled proportions rather than a
 | walk duty factor (fraction of the cycle a foot is planted) | `0.55` to `0.70` |
 | run duty factor | `0.30` to `0.50` |
 | stride length at the gait's reference speed | `0.55` to `1.30` of leg length |
+| pelvis drop while in a gait, below standing height | `0.05` to `0.14` of leg length |
 | pelvis vertical bob, peak to peak | `0.02` to `0.08` of leg length, at twice the step frequency |
 | pelvis lateral sway, peak to peak | `0.00` to `0.06` of hip width, at the step frequency |
 | chest counter-rotation against the pelvis | opposite phase, `0.4` to `1.2` times the pelvis yaw amplitude |
@@ -144,6 +153,10 @@ Timing and amplitude, all as functions of the compiled proportions rather than a
 | forward lean, run | `2` to `12` degrees |
 
 **Foot travel is stride, not tuning.** The locomotion phase advances with distance travelled, so `stride length x steps per unit distance = 1` holds by construction. A gait whose feet slide is a bug, not a parameter.
+
+**Stride, duty factor and pelvis drop are one decision.** They are not three independent knobs and treating them as three is what produced the worst defect of the milestone. The geometry is fixed: a planted foot has to give back `duty x 2 x stride` of ground relative to its own hip over one stance, so half of that is how far forward of the hip it must land, and a leg standing straight has *no* horizontal reach at all — the distance from hip to ground is exactly the leg's length. The reach a gait actually has is `sqrt(reach^2 - (reach - drop)^2)`, which is why the pelvis lowers while moving, as it does in a real gait.
+
+A set of three that does not satisfy that inequality cannot produce a non-sliding walk at any amplitude, because the foot the stride asks for is not somewhere the leg can be put. The rule is therefore checkable, and it is checked: `a_planted_foot_does_not_slide_on_level_ground` measures how far a planted ankle wanders across a stance and requires less than one character voxel. On the golden humanoid it measures `0.48` of a voxel walking and `0.66` running. The foot box around that ankle rolls a little more — `1.31` and `1.62` voxels — and that is a foot rolling over a rigid sole, which is permitted up to half the foot's length.
 
 ## Allowed joint ranges
 
@@ -171,7 +184,7 @@ An elbow or a knee that passes through zero in the wrong direction is a rejectio
 ## Terrain contact
 
 - A planted foot's sole sits on the surface the player can see, which is the **top face of the topmost solid terrain voxel**, not a smoothed field. A contact model that disagrees with the drawn blocks is wrong however elegant it is.
-- Permitted deviation of a planted sole from that surface is **one character voxel**, that is `0.0625` world units.
+- Permitted deviation of a planted sole from that surface is **one character voxel**, that is `0.08333` world units, on ground of one level.
 - The pelvis is lowered by whatever the more demanding leg requires, so neither knee reaches full extension while a foot is planted.
 - A foot may pitch to the local slope by at most the ankle range above.
 

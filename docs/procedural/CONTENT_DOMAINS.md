@@ -1,6 +1,6 @@
 # Procedural content domains
 
-Status: **Exploratory domain models under accepted procedural philosophy**.
+Status: **Exploratory domain models under accepted procedural philosophy; the character domain has a first worked implementation in M5**.
 
 This document preserves generator ideas from the source without prematurely defining schemas.
 
@@ -9,6 +9,14 @@ This document preserves generator ideas from the source without prematurely defi
 A future character descriptor/genome may include species, body morphology, height/proportions, head shape, hair/beard, palette, age style, culture, equipment, and seed. A compiler can combine voxel/SDF/CSG primitives at a finer voxel scale than terrain, producing geometry, material regions, skeleton attachment points, collider hints, and LODs.
 
 Skeletons are generated from morphology rather than one model file per character. Parametric cycles control stride, cadence, hip motion, arm swing, posture, and emotion; IK handles feet/terrain and hands/weapons. Generated variation must stay within silhouette/proportion/style constraints.
+
+M5 implemented the smallest honest version of that paragraph and nothing beyond it, so the parts that are now real can be separated from the parts that are still ideas.
+
+**Real.** One humanoid archetype. A descriptor of fourteen proportion fractions, a palette choice, a seed and a bounded variation amount, canonicalized and typed-validated. A compiler emitting sixteen rigid voxel body parts at `1/12` of a world unit against terrain's `1`, with material regions from a ten-slot palette and its own `VoxelId` range. A sixteen-bone skeleton derived from the same proportions rather than authored. Analytical idle, walk and run cycles whose phase advances with distance and whose thresholds are leg-relative, with stride, cadence, hip pitch, knee flex, arm swing, pelvis bob and sway, and torso lean as parameters. Two-bone analytical leg IK against a ground query. A capsule-and-boxes collision representation. Variation bounded so a seed cannot leave the style bands.
+
+**Not real, and deliberately not invented.** Species, head shape, hair or beard as geometry, age style, culture, equipment, emotion, hand IK, LODs, and any second morphology family. The generated skeleton has attachment points only in the sense that every bone is one; nothing attaches yet.
+
+The one structural lesson is about scale. "A finer voxel scale than terrain" is not a parameter to pick once — it is a visual relationship that has to be judged in a frame containing both. The first ratio was arithmetically reasonable and produced a person shorter than the undergrowth, with a leg shorter than one terrain voxel.
 
 ## Creatures
 

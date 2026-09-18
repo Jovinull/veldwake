@@ -86,6 +86,31 @@ The frame interval is vsync-bound at 60 Hz and therefore measures presentation c
 
 −67% settled chunk-mesh bytes at the same camera. This is settled committed bytes at one pose, not the mutation-boundary simultaneous peak KI-013 measures, and the two must not be compared as if they were the same quantity.
 
+## M5 procedural character
+
+Measured on the audited Windows 11 / Intel Iris Xe host, release profile, and stated as observations on that host rather than as budgets.
+
+**Compiling a character** (release `character-probe bench`, golden fixture, 64 iterations): min `723` µs, median `813` µs, p95 `1,098` µs, max `1,367` µs, mean `847` µs. It happens once, at startup, for one character. There is deliberately no cache: the identity fingerprint a cache key would be built from exists anyway, because determinism needs it, but a key would cost more thought than a sub-millisecond compile saves.
+
+**Memory.** Transient scratch peak `65,536` bytes — one reused `32³` grid for the whole compile, not one per part. CPU mesh payload `246,704` bytes. Skeleton `768` bytes, collision representation `460` bytes. GPU geometry `335,056` bytes: `290,240` of 40-byte vertices, `43,536` of `u32` indices, and `1,280` of part uniforms. Geometry is static and uploaded once.
+
+**Per frame.** `1,280` dynamic bytes — one 80-byte uniform per part, a model matrix and four shading parameters — plus 16 world draws and 16 shadow draws. Posing one character costs `0.45` µs for the animation and the matrices and `2.25` µs with terrain contact and leg IK, so the contact solve is `1.80` µs of it, measured over 4,000 frames.
+
+Those figures are also logged by the client at startup, and the probe prints the same ones, so the two can be compared rather than assumed. They disagreed once — the probe was accounting a 64-byte transform per part against the renderer's 80-byte uniform — and that is exactly why both print it.
+
+**A/B against the same scene with no character.** Same world, camera pose (`character-in-scene`), weather and 100-second settle; `m4-golden`; no captures during the measured intervals except the single frame at the end. Eight five-second intervals each:
+
+| | character off | character on |
+|---|---|---|
+| `renderer_render_wall_mean_us`, per interval | 11,767–12,150 | 11,155–11,914 |
+| mean of those | **12,031** | **11,589** |
+| `renderer_render_wall_max_us` | 14,404–17,233 | 15,689–21,310 |
+| `observed_fps` | 59.99–60.02 | 60.01 |
+| terrain `lod0_gpu_bytes` | 93,268,896 | 93,268,896 |
+
+**The character's frame cost is below what this measurement can resolve.** The run with the character is `442` µs *faster* on the mean, which is the wrong sign for a cost and is therefore run-to-run variation rather than a saving. Both runs are vsync-bound at 60 FPS, and the render-wall interval wraps surface acquisition and presentation, so it moves with the compositor as much as with the work. What can be said without a measurement is the accounting: 32 extra draws and 1,280 dynamic bytes a frame against a terrain residency of 93 MB, and 335 KB of static geometry against it. Do not quote the negative difference as a benefit; quote the accounting.
+
+
 ## M3D disk cache experiment
 
 Release `streaming-probe` on the audited Windows host, one identical settle of the default profile per phase, three repetitions. Residency is identical in every phase and encoding: 81 tracked, 63 resident, 4,128,768 resident bytes, 2,511,648 CPU mesh bytes, 81 load jobs, 0 stale results, 0 hard-cap blocks.

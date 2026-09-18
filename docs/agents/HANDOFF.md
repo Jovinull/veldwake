@@ -1,6 +1,6 @@
 # Current handoff
 
-Last updated: 2026-09-17
+Last updated: 2026-09-18
 
 ## Current position
 
@@ -8,7 +8,7 @@ Last updated: 2026-09-17
 
 The repository now renders one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, banded cliffs, forest pockets, and low vegetation — streamed around a free-fly camera and lit by a directional sun with a filtered shadow map, a procedural sky, height-aware fog, and two weather states. It is still an engineering proof: there is no persistence, no character, no collision, and no gameplay.
 
-**M5 — Procedural Character is the next milestone and nothing of it exists.** The current working branch is `feat/m5-procedural-character`, which so far contains only this handoff work.
+**M5 — Procedural Character is implemented on `feat/m5-procedural-character` and has not been reviewed by anyone but the agent that wrote it.** The branch adds the `veldwake-character` crate, the `CHARACTER_STYLE.md` contract, [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md), the client adapter and render path, and the milestone document with its captures assessed in writing. Nothing is merged and no pull request is open.
 
 ## Start here — reading order for a session with no prior context
 
@@ -33,45 +33,36 @@ Read these before changing anything. They are the whole truth of the project; no
 
 Then, as needed: [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md), [`../LEARNINGS.md`](../LEARNINGS.md), [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md), [`WORKFLOW.md`](WORKFLOW.md), the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
-## Continue here — M5 — Procedural Character
+## Continue here — independent QA of the M5 branch
 
-The accepted scope, copied from the roadmap and deliberately not expanded:
+One continuation point: **review `feat/m5-procedural-character` as an independent reviewer, then decide whether it merges.** The branch is complete against the accepted scope and its own exit criteria; what it has never had is a second pair of eyes.
 
-- one humanoid descriptor/compiler path;
-- consistent voxel geometry/materials;
-- generated skeleton;
-- locomotion;
-- terrain contact / IK subset;
-- collision representation;
-- preview/fixture pipeline;
-- style-rule evidence.
+Read [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) first, then [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) and [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md). The milestone document is written so that the five design errors captures rejected — the voxel scale, the chest width, the missing neck, the sleeve that was a voxel too narrow, and a character that walked backwards — are recorded with the frame that rejected each one. Re-deriving those is wasted work; finding the sixth is the job.
 
-Start by re-reading the repository and assessing the current state before designing anything. The scope above is a statement of intent, not a plan.
+Where to push hardest, in order:
 
-### What is deliberately not decided
+1. **Run the client and look at it.** `VELDWAKE_CHARACTER` takes `off`, `idle`, `course`, `slope`, `slope-stand`, `sturdy`, `pose:<name>`, `walk:<0..7>` and `run:<0..7>`; `VELDWAKE_POSE` takes any of the ten `character-*` camera poses. Every visual claim in the milestone document was made by opening a capture and magnifying it, and every one of them is a judgement a reviewer may disagree with.
+2. **The contact claim on moving ground.** Standing contact is clean and asserted. KI-018 records what a planted foot does when it crosses a terrace during stance, and the bound in that test is the number to attack.
+3. **The joint-overlap invariant and what it costs.** KI-020 is its visible consequence at a flexed knee. A reviewer who thinks the sliver is worse than recorded should say so with a magnified frame.
+4. **Scope.** The branch adds one crate, no third-party dependency, no ECS, no physics engine, and no animation graph. Check that nothing crept in.
 
-None of the following has been chosen, and nothing in the repository implies a choice. Do not treat silence as a decision, and do not adopt one by writing code that assumes it:
+### What was deliberately not built
 
-the final humanoid descriptor format; the skeleton structure or bone count; the animation architecture; the IK solver; any physics or collision library; whether an ECS is introduced at all; the skinning strategy; CPU versus GPU animation; the mesh deformation approach; the character controller; camera and gameplay integration; and any asset format.
-
-`ARCHITECTURE.md` carries the test a new crate has to pass before it exists, and `AGENTS.md` carries the rule for new dependencies. Use them rather than deciding by habit.
-
-### What M4 leaves you to build on
-
-Facts, not suggestions:
-
-- `veldwake-procedural` is the precedent for a generation crate: pure functions of position and a `WorldIdentity`, named seed streams, a cheap fingerprint that keys the disk cache, locked fixtures, and no GPU, window, camera, or filesystem types.
-- `procedural::material` is the one place a semantic material becomes a `VoxelId` and a linear-RGB colour. The renderer asks it for a colour; there is no second palette.
-- `veldwake-streaming` takes content through a two-method `ChunkSource`. A character is not a chunk, so it is not obvious that it should reach the client that way; decide it rather than assume it.
-- The client has three passes — shadow, sky, world — and a forty-byte vertex of position, normal, colour, and specular. Whatever a character needs from the renderer has to fit that or change it explicitly.
-- The camera is free-fly with no ground contact, so "terrain contact" in the M5 scope starts from nothing.
+Faces beyond two eye voxels, hair or clothing as geometry, equipment, a second archetype, character LOD, a character controller, player input, gameplay integration, any physics or collision library, ragdoll, cloth, an animation graph, and a save format. Those are later milestones and the branch must not be read as having prejudged them.
 
 ## Questions before context reset
 
-None. The repository contains everything a new session needs to start M5: the accepted scope, the boundaries, the invariants, the measurement method, and an explicit list of what has not been decided. No decision was made outside the repository during M4 that a later session would have to guess at.
+None. Everything a reviewer needs is in the repository: the accepted scope, the contract the captures were judged against, the evidence, the measurements with their host, and the limitations as open issues rather than as prose.
 
 ## Immediate risks
 
+- **The M5 branch has had no independent review.** Every judgement in its milestone document — that the scale reads, that the silhouette reads, that the walk cycle is a walk — was made by the agent that also wrote the code. The headless tests are objective; the visual assessment is not, and it is the exit criterion.
+- **The character's visual contract is versioned and now locked.** `CHARACTER_STYLE_VERSION`, `CHARACTER_COMPILER_VERSION` and `CHARACTER_SCHEMA_VERSION` fold into a character's identity fingerprint, and seven fixture signatures are checked against the compiler on every test run. Moving a voxel, a bone or a gait constant without bumping the matching version is a failing test, which is the intent. Re-lock deliberately; never re-lock to make a test pass.
+- **Character identifiers are `128..192`.** Terrain is `64..128` and the M2/M3 diagnostics are `1`, `2`, `7`. The client is the only place all three tables are visible and it carries the disjointness test. A new content domain declares its own range there.
+- **`veldwake-character` must not gain a dependency on `veldwake-procedural`.** It duplicates thirty lines of hashing rather than reach for that crate's helpers, deliberately and with the reason written at the duplication. The one thing it needs from the world is `GroundSampler`, which the client implements in eleven lines over `TerrainField`.
+- **`GroundSampler` returns the top face of the topmost solid voxel, and that is a contract, not an implementation detail.** Smoothing it makes soles float or sink against the blocks a viewer can actually see. Water is not ground.
+- **Gait thresholds are in leg lengths per second.** Absolute world-unit thresholds silently put the same body at a different size into the wrong gait; that is why they were changed. `GaitParameters::speed_for` converts back.
+- **The diagnostic courses are closed loops and are sampled modulo their own duration.** A course that runs once has always finished before a seventy-five-second settle fires a capture. If a leg's duration or speed changes, the loop must still return to its own start position and facing, and a test says so.
 - Characters are outside the style bible. `audiovisual/STYLE_BIBLE.md` says so explicitly in *What this document does not cover*: characters, creatures, equipment, animation, and particles are later work and must not be invented there. M5 either extends that document deliberately, with the same kind of checkable rules, or writes its own and says how the two relate. Do not silently reuse terrain rules for a character and call it consistent.
 - Terrain material identifiers start at `64` (`procedural::material::FIRST_TERRAIN_ID`) precisely so the M2/M3 diagnostic identifiers `1`, `2`, and `7` stay distinguishable. Any new content domain needs its own declared range and its own round-trip test; do not extend the terrain enum by accident.
 - There is no collision, no physics, no ground contact, and no character controller anywhere in the repository. The client camera is a free-fly camera. A milestone that needs terrain contact is adding all of that from nothing, and the voxel field it would query is `veldwake-procedural`'s height field, not a physics world.
