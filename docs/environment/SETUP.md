@@ -75,7 +75,23 @@ The client logs two aggregate `M3B streaming` lines every five seconds; there is
 
 `VELDWAKE_POSE` also accepts the ten character poses — `character-front`, `character-three-quarter`, `character-side`, `character-silhouette`, `character-detail`, `character-contact`, `character-slope`, `character-scale`, `character-in-scene`, `character-walk-by` — which are placed relative to wherever the selected character stands rather than at a fixed world coordinate. The client logs a `character ready` line at startup and a `character state` line every five seconds; both are described in [`../engineering/OBSERVABILITY.md`](../engineering/OBSERVABILITY.md).
 
-Headless evidence comes from `cargo run --release -p veldwake-streaming --bin streaming-probe`, which accepts profile or source names to run a subset, from `cargo run --release -p veldwake-procedural --bin terrain-probe`, and from `cargo run --release -p veldwake-character --bin character-probe`, which take `body`, `parts`, `skeleton`, `collision`, `palette`, `poses`, `contact`, `signature` and `bench` with an optional `--fixture golden|sturdy|varied`. None of the three needs a GPU.
+`VELDWAKE_ENCOUNTER` runs the M6 combat slice and defaults to `off`, which is a regression contract rather than a default: with it unset the client behaves exactly as it did before M6, and in particular opens no audio device at all.
+
+| value | what it does |
+|---|---|
+| `off` (default), `none` | no encounter, no second actor, no weapon, no effects, no audio device |
+| `armed`, `play`, `playable` | playable. The encounter arms itself on the first input |
+| `script`, `scripted` | the reference script drives the player, so a fight runs unattended |
+| `moment:<name>` | replays the script to a named moment and freezes there |
+| `moment:<name>+<ticks>` | the same, some whole ticks later, for a frame-exact motion strip |
+
+The moment names are `faceoff`, `telegraph-early`, `telegraph-late`, `player-anticipation`, `player-active`, `confirmed-hit`, `hit-reaction`, `adversary-active`, `successful-dodge`, `player-hit` and `defeat`; an offset beyond one second is refused as a typo. `VELDWAKE_CHARACTER` is ignored while an encounter runs, because the two combatants *are* the characters, and the client says so in the log rather than silently dropping it.
+
+While an encounter is armed: `WASD` moves relative to the camera, `J` or the left mouse button attacks, `K` or `Space` dodges, `F4` detaches the camera to look around, and `F1` cycles to a `combat` debug view that draws the hurt volumes and blade endpoints a hit is decided by. `VELDWAKE_POSE` also accepts the five combat poses — `combat-side`, `combat-close`, `combat-shoulder`, `combat-wide`, `combat-plan` — which, for a frozen moment, are placed against the two bodies rather than against the arena, so every moment is framed the same way wherever the fight drifted to. The client logs an `encounter ready` line at startup, an `audio device open` line when a device is found, and `combat state` and `combat work` lines every five seconds; all are described in [`../engineering/OBSERVABILITY.md`](../engineering/OBSERVABILITY.md).
+
+Headless evidence comes from `cargo run --release -p veldwake-streaming --bin streaming-probe`, which accepts profile or source names to run a subset, from `cargo run --release -p veldwake-procedural --bin terrain-probe`, from `cargo run --release -p veldwake-character --bin character-probe`, which takes `body`, `parts`, `skeleton`, `collision`, `palette`, `poses`, `contact`, `signature` and `bench` with an optional `--fixture golden|sturdy|varied`, and from `cargo run --release -p veldwake-combat --bin combat-probe`, which takes `weapon`, `spec`, `reach`, `moments`, `script`, `partition`, `signature`, `bench`, `trace`, `dodge`, `bodies`, `aim` and `contact [player|adversary] [golden|sandbox]`. None of the four needs a GPU, a window or an audio device.
+
+The impact audio has one piece of evidence a test cannot produce. `cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture` renders six deterministic seconds of every sound the fight makes to `%TEMP%eldwake-m6-combat-sounds.wav`, for a person to listen to. It is ignored by default and the file is not versioned.
 
 If a command or graphical desktop is not available, report it as BLOCKED rather than substituting an unrecorded tool.
 
