@@ -233,7 +233,13 @@ pub const VARIED_BEHAVIOUR_SIGNATURE: u64 = 0xa931_d3c2_ede0_d752;
 /// tinguishable from a body about to swing. The signature covers every named
 /// action pose, so two new entries move it by construction; nothing about the
 /// carry, attack, dodge or stagger curves changed, and no M5 signature moved.
-pub const GOLDEN_ACTION_POSE_SIGNATURE: u64 = 0xce42_3353_3b66_e60c;
+///
+/// **Old** `0xce4233533b66e60c`, **new** `0xd86daa4a8d870882`, **why**: the
+/// collapse curve, corrected in the same session it was written. It eased over a
+/// quarter of its window instead of all of it, so the sag finished in six ticks
+/// of the twenty-four the constant promised and read as a snap. The two named
+/// defeat poses are unchanged; what they evaluate to is not.
+pub const GOLDEN_ACTION_POSE_SIGNATURE: u64 = 0xd86d_aa4a_8d87_0882;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]

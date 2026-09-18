@@ -434,13 +434,18 @@ fn stagger_pose(progress: f32, direction: f32) -> ActionPose {
 
 /// Beaten: knees give, torso folds forward, both arms hang, sword points down.
 ///
-/// The sag is fast and then holds: a quarter of the defeat hold to get there,
-/// and the rest of it motionless, because a body that keeps sinking for two and
-/// a half seconds reads as a bug rather than as a defeat. `pelvis_rise` at `-1`
-/// is the same full drop a dodge uses, which is as far down as the rigid legs go
-/// without the feet leaving the ground.
+/// The sag takes the whole of `progress` and then holds, because the caller
+/// already scales `progress` by a window chosen for it — `DEFEAT_SAG_TICKS` in
+/// the combat crate, a fifth of a second — rather than by however long the body
+/// then lies there. Easing the whole window rather than a quarter of it is the
+/// difference between a collapse and a snap, and the first draft snapped:
+/// `ease(segment(progress, 0.0, 0.25))` finished in six ticks of the twenty-four
+/// the constant promised.
+///
+/// `pelvis_rise` at `-1` is the same full drop a dodge uses, which is as far
+/// down as rigid legs go without the feet leaving the ground.
 fn defeated_pose(progress: f32) -> ActionPose {
-    let amount = ease(segment(progress, 0.0, 0.25));
+    let amount = ease(progress);
     ActionPose {
         // Arm down and across, so the blade ends up pointing at the ground
         // instead of at the opponent. The shoulder goes forward rather than back
