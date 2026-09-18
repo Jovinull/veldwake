@@ -22,7 +22,7 @@ use veldwake_combat::{CombatEvent, SIDES, Side};
 
 use crate::{
     arena,
-    camera::{Camera, CameraController, FollowController},
+    camera::{Camera, CameraController, FollowController, HitShake},
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
     debug::{DebugMode, combat_primitives, debug_primitives},
     encounter::{EncounterMode, EncounterScene},
@@ -128,6 +128,9 @@ struct App {
     follow: Option<FollowController>,
     /// Whether `F4` has detached the camera for a look around.
     camera_detached: bool,
+    /// The camera's response to a landed hit. Fed by `CombatEvent::Hit` and by
+    /// nothing else.
+    shake: HitShake,
     last_combat_report: Instant,
 }
 
@@ -149,6 +152,7 @@ impl Default for App {
             encounter: None,
             follow: None,
             camera_detached: false,
+            shake: HitShake::default(),
             last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
@@ -453,12 +457,15 @@ impl App {
                 .encounter
                 .as_ref()
                 .map_or(self.camera.position(), EncounterScene::camera_target);
+            // The impulse from last frame's hits, along this frame's view.
+            let right = self.camera.planar_right();
+            let offset = self.shake.offset(glam::Vec3::new(right.x, 0.0, right.y));
             if let Some(follow) = self.follow.as_mut() {
                 follow.update(
                     &mut self.camera,
                     &mut self.input,
                     target,
-                    glam::Vec3::ZERO,
+                    offset,
                     elapsed,
                     sampler,
                 );
@@ -497,6 +504,15 @@ impl App {
                     Some(scene.encounter().weapon_matrix(side)),
                 );
             }
+            // A confirmed hit is the only thing that moves the camera. A miss, a
+            // successful dodge and the start of a swing all reach here and all
+            // leave it alone.
+            self.shake.advance(outcome.ticks);
+            for event in scene.events().iter() {
+                if matches!(event, CombatEvent::Hit { .. }) {
+                    self.shake.strike();
+                }
+            }
             self.frame_stats.record_combat(outcome, scene.events());
             if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
                 self.last_combat_report = now;
@@ -504,6 +520,7 @@ impl App {
                 report_combat(
                     scene,
                     &self.frame_stats,
+                    &self.shake,
                     attack_latched || dodge_latched,
                     attack_latched,
                     dodge_latched,
@@ -696,6 +713,7 @@ impl ApplicationHandler for App {
 fn report_combat(
     scene: &EncounterScene,
     stats: &FrameStats,
+    shake: &HitShake,
     input_latched: bool,
     attack_latched: bool,
     dodge_latched: bool,
@@ -763,6 +781,8 @@ fn report_combat(
         multi_hit_suppressed = counters.multi_hit_suppressed,
         events_dropped = counters.events_dropped,
         frame_events_dropped = stats.combat_events_dropped,
+        camera_strikes = shake.strikes(),
+        camera_shaking = shake.is_active(),
         "combat work"
     );
 }

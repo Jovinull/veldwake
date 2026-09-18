@@ -149,6 +149,100 @@ const FOLLOW_ANCHOR_TAU: f32 = 0.08;
 /// Lowest the camera may sit above the ground under it, in world units.
 const FOLLOW_GROUND_CLEARANCE: f32 = 0.55;
 
+/// How long one confirmed hit moves the camera, in combat ticks.
+///
+/// Sixteen ticks is `0.133` seconds at `120` Hz: long enough to read as an
+/// impact and short enough that two hits in quick succession do not merge into
+/// one continuous wobble. It is a tick count rather than a duration because a
+/// capture has to be able to reproduce it exactly, and because a frozen named
+/// moment runs no ticks and must therefore hold whatever the camera was doing.
+pub const SHAKE_TICKS: u32 = 16;
+
+/// The largest the camera is ever displaced by a hit, in world units.
+///
+/// A hard cap, not a starting point. `0.055` is a twelfth of the distance from
+/// the camera to the body it follows and about two thirds of a character voxel:
+/// visible in a motion strip, and small enough that it cannot put a body out of
+/// frame or a camera through a hillside. The amplitude decays from here to zero
+/// and nothing may scale it up — [`HitShake::strike`] restarts the decay rather
+/// than adding to it, so a second hit during the first cannot compound.
+pub const SHAKE_MAX_OFFSET: f32 = 0.055;
+
+/// The camera's response to a landed hit.
+///
+/// Confirmed hits only. It has no idea what a miss, a dodge or the start of a
+/// swing is, which is the point: the only way to move the camera through this
+/// type is to call [`Self::strike`], and the only caller does so from a
+/// `CombatEvent::Hit`. Presentation cannot invent a hit the rules did not
+/// produce.
+///
+/// Deterministic by construction: the displacement is a function of an integer
+/// tick counter and nothing else — no wall clock, no random source, no frame
+/// rate. The same hit at the same tick displaces the camera by the same amount
+/// on every run and on every host.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HitShake {
+    /// Ticks since the most recent hit. At or past [`SHAKE_TICKS`] the camera is
+    /// still, and `None` before any hit at all.
+    elapsed: Option<u32>,
+    /// How many hits have moved the camera, for the observability line.
+    strikes: u64,
+}
+
+impl HitShake {
+    /// Registers one confirmed hit.
+    ///
+    /// Restarts the decay rather than adding to it, so the cap holds however
+    /// many hits land at once.
+    pub fn strike(&mut self) {
+        self.elapsed = Some(0);
+        self.strikes = self.strikes.saturating_add(1);
+    }
+
+    /// Advances by however many combat ticks the frame ran, which may be none.
+    pub fn advance(&mut self, ticks: u32) {
+        if let Some(elapsed) = self.elapsed {
+            self.elapsed = Some(elapsed.saturating_add(ticks).min(SHAKE_TICKS));
+        }
+    }
+
+    /// Whether the camera is still moving.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.elapsed.is_some_and(|elapsed| elapsed < SHAKE_TICKS)
+    }
+
+    #[must_use]
+    pub const fn strikes(&self) -> u64 {
+        self.strikes
+    }
+
+    /// How far the camera is displaced now, given its own right vector.
+    ///
+    /// Sideways and vertical only. Along the view direction a displacement of
+    /// this size is invisible, and across it, it reads.
+    #[must_use]
+    pub fn offset(&self, right: Vec3) -> Vec3 {
+        let Some(elapsed) = self.elapsed else {
+            return Vec3::ZERO;
+        };
+        if elapsed >= SHAKE_TICKS {
+            return Vec3::ZERO;
+        }
+        // Two periods that do not divide each other, so the decay reads as a
+        // knock rather than as one clean oscillation.
+        let t = f32::from(u16::try_from(elapsed).unwrap_or(u16::MAX));
+        let decay = 1.0 - t / f32::from(u16::try_from(SHAKE_TICKS).unwrap_or(u16::MAX));
+        let amplitude = SHAKE_MAX_OFFSET * decay;
+        let lateral = (t * 1.9).sin();
+        let vertical = (t * 2.7 + 1.1).sin();
+        let offset = right * (amplitude * lateral) + Vec3::Y * (amplitude * vertical);
+        // The cap is enforced here as well as derived, because a cap that is
+        // only implied by the arithmetic is one refactor from being untrue.
+        offset.clamp_length_max(SHAKE_MAX_OFFSET)
+    }
+}
+
 /// A third-person camera that orbits a body.
 ///
 /// Deliberately not a camera system: there is no occlusion solving, no collision
@@ -294,6 +388,128 @@ mod tests {
 
     use super::{Camera, CameraController, MAX_PITCH_RADIANS};
     use crate::input::{CameraAction, InputState};
+
+    use super::{HitShake, SHAKE_MAX_OFFSET, SHAKE_TICKS};
+
+    #[test]
+    fn a_camera_that_was_never_hit_does_not_move() {
+        let shake = HitShake::default();
+        assert!(!shake.is_active());
+        assert_eq!(shake.strikes(), 0);
+        assert_eq!(shake.offset(Vec3::X), Vec3::ZERO);
+        // Advancing without a hit is still nothing: a fight full of misses,
+        // dodges and swings that never land leaves the camera alone.
+        let mut shake = shake;
+        for _ in 0..1_000 {
+            shake.advance(4);
+            assert_eq!(shake.offset(Vec3::X), Vec3::ZERO);
+        }
+        assert!(!shake.is_active());
+    }
+
+    #[test]
+    fn one_hit_moves_the_camera_and_stops() {
+        let mut shake = HitShake::default();
+        shake.strike();
+        assert!(shake.is_active());
+        assert_eq!(shake.strikes(), 1);
+        let mut moved = 0_u32;
+        for tick in 0..SHAKE_TICKS {
+            let offset = shake.offset(Vec3::X);
+            assert!(offset.is_finite(), "tick {tick} gave {offset}");
+            if offset.length() > 0.0 {
+                moved += 1;
+            }
+            shake.advance(1);
+        }
+        assert!(
+            moved > SHAKE_TICKS / 2,
+            "only {moved} ticks displaced anything"
+        );
+        // Exactly at the end, and forever after, the camera is still again.
+        assert!(!shake.is_active());
+        assert_eq!(shake.offset(Vec3::X), Vec3::ZERO);
+        shake.advance(10_000);
+        assert_eq!(shake.offset(Vec3::X), Vec3::ZERO);
+    }
+
+    #[test]
+    fn no_number_of_hits_exceeds_the_amplitude_cap() {
+        // The cap is the whole safety argument: a camera that can be driven
+        // arbitrarily far by stacking hits can be driven out of the world.
+        let mut shake = HitShake::default();
+        let mut worst = 0.0_f32;
+        for round in 0..200 {
+            shake.strike();
+            // A second hit inside the first, which is what a fast exchange does.
+            if round % 3 == 0 {
+                shake.strike();
+            }
+            for _ in 0..SHAKE_TICKS {
+                worst = worst.max(shake.offset(Vec3::X).length());
+                shake.advance(1);
+            }
+        }
+        assert!(
+            worst <= SHAKE_MAX_OFFSET + 1.0e-6,
+            "the camera moved {worst} against a cap of {SHAKE_MAX_OFFSET}"
+        );
+        assert!(worst > 0.0, "the cap held by never moving at all");
+    }
+
+    #[test]
+    fn the_same_ticks_give_the_same_camera() {
+        // What makes a capture fixture reproducible. No wall clock and no random
+        // source reach this, so two runs of the same tick sequence have to agree
+        // exactly, not approximately.
+        let run = || {
+            let mut shake = HitShake::default();
+            let mut trace = Vec::new();
+            for tick in 0..64_u32 {
+                if tick % 21 == 0 {
+                    shake.strike();
+                }
+                trace.push(shake.offset(Vec3::X).to_array());
+                shake.advance(if tick % 5 == 0 { 4 } else { 1 });
+            }
+            trace
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn a_frozen_frame_holds_the_camera_where_it_was() {
+        // A named moment runs no ticks at all. The camera has to hold whatever
+        // displacement it had, because a capture of a frozen frame that keeps
+        // drifting is a capture of nothing in particular.
+        let mut shake = HitShake::default();
+        shake.strike();
+        shake.advance(3);
+        let held = shake.offset(Vec3::X);
+        for _ in 0..500 {
+            shake.advance(0);
+            assert_eq!(shake.offset(Vec3::X), held);
+        }
+        assert!(held.length() > 0.0, "the held offset was nothing");
+    }
+
+    #[test]
+    fn the_camera_is_displaced_across_the_view_and_never_along_it() {
+        // Sideways and vertical read as an impact; forward and back read as a
+        // zoom, and at this amplitude they read as nothing at all.
+        let mut shake = HitShake::default();
+        shake.strike();
+        let right = Vec3::X;
+        for _ in 0..SHAKE_TICKS {
+            let offset = shake.offset(right);
+            assert!(
+                offset.z.abs() <= f32::EPSILON,
+                "the camera moved {} along its own view",
+                offset.z
+            );
+            shake.advance(1);
+        }
+    }
 
     const EPSILON: f32 = 0.000_01;
 
