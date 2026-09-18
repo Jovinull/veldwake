@@ -45,6 +45,14 @@ pub enum ActionKind {
     Dodge,
     /// Recoil from taking a hit.
     Stagger,
+    /// Beaten: the body sags and the sword goes down.
+    ///
+    /// Not a death animation and not a ragdoll — rigid parts and ADR-0004 rule
+    /// both out. It is the smallest thing that makes a defeat legible, and a
+    /// capture is why it exists at all: a defeated body used to hold the carry
+    /// pose, so the frame showed it standing there with its sword out, looking
+    /// exactly like a body about to swing.
+    Defeated,
 }
 
 impl ActionKind {
@@ -55,6 +63,7 @@ impl ActionKind {
             Self::Attack => "attack",
             Self::Dodge => "dodge",
             Self::Stagger => "stagger",
+            Self::Defeated => "defeated",
         }
     }
 }
@@ -192,6 +201,13 @@ impl ActionOverlay {
         }
     }
 
+    /// A collapse. `progress` runs over the defeat hold, so the body sags into
+    /// the pose rather than snapping into it, and then stays there.
+    #[must_use]
+    pub fn defeated(weapon_side: Side, progress: f32) -> Self {
+        Self::base(ActionKind::Defeated, progress, weapon_side)
+    }
+
     /// A recoil. `direction` is the direction the hit came from relative to the
     /// body's own facing, in radians.
     #[must_use]
@@ -239,6 +255,7 @@ impl ActionOverlay {
             }
             ActionKind::Dodge => dodge_pose(self.progress, self.direction),
             ActionKind::Stagger => stagger_pose(self.progress, self.direction),
+            ActionKind::Defeated => defeated_pose(self.progress),
         }
     }
 }
@@ -412,6 +429,33 @@ fn stagger_pose(progress: f32, direction: f32) -> ActionPose {
         pelvis_rise: -amount,
         pelvis_sway: amount * -0.6 * lateral,
         pelvis_roll: amount * 0.10 * lateral,
+    }
+}
+
+/// Beaten: knees give, torso folds forward, both arms hang, sword points down.
+///
+/// The sag is fast and then holds: a quarter of the defeat hold to get there,
+/// and the rest of it motionless, because a body that keeps sinking for two and
+/// a half seconds reads as a bug rather than as a defeat. `pelvis_rise` at `-1`
+/// is the same full drop a dodge uses, which is as far down as the rigid legs go
+/// without the feet leaving the ground.
+fn defeated_pose(progress: f32) -> ActionPose {
+    let amount = ease(segment(progress, 0.0, 0.25));
+    ActionPose {
+        // Arm down and across, so the blade ends up pointing at the ground
+        // instead of at the opponent. The shoulder goes forward rather than back
+        // because a dropped arm hangs in front of a folded torso.
+        weapon_arm: ArmAngles::new(0.45, 0.12, -0.55, -0.35).lerp(CARRY_ARM, 1.0 - amount),
+        free_arm: ArmAngles::new(0.30, 0.10, -0.30, 0.0),
+        free_arm_weight: amount,
+        spine_yaw: 0.0,
+        chest_yaw: 0.0,
+        spine_pitch: amount * 0.34,
+        chest_pitch: amount * 0.30,
+        head_pitch: amount * 0.40,
+        pelvis_rise: -amount,
+        pelvis_sway: 0.0,
+        pelvis_roll: 0.0,
     }
 }
 

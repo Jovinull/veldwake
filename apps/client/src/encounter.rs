@@ -46,6 +46,13 @@ const ENCOUNTER_VARIABLE: &str = "VELDWAKE_ENCOUNTER";
 /// Two passes of the reference script. A moment that does not occur in two passes
 /// is a moment the script cannot produce, and the probe says so long before a
 /// capture does.
+/// Largest offset a named moment accepts, in ticks.
+///
+/// One second at the combat rate, which is longer than any action in the game.
+/// A larger number is a mistyped command line rather than a request, and the
+/// parser says so instead of searching for a frame that does not exist.
+pub const MAX_MOMENT_OFFSET: u32 = veldwake_combat::COMBAT_TICK_HZ;
+
 const MOMENT_SEARCH_TICKS: u64 = fixture::GOLDEN_RUN_TICKS * 2;
 
 /// Most events one frame can carry, which is the tick bound times the tick cap.
@@ -68,7 +75,15 @@ pub enum EncounterMode {
     /// The only way to capture a hit window: it is a tenth of a second long, so
     /// the frame has to be held rather than caught. This is the combat version of
     /// M5's eight frozen gait phases, one run each.
-    Moment(&'static NamedMoment),
+    /// A named moment, frozen, optionally some whole ticks after it.
+    ///
+    /// The offset is what makes a motion strip possible. A frozen frame is the
+    /// only way to photograph a `0.1`-second window, and one frozen frame says
+    /// nothing about an arc; `moment:confirmed-hit+6` is the same fight, the
+    /// same camera and the same tick arithmetic, six ticks later, so a sequence
+    /// of runs reconstructs the swing exactly rather than at whatever interval a
+    /// screen capture happened to land on.
+    Moment(&'static NamedMoment, u32),
 }
 
 impl EncounterMode {
@@ -88,7 +103,7 @@ impl EncounterMode {
         }
     }
 
-    /// `off`, `armed`, `script`, or `moment:<name>`.
+    /// `off`, `armed`, `script`, `moment:<name>`, or `moment:<name>+<ticks>`.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         let trimmed = value.trim().to_ascii_lowercase();
@@ -97,10 +112,18 @@ impl EncounterMode {
             "armed" | "play" | "playable" => Some(Self::Armed),
             "script" | "scripted" => Some(Self::Script),
             other => {
-                let name = other
+                let tail = other
                     .strip_prefix("moment:")
                     .or_else(|| other.strip_prefix("moment="))?;
-                veldwake_combat::script::moment(name).map(Self::Moment)
+                let (name, offset) = match tail.split_once('+') {
+                    Some((name, ticks)) => (name, ticks.trim().parse::<u32>().ok()?),
+                    None => (tail, 0),
+                };
+                // An offset past the end of an action is a typo, not a request.
+                if offset > MAX_MOMENT_OFFSET {
+                    return None;
+                }
+                veldwake_combat::script::moment(name).map(|moment| Self::Moment(moment, offset))
             }
         }
     }
@@ -111,7 +134,8 @@ impl EncounterMode {
             Self::Off => "off".to_owned(),
             Self::Armed => "armed".to_owned(),
             Self::Script => "script".to_owned(),
-            Self::Moment(moment) => format!("moment:{}", moment.name),
+            Self::Moment(moment, 0) => format!("moment:{}", moment.name),
+            Self::Moment(moment, offset) => format!("moment:{}+{offset}", moment.name),
         }
     }
 
@@ -242,17 +266,33 @@ impl EncounterScene {
                     fixture::reach_of(&scene.encounter),
                 ));
             }
-            EncounterMode::Moment(moment) => {
+            EncounterMode::Moment(moment, offset) => {
                 scene.encounter.arm();
                 let mut runner =
                     ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(&scene.encounter));
+                let mut after = None;
                 for _ in 0..MOMENT_SEARCH_TICKS {
                     let intent = runner.next_intent(&scene.encounter);
                     let events = scene.encounter.step(intent, ground);
                     scene.ticks += 1;
+                    if let Some(remaining) = after {
+                        // Past the moment, running out the offset. The script
+                        // keeps driving, so these are the ticks the fight would
+                        // have run anyway.
+                        if remaining == 0 {
+                            scene.moment_found = Some(scene.encounter.tick_index());
+                            break;
+                        }
+                        after = Some(remaining - 1);
+                        continue;
+                    }
                     if at_moment(moment.kind, &scene.encounter, &events) {
-                        scene.moment_found = Some(scene.encounter.tick_index());
-                        break;
+                        if offset == 0 {
+                            scene.moment_found = Some(scene.encounter.tick_index());
+                            break;
+                        }
+                        after = Some(offset - 1);
+                        continue;
                     }
                     if runner.finished() {
                         runner.restart();
@@ -405,17 +445,42 @@ mod tests {
         assert_eq!(EncounterMode::parse("play"), Some(EncounterMode::Armed));
         assert_eq!(EncounterMode::parse("script"), Some(EncounterMode::Script));
         match EncounterMode::parse("moment:player-active") {
-            Some(EncounterMode::Moment(moment)) => {
+            Some(EncounterMode::Moment(moment, offset)) => {
                 assert_eq!(moment.kind, MomentKind::PlayerActive);
+                assert_eq!(offset, 0);
             }
             other => panic!("expected a moment, got {other:?}"),
         }
         match EncounterMode::parse("MOMENT=Defeat") {
-            Some(EncounterMode::Moment(moment)) => assert_eq!(moment.kind, MomentKind::Defeat),
+            Some(EncounterMode::Moment(moment, 0)) => assert_eq!(moment.kind, MomentKind::Defeat),
             other => panic!("expected a moment, got {other:?}"),
         }
         assert!(EncounterMode::parse("moment:not-a-moment").is_none());
         assert!(EncounterMode::parse("fight").is_none());
+        // The offset a motion strip is built from, and the ways it can be wrong.
+        match EncounterMode::parse("moment:confirmed-hit+6") {
+            Some(EncounterMode::Moment(moment, offset)) => {
+                assert_eq!(moment.kind, MomentKind::ConfirmedHit);
+                assert_eq!(offset, 6);
+            }
+            other => panic!("expected an offset moment, got {other:?}"),
+        }
+        assert_eq!(
+            EncounterMode::parse("moment:confirmed-hit+0").map(EncounterMode::name),
+            Some("moment:confirmed-hit".to_owned()),
+            "a zero offset is the moment itself and names itself that way"
+        );
+        assert_eq!(
+            EncounterMode::parse("moment:confirmed-hit+6").map(EncounterMode::name),
+            Some("moment:confirmed-hit+6".to_owned())
+        );
+        assert!(
+            EncounterMode::parse("moment:confirmed-hit+99999").is_none(),
+            "an offset past any action is a typo"
+        );
+        assert!(EncounterMode::parse("moment:confirmed-hit+").is_none());
+        assert!(EncounterMode::parse("moment:confirmed-hit+-3").is_none());
+        assert!(EncounterMode::parse("moment:confirmed-hit+two").is_none());
     }
 
     #[test]

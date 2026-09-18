@@ -266,7 +266,13 @@ impl Action {
     #[must_use]
     pub fn overlay(&self, spec: &AttackSpec, weapon_side: BodySide, facing: f32) -> ActionOverlay {
         match self {
-            Self::Free | Self::Defeated { .. } => ActionOverlay::carry(weapon_side),
+            Self::Free => ActionOverlay::carry(weapon_side),
+            // A fixed window rather than the defeat hold: the collapse takes
+            // as long as a collapse takes, and how long the body then lies
+            // there before the fight resets is a separate decision.
+            Self::Defeated { elapsed } => {
+                ActionOverlay::defeated(weapon_side, progress(*elapsed, DEFEAT_SAG_TICKS))
+            }
             Self::Attack { elapsed, .. } => ActionOverlay::attack(
                 weapon_side,
                 progress(*elapsed, spec.total()),
@@ -294,6 +300,14 @@ impl Action {
         }
     }
 }
+
+/// How long a defeated body takes to sag into its final pose, in ticks.
+///
+/// A fifth of a second. Long enough not to snap, short enough that the body is
+/// already still by the time a viewer has registered what happened, and
+/// deliberately independent of the defeat hold: the hold is how long the fight
+/// waits before resetting, which is a pacing decision and not an animation one.
+pub const DEFEAT_SAG_TICKS: Ticks = 24;
 
 /// Where a tick sits inside an action, in `[0, 1]`.
 #[must_use]

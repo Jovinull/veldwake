@@ -225,7 +225,15 @@ pub const VARIED_BEHAVIOUR_SIGNATURE: u64 = 0xa931_d3c2_ede0_d752;
 /// `docs/audiovisual/COMBAT_STYLE.md` under its own version. Putting them under
 /// `CHARACTER_STYLE_VERSION` would have invalidated the identity of three
 /// compiled bodies to add a rule that moves no voxel.
-pub const GOLDEN_ACTION_POSE_SIGNATURE: u64 = 0xd736_e072_31cb_d790;
+///
+/// **Old** `0xd736e07231cbd790`, **new** `0xce4233533b66e60c`, **why**: a fifth
+/// action, `Defeated`, and the two named poses that cover it. A capture forced
+/// it. A defeated body used to be posed by `ActionKind::Carry`, so the frame at
+/// the end of a fight showed the loser standing with its sword out, indis-
+/// tinguishable from a body about to swing. The signature covers every named
+/// action pose, so two new entries move it by construction; nothing about the
+/// carry, attack, dodge or stagger curves changed, and no M5 signature moved.
+pub const GOLDEN_ACTION_POSE_SIGNATURE: u64 = 0xce42_3353_3b66_e60c;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]
@@ -538,6 +546,22 @@ pub const NAMED_ACTION_POSES: &[NamedActionPose] = &[
         direction: core::f32::consts::FRAC_PI_2,
         intent: "the same recoil from the side, which must not read as the same pose",
     },
+    NamedActionPose {
+        name: "defeat-sag",
+        kind: ActionKind::Defeated,
+        progress: 0.12,
+        speed: 0.0,
+        direction: 0.0,
+        intent: "halfway into the collapse, which is the frame that has to read as losing",
+    },
+    NamedActionPose {
+        name: "defeat-held",
+        kind: ActionKind::Defeated,
+        progress: 0.80,
+        speed: 0.0,
+        direction: 0.0,
+        intent: "the body it settles into, which must be still and must not be the carry",
+    },
 ];
 
 /// The overlay one named action pose describes.
@@ -553,6 +577,7 @@ pub fn overlay_for(named: &NamedActionPose) -> ActionOverlay {
         ),
         ActionKind::Dodge => ActionOverlay::dodge(Side::Right, named.progress, named.direction),
         ActionKind::Stagger => ActionOverlay::stagger(Side::Right, named.progress, named.direction),
+        ActionKind::Defeated => ActionOverlay::defeated(Side::Right, named.progress),
     }
 }
 

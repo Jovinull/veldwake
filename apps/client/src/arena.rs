@@ -147,6 +147,77 @@ pub const COMBAT_CAMERA_POSES: &[CombatCameraPose] = &[
     },
 ];
 
+/// The same pose, placed against the two bodies instead of against the arena.
+///
+/// A fixed pose cannot frame a moment. The named moments happen wherever the
+/// fight has drifted to by the tick they occur on, and the `defeat` capture
+/// proved what that costs: the defeat landed three units off the arena centre
+/// with both bodies almost exactly in line with a camera that looks along `x`,
+/// so one body stood in front of the other and the frame showed a single figure
+/// standing alone. Nothing was wrong with the renderer or the pose; the camera
+/// was pointed at a place rather than at a fight.
+///
+/// So the pose's `offset` is reinterpreted, for a frozen moment only, as a
+/// distance in the **fight's** own frame: `x` across the line between the two
+/// bodies, `y` above the ground they stand on, `z` along that line from the
+/// midpoint. Every moment is then framed the same way whatever the fight did to
+/// get there, which is what makes two captures comparable.
+/// Returns the position and the yaw and pitch, in radians, for
+/// [`Camera::place`] — rather than a whole camera, so that the aspect ratio the
+/// window set survives, and so that the arithmetic can be checked without one.
+#[must_use]
+pub fn frame_the_fight(
+    pose: &CombatCameraPose,
+    player: Vec3,
+    adversary: Vec3,
+) -> Option<(Vec3, f32, f32)> {
+    if !player.is_finite() || !adversary.is_finite() {
+        return None;
+    }
+    let midpoint = (player + adversary) * 0.5;
+    let along = adversary - player;
+    let along = Vec2::new(along.x, along.z);
+    // Two bodies standing on the same spot have no line between them to frame,
+    // and separation makes that impossible in practice; refusing is still
+    // cheaper than dividing by zero.
+    let along = along.try_normalize()?;
+    let across = Vec2::new(-along.y, along.x);
+
+    let offset = pose.offset;
+    let planar = across * offset[0] + along * offset[2];
+    let position = Vec3::new(
+        midpoint.x + planar.x,
+        midpoint.y + offset[1],
+        midpoint.z + planar.y,
+    );
+    // Look at the midpoint at the height a chest sits, not at the grass between
+    // their feet.
+    let target = midpoint + Vec3::Y * MOMENT_LOOK_HEIGHT;
+    let to_target = target - position;
+    let planar_length = Vec2::new(to_target.x, to_target.z).length();
+    if planar_length <= f32::EPSILON {
+        return None;
+    }
+    let yaw = to_target.x.atan2(-to_target.z);
+    let pitch = to_target.y.atan2(planar_length);
+    tracing::info!(
+        pose = pose.name,
+        intent = pose.intent,
+        position = ?position.to_array(),
+        yaw_degrees = yaw.to_degrees(),
+        pitch_degrees = pitch.to_degrees(),
+        separation = Vec2::new(adversary.x - player.x, adversary.z - player.z).length(),
+        "combat camera framing the fight"
+    );
+    Some((position, yaw, pitch))
+}
+
+/// How far above the ground a moment camera aims, in world units.
+///
+/// Chest height on the taller of the two bodies. Aiming at the midpoint itself
+/// puts the grass in the middle of the frame and the heads at the top edge.
+const MOMENT_LOOK_HEIGHT: f32 = 1.35;
+
 /// The named combat camera pose, if it is one.
 #[must_use]
 pub fn combat_camera_pose(name: &str) -> Option<&'static CombatCameraPose> {
@@ -183,11 +254,109 @@ pub fn spawn_combat_camera(name: &str, generator: &TerrainGenerator) -> Option<C
 mod tests {
     use super::{
         ARENA_RADIUS, ARENA_X, ARENA_Z, CLEAR_RADIUS, COMBAT_CAMERA_POSES, LEVEL_RADIUS,
-        OPEN_RADIUS, OPEN_RISE, centre, floor,
+        MOMENT_LOOK_HEIGHT, OPEN_RADIUS, OPEN_RISE, centre, combat_camera_pose, floor,
+        frame_the_fight,
     };
     use crate::character::TerrainGround;
-    use glam::Vec2;
+    use glam::{Vec2, Vec3};
     use veldwake_character::GroundSampler;
+
+    #[test]
+    fn framing_the_fight_puts_both_bodies_in_front_of_the_camera() {
+        // The property the `defeat` capture violated. Whatever the fight has
+        // drifted to, and whichever way round the two bodies are standing, both
+        // of them have to be in front of the camera and neither may be directly
+        // behind the other.
+        let pose = match combat_camera_pose("combat-side") {
+            Some(pose) => pose,
+            None => panic!("combat-side is a pose"),
+        };
+        // Every bearing, a fight at a time.
+        for step in 0_u8..24 {
+            let angle = f32::from(i16::from(step)) * std::f32::consts::TAU / 24.0;
+            let separation = 2.3;
+            let player = Vec3::new(-65.0, 12.0, 51.0);
+            let adversary =
+                player + Vec3::new(angle.cos() * separation, 0.0, angle.sin() * separation);
+            let (position, yaw, pitch) = match frame_the_fight(pose, player, adversary) {
+                Some(placed) => placed,
+                None => panic!("a fight {separation} apart has a line between its bodies"),
+            };
+            assert!(position.is_finite(), "{position} at bearing {angle}");
+            assert!(yaw.is_finite() && pitch.is_finite());
+
+            let pitch_cos = pitch.cos();
+            let forward = Vec3::new(yaw.sin() * pitch_cos, pitch.sin(), -yaw.cos() * pitch_cos);
+            for (name, body) in [("player", player), ("adversary", adversary)] {
+                let to_body = body + Vec3::Y * MOMENT_LOOK_HEIGHT - position;
+                let ahead = to_body.normalize_or_zero().dot(forward);
+                assert!(
+                    ahead > 0.80,
+                    "the {name} is {ahead:.3} ahead of the camera at bearing {:.1} degrees",
+                    angle.to_degrees()
+                );
+            }
+            // Neither body hides the other: the camera looks across the line
+            // between them, so their bearings differ.
+            let to_player = (player - position).normalize_or_zero();
+            let to_adversary = (adversary - position).normalize_or_zero();
+            let apart = to_player.dot(to_adversary).clamp(-1.0, 1.0).acos();
+            assert!(
+                apart.to_degrees() > 8.0,
+                "the two bodies are {:.2} degrees apart on screen at bearing {:.1}",
+                apart.to_degrees(),
+                angle.to_degrees()
+            );
+        }
+    }
+
+    #[test]
+    fn framing_the_fight_refuses_what_it_cannot_frame() {
+        let pose = match combat_camera_pose("combat-close") {
+            Some(pose) => pose,
+            None => panic!("combat-close is a pose"),
+        };
+        let here = Vec3::new(1.0, 2.0, 3.0);
+        // Two bodies on one spot have no line between them. Separation makes it
+        // impossible in a fight; refusing is still cheaper than a division by
+        // zero reaching a projection matrix.
+        assert!(frame_the_fight(pose, here, here).is_none());
+        assert!(frame_the_fight(pose, here, Vec3::new(f32::NAN, 0.0, 0.0)).is_none());
+        assert!(frame_the_fight(pose, Vec3::splat(f32::INFINITY), here).is_none());
+    }
+
+    #[test]
+    fn framing_the_fight_keeps_the_pose_distances_it_was_given() {
+        // The offsets are reinterpreted, not discarded: `combat-close` still has
+        // to be nearer than `combat-side`, or a contact frame is no longer a
+        // contact frame.
+        let player = Vec3::new(-69.0, 10.0, 52.0);
+        let adversary = Vec3::new(-69.0, 10.0, 49.5);
+        let midpoint = (player + adversary) * 0.5;
+        let distance = |name: &str| {
+            let pose = match combat_camera_pose(name) {
+                Some(pose) => pose,
+                None => panic!("{name} is a pose"),
+            };
+            let (position, _, _) = match frame_the_fight(pose, player, adversary) {
+                Some(placed) => placed,
+                None => panic!("{name} could not frame the fight"),
+            };
+            (position - midpoint).length()
+        };
+        let close = distance("combat-close");
+        let side = distance("combat-side");
+        let wide = distance("combat-wide");
+        assert!(
+            close < side,
+            "close {close:.2} is not nearer than side {side:.2}"
+        );
+        assert!(
+            side < wide,
+            "side {side:.2} is not nearer than wide {wide:.2}"
+        );
+    }
+
     use veldwake_combat::fixture;
     use veldwake_procedural::TerrainGenerator;
 

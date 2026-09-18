@@ -287,13 +287,26 @@ impl App {
                 clearing_open_rise = arena::OPEN_RISE,
                 "encounter ready"
             );
-            // A frozen moment or a named combat pose keeps its fixed camera; a
-            // fight that is being played gets a camera that follows the player.
-            let fixed_pose = requested_pose()
+            // A frozen moment with a named pose gets that pose placed against
+            // the two bodies, because the fight is wherever it drifted to by the
+            // tick the moment happens on. The `defeat` capture is why: aimed at
+            // the arena centre, it caught the two bodies in line and showed one
+            // figure standing alone. A fight being played gets a camera that
+            // follows the player instead.
+            let named_pose = requested_pose()
                 .as_deref()
-                .and_then(arena::combat_camera_pose)
-                .is_some();
-            if encounter_mode.follows_the_player() && !fixed_pose && !scene.is_frozen() {
+                .and_then(arena::combat_camera_pose);
+            if let Some(pose) = named_pose
+                && scene.is_frozen()
+                && let Some((position, yaw, pitch)) = arena::frame_the_fight(
+                    pose,
+                    scene.encounter().combatant(Side::Player).stand_point(),
+                    scene.encounter().combatant(Side::Adversary).stand_point(),
+                )
+            {
+                self.camera.place(position, yaw, pitch);
+            }
+            if encounter_mode.follows_the_player() && named_pose.is_none() && !scene.is_frozen() {
                 self.follow = Some(FollowController::behind(
                     scene.camera_target(),
                     player.state().facing,
