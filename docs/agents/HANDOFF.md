@@ -8,7 +8,7 @@ Last updated: 2026-09-18
 
 The repository now renders one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, banded cliffs, forest pockets, and low vegetation — streamed around a free-fly camera and lit by a directional sun with a filtered shadow map, a procedural sky, height-aware fog, and two weather states. It is still an engineering proof: there is no persistence, no character, no collision, and no gameplay.
 
-**M5 — Procedural Character is implemented on `feat/m5-procedural-character`; independent branch QA is in progress.** The branch adds the `veldwake-character` crate, the `CHARACTER_STYLE.md` contract, [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md), the client adapter and render path, and the milestone document with its captures assessed in writing. QA corrected half-open continuous terrain bounds, requested-character failure semantics, and degenerate public IK robustness. Nothing is merged and no pull request is open.
+**M5 — Procedural Character completed independent branch QA on `feat/m5-procedural-character` and is ready for external review/PR.** The branch adds the `veldwake-character` crate, the `CHARACTER_STYLE.md` contract, [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md), the client adapter and render path, and the milestone document with its captures assessed in writing. Final clean D3D12 capture/motion/lifecycle QA accepted KI-018, KI-019, and KI-020 as documented; M3/M4 regressions and M5 lifecycle passed with no validation, device-loss, fatal, or panic marker. Nothing is merged and no pull request is open.
 
 ## Start here — reading order for a session with no prior context
 
@@ -33,9 +33,9 @@ Read these before changing anything. They are the whole truth of the project; no
 
 Then, as needed: [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md), [`../LEARNINGS.md`](../LEARNINGS.md), [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md), [`WORKFLOW.md`](WORKFLOW.md), the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
-## Continue here — independent QA of the M5 branch
+## Continue here — external review of the M5 branch
 
-One continuation point: **complete the clean independent D3D12 motion/capture smoke for `feat/m5-procedural-character`, then decide whether it merges.** Do not certify M5 from the existing implementation assessment: the first QA capture run was contaminated by overlapping desktop windows for motion frames, so it is invalid evidence. The corrected branch is otherwise ready for its full gate rerun.
+One continuation point: **external review / owner-directed PR preparation for `feat/m5-procedural-character`.** Independent D3D12 branch QA is complete. Fresh maximized-client-area captures were inspected one by one; no contaminated capture was used. Do not merge, open a PR, or begin M6 without owner direction.
 
 Read [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) first, then [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) and [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md). The milestone document is written so that the five design errors captures rejected — the voxel scale, the chest width, the missing neck, the sleeve that was a voxel too narrow, and a character that walked backwards — are recorded with the frame that rejected each one. Re-deriving those is wasted work; finding the sixth is the job.
 
@@ -56,7 +56,7 @@ None. Everything a reviewer needs is in the repository: the accepted scope, the 
 
 ## Immediate risks
 
-- **The M5 branch has had no independent review.** Every judgement in its milestone document — that the scale reads, that the silhouette reads, that the walk cycle is a walk — was made by the agent that also wrote the code. The headless tests are objective; the visual assessment is not, and it is the exit criterion.
+- **The M5 branch awaits external review, not more branch QA.** The independent visual exit gate is complete; reviewer judgement remains valuable because visual readability is not reducible to the headless fixtures.
 - **The character's visual contract is versioned and now locked.** `CHARACTER_STYLE_VERSION`, `CHARACTER_COMPILER_VERSION` and `CHARACTER_SCHEMA_VERSION` fold into a character's identity fingerprint, and seven fixture signatures are checked against the compiler on every test run. Moving a voxel, a bone or a gait constant without bumping the matching version is a failing test, which is the intent. Re-lock deliberately; never re-lock to make a test pass.
 - **Character identifiers are `128..192`.** Terrain is `64..128` and the M2/M3 diagnostics are `1`, `2`, `7`. The client is the only place all three tables are visible and it carries the disjointness test. A new content domain declares its own range there.
 - **`veldwake-character` must not gain a dependency on `veldwake-procedural`.** It duplicates thirty lines of hashing rather than reach for that crate's helpers, deliberately and with the reason written at the duplication. The one thing it needs from the world is `GroundSampler`, which the client implements in eleven lines over `TerrainField`.

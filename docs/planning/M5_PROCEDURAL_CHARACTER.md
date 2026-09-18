@@ -1,6 +1,6 @@
 # M5 — Procedural Character
 
-Status: **implemented on `feat/m5-procedural-character`; independent branch QA is in progress**
+Status: **independent branch QA complete on `feat/m5-procedural-character`; ready for external review/PR**
 Base: `main` at merge commit `abadadff6ad1251e4f291d272577da6121d37540`
 
 M4 proved the world can look like something. M5 has to prove that a person can stand in it and belong there — produced by systems, not by a modelling tool. The exit criterion is the same kind as M4's: a real capture of a real client on the audited host, judged against a written contract, backed by headless tests and measurements.
@@ -297,7 +297,7 @@ No third-party dependency was added. The only new dependency edge in the workspa
 
 ## Gates
 
-### Independent QA corrections in progress
+### Independent QA corrections and final visual exit gate
 
 Independent QA found three correctness boundaries that the implementation
 evidence had not exercised. `TerrainGround` now uses the region's continuous
@@ -312,8 +312,45 @@ public two-bone solver sanitizes non-finite lengths and poles and keeps its
 degenerate reach interval non-empty, so hostile inputs cannot panic
 `f32::clamp`.
 
-The final gate table and visual assessment are not re-certified until the
-corrected branch completes its independent smoke and capture run.
+The corrected branch completed its independent Windows/D3D12 visual exit gate
+on 2026-09-18 at `24b9375bc891964dd5235fa652a6a65d836afa6a`. Fresh,
+DPI-aware client-area captures were taken only after maximizing the single
+client instance; every accepted image was `1920x991`, opened, and inspected.
+No capture containing desktop, terminal, taskbar, or another window was used
+as evidence. The static gallery covered front, three-quarter, side,
+clear/overcast silhouette, both idle states, shadow/detail, scale, and
+clear/overcast in-scene framing. It confirms the whole body stays framed, the
+head/neck/torso/limb silhouette and palette read, rigid-part seams have no
+holes or z-fighting, soles meet visible ground, and clear and overcast remain
+readable.
+
+Eight independently launched frozen walk phases were opened and compared in
+order. They show alternating legs and opposite arm swing, flexed knees,
+continuous hips/pelvis/feet, and a continuous phase 7 to phase 0 return. The
+only close joint line is the documented rigid parent end cap (KI-020), not a
+depth conflict or missing face. Consecutive frames from one flat-course run
+show steady forward motion, correct facing, attached shadow, and no visible
+phase hitch, pop, same-side gait, or body-speed/gait mismatch. Consecutive
+slope-course frames plus the foot-contact and terrace-contact captures show
+block-top contact without severe floating, penetration, knee inversion,
+unreachable-leg stretch, or shadow detach. As documented in KI-018, a stance
+crossing a terrace follows the new block rather than retaining a world-space
+pin: **KI-018 CONFIRMED / ACCEPTED FOR M5**. The character casts onto terrain,
+receives terrain shadow, has no self-shadow, and shows no severe acne or
+peter-panning: **KI-019 CONFIRMED / ACCEPTED FOR M5**. The magnified knee,
+elbow, shoulder, hip, wrist, and ankle review distinguishes the small rigid
+end-cap line from a rendering defect: **KI-020 CONFIRMED / ACCEPTED FOR M5**.
+
+Independent D3D12 lifecycle smokes completed with character off for the M3
+diagnostic and M4 golden profiles, and with the real M5 course enabled. They
+covered settle, traversal input, debug toggles, weather transition and return,
+resize, minimize/restore, refocus, and Escape shutdown. The M3 checkerboard,
+fallback material and floor remained present; M4 terrain, water, cliffs,
+vegetation, sky, fog, shadows, streaming and weather remained present; M5
+logged `character ready` with the expected `1814` quads, `335056` static GPU
+bytes, `1280` dynamic bytes per frame, and sixteen world plus sixteen shadow
+draws, and remained available after lifecycle operations. All three exited
+`0`; logs contain no validation error, device loss, fatal error, or panic.
 
 Every gate below was executed on the audited Windows 11 / Intel Iris Xe host with the toolchain in [`ENVIRONMENT_REPORT.md`](../environment/ENVIRONMENT_REPORT.md), and is reported with the `AGENTS.md` vocabulary.
 
