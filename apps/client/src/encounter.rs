@@ -29,7 +29,7 @@ use tracing::{info, warn};
 use veldwake_character::GroundSampler;
 use veldwake_combat::{
     CombatClock, CombatEvent, Encounter, EncounterError, Intent, MAX_EVENTS_PER_TICK,
-    MAX_TICKS_PER_FRAME, NamedMoment, ScriptRunner, Side, Ticks, at_moment, fixture,
+    MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks, at_moment, fixture,
     script::GOLDEN_SCRIPT,
 };
 use veldwake_procedural::TerrainGenerator;
@@ -230,11 +230,36 @@ pub struct EncounterScene {
     frozen: bool,
     /// Which moment was searched for, and whether it was found.
     moment_found: Option<u64>,
+    /// Ticks a named moment's offset still owes the frame loop.
+    pending: u32,
     events: FrameEvents,
     ticks: u64,
 }
 
 impl EncounterScene {
+    /// Replays the reference script until a moment happens, and says when.
+    ///
+    /// Throwaway: the encounter it steps is discarded, because the only thing
+    /// wanted from it is the tick index.
+    fn search(
+        encounter: &mut Encounter,
+        kind: MomentKind,
+        ground: Option<&dyn GroundSampler>,
+    ) -> Option<u64> {
+        let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(encounter));
+        for _ in 0..MOMENT_SEARCH_TICKS {
+            let intent = runner.next_intent(encounter);
+            let events = encounter.step(intent, ground);
+            if at_moment(kind, encounter, &events) {
+                return Some(encounter.tick_index());
+            }
+            if runner.finished() {
+                runner.restart();
+            }
+        }
+        None
+    }
+
     /// Builds the encounter for a mode, on the terrain it will be fought on.
     ///
     /// For a moment mode this also *runs* the search, so the frozen frame exists
@@ -253,6 +278,7 @@ impl EncounterScene {
             clock: CombatClock::new(),
             runner: None,
             frozen: false,
+            pending: 0,
             moment_found: None,
             events: FrameEvents::new(),
             ticks: 0,
@@ -267,37 +293,41 @@ impl EncounterScene {
                 ));
             }
             EncounterMode::Moment(moment, offset) => {
+                // Two passes over the same deterministic script, and the second
+                // one stops one tick short.
+                //
+                // A moment is only recognisable from the tick that produced it,
+                // so a single pass necessarily consumes that tick's events
+                // before the frame loop exists — and the first frozen capture of
+                // a hit proved what that costs: zero chips, zero camera
+                // strikes, a contact frame with no impact in it. So the first
+                // pass finds *which* tick, and the second replays to the tick
+                // before it and hands the rest to the frame loop, which runs
+                // them through exactly the path a played tick takes. The
+                // presentation then sees the hit as a hit.
+                //
+                // Both passes are headless and the script is deterministic, so
+                // the second arrives at the same fight as the first.
+                scene.encounter.arm();
+                let found = Self::search(&mut scene.encounter, moment.kind, ground);
+                scene.encounter = Encounter::new(&setup, ground)?;
                 scene.encounter.arm();
                 let mut runner =
                     ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(&scene.encounter));
-                let mut after = None;
-                for _ in 0..MOMENT_SEARCH_TICKS {
-                    let intent = runner.next_intent(&scene.encounter);
-                    let events = scene.encounter.step(intent, ground);
-                    scene.ticks += 1;
-                    if let Some(remaining) = after {
-                        // Past the moment, running out the offset. The script
-                        // keeps driving, so these are the ticks the fight would
-                        // have run anyway.
-                        if remaining == 0 {
-                            scene.moment_found = Some(scene.encounter.tick_index());
-                            break;
+                if let Some(tick) = found {
+                    for _ in 0..tick.saturating_sub(1) {
+                        let intent = runner.next_intent(&scene.encounter);
+                        let _ = scene.encounter.step(intent, ground);
+                        scene.ticks += 1;
+                        if runner.finished() {
+                            runner.restart();
                         }
-                        after = Some(remaining - 1);
-                        continue;
                     }
-                    if at_moment(moment.kind, &scene.encounter, &events) {
-                        if offset == 0 {
-                            scene.moment_found = Some(scene.encounter.tick_index());
-                            break;
-                        }
-                        after = Some(offset - 1);
-                        continue;
-                    }
-                    if runner.finished() {
-                        runner.restart();
-                    }
+                    scene.moment_found = Some(tick);
+                    // The moment's own tick, then the offset.
+                    scene.pending = offset.saturating_add(1);
                 }
+                scene.runner = Some(runner);
                 scene.frozen = true;
                 match scene.moment_found {
                     Some(tick) => info!(
@@ -344,6 +374,16 @@ impl EncounterScene {
         self.frozen
     }
 
+    /// Ticks still owed to a named moment's offset.
+    ///
+    /// Run by the frame loop, a frame's worth at a time, before the scene
+    /// freezes. Thirty frames at the largest offset the parser accepts, which is
+    /// invisible inside a settle measured in seconds.
+    #[must_use]
+    pub const fn pending(&self) -> u32 {
+        self.pending
+    }
+
     /// Which tick the named moment was found on, if it was.
     #[must_use]
     pub const fn moment_tick(&self) -> Option<u64> {
@@ -370,6 +410,34 @@ impl EncounterScene {
         ground: Option<&dyn GroundSampler>,
     ) -> FrameOutcome {
         self.events.clear();
+        if self.frozen && self.pending > 0 {
+            // The offset a named moment asked for, run through the ordinary
+            // tick path so that the events, the chips and the camera all see it.
+            let _ = input.take_combat_latches();
+            let due = self.pending.min(MAX_TICKS_PER_FRAME);
+            for _ in 0..due {
+                let intent = match self.runner.as_mut() {
+                    Some(runner) => {
+                        let intent = runner.next_intent(&self.encounter);
+                        if runner.finished() {
+                            runner.restart();
+                        }
+                        intent
+                    }
+                    None => Intent::player(glam::Vec2::ZERO, false, false),
+                };
+                let events = self.encounter.step(intent, ground);
+                self.ticks += 1;
+                for event in events.iter() {
+                    self.events.push(event);
+                }
+            }
+            self.pending -= due;
+            return FrameOutcome {
+                ticks: due,
+                dropped_ticks: 0,
+            };
+        }
         if self.frozen {
             // A frozen encounter still consumes the latches. Leaving them set
             // would mean a press made while a moment is held is queued for ever

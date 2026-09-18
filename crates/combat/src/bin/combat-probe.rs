@@ -494,10 +494,14 @@ fn dodge() -> Result<(), String> {
 /// `gap` is what is left after the blade radius and the capsule radius are taken
 /// off, so a negative `gap` is penetration. `at` says which fraction along the
 /// blade the nearest point sits on: `0.00` is the guard, `1.00` is the tip.
-/// The yaw that points along a planar direction, in the client's convention:
-/// zero faces `-Z`.
+/// The yaw that points along a planar direction.
+///
+/// `veldwake_combat::movement::facing_of` with the `None` case removed, and it
+/// delegates rather than repeating the arithmetic: the first version of this
+/// wrote `(-direction.x).atan2(-direction.y)`, which mirrors the whole column
+/// and made a swing that connected look like one aimed forty-one degrees wide.
 fn bearing_of(direction: glam::Vec2) -> f32 {
-    (-direction.x).atan2(-direction.y)
+    veldwake_combat::movement::facing_of(direction).unwrap_or(0.0)
 }
 
 /// Signed difference in degrees, folded into `[-180, 180)`.
@@ -627,7 +631,10 @@ fn contact(side: Option<&str>, arena: Option<&str>) -> Result<(), String> {
         }
         let blade = encounter.blade_world(attacker);
         let capsule = encounter.combatant(victim).hurt_capsule();
-        let (on_blade, _, closest) = closest_points(blade, capsule.axis);
+        // `closest_points` returns a **squared** distance. Printing it as a
+        // distance is a mistake this column made once and will not make again.
+        let (on_blade, _, squared) = closest_points(blade, capsule.axis);
+        let closest = squared.sqrt();
         let gap = closest - radius - capsule.radius;
         let along = if blade.length() > f32::EPSILON {
             (on_blade - blade.base).length() / blade.length()

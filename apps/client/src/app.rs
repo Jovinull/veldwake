@@ -28,8 +28,9 @@ use crate::{
     encounter::{EncounterMode, EncounterScene},
     input::{CameraAction, CombatAction, InputState},
     lighting::Weather,
-    renderer::{RenderOutcome, Renderer},
+    renderer::{RenderOutcome, Renderer, VfxFrameWork},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
+    vfx::{MAX_PARTICLES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
 
@@ -131,6 +132,11 @@ struct App {
     /// The camera's response to a landed hit. Fed by `CombatEvent::Hit` and by
     /// nothing else.
     shake: HitShake,
+    /// The two effects, in one fixed pool.
+    vfx: VfxPool,
+    /// The instance staging buffer, owned here and reused every frame, so that
+    /// drawing the effects allocates nothing at all.
+    vfx_instances: Box<[VfxInstance; MAX_PARTICLES]>,
     last_combat_report: Instant,
 }
 
@@ -153,6 +159,8 @@ impl Default for App {
             follow: None,
             camera_detached: false,
             shake: HitShake::default(),
+            vfx: VfxPool::default(),
+            vfx_instances: Box::new([VfxInstance::default(); MAX_PARTICLES]),
             last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
@@ -521,11 +529,36 @@ impl App {
             // successful dodge and the start of a swing all reach here and all
             // leave it alone.
             self.shake.advance(outcome.ticks);
+            self.vfx.advance(outcome.ticks);
             for event in scene.events().iter() {
-                if matches!(event, CombatEvent::Hit { .. }) {
-                    self.shake.strike();
+                match event {
+                    // One event, every response: the camera, the chips and
+                    // later the sound all come from this and never from a
+                    // presentation guess about what probably happened.
+                    CombatEvent::Hit { point, from, .. } => {
+                        self.shake.strike();
+                        // The contact point the rules computed, and the
+                        // direction the blow travelled: the chips leave the
+                        // body the way the blade pushed it.
+                        self.vfx
+                            .impact(point, glam::Vec3::new(from.x, 0.35, from.y));
+                    }
+                    // The accent goes on the adversary's windup only. The
+                    // player does not need to be told what the player just
+                    // pressed.
+                    CombatEvent::SwingStarted {
+                        side: Side::Adversary,
+                        ..
+                    } => {
+                        let blade = scene.encounter().blade_world(Side::Adversary);
+                        self.vfx.telegraph(blade.tip);
+                    }
+                    CombatEvent::EncounterReset => self.vfx.clear(),
+                    _ => {}
                 }
             }
+            let live = self.vfx.instances(self.vfx_instances.as_mut_slice());
+            renderer.set_vfx_instances(&self.vfx_instances[..live]);
             self.frame_stats.record_combat(outcome, scene.events());
             if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
                 self.last_combat_report = now;
@@ -533,10 +566,12 @@ impl App {
                 report_combat(
                     scene,
                     &self.frame_stats,
-                    &self.shake,
-                    attack_latched || dodge_latched,
-                    attack_latched,
-                    dodge_latched,
+                    PresentationReport {
+                        shake: &self.shake,
+                        vfx: &self.vfx,
+                        vfx_work: renderer.vfx_frame_work(),
+                    },
+                    (attack_latched, dodge_latched),
                 );
             }
         }
@@ -721,16 +756,31 @@ impl ApplicationHandler for App {
     }
 }
 
+/// What the presentation layers did, for the one report line that names them.
+///
+/// Grouped rather than passed one by one, because a report of a fight that
+/// takes nine loose arguments is a report nobody will add the tenth thing to.
+struct PresentationReport<'a> {
+    shake: &'a HitShake,
+    vfx: &'a VfxPool,
+    vfx_work: VfxFrameWork,
+}
+
 /// Two aggregate lines about the fight, on the same five-second cadence the
 /// streaming and character reports use, so one capture aligns with one interval.
 fn report_combat(
     scene: &EncounterScene,
     stats: &FrameStats,
-    shake: &HitShake,
-    input_latched: bool,
-    attack_latched: bool,
-    dodge_latched: bool,
+    presentation: PresentationReport<'_>,
+    latches: (bool, bool),
 ) {
+    let PresentationReport {
+        shake,
+        vfx,
+        vfx_work,
+    } = presentation;
+    let (attack_latched, dodge_latched) = latches;
+    let input_latched = attack_latched || dodge_latched;
     let encounter = scene.encounter();
     let counters = encounter.counters();
     let player = encounter.combatant(Side::Player);
@@ -739,6 +789,7 @@ fn report_combat(
         mode = scene.mode().name(),
         armed = encounter.is_armed(),
         frozen = scene.is_frozen(),
+        moment_ticks_pending = scene.pending(),
         tick = encounter.tick_index(),
         scene_ticks = scene.ticks(),
         events_this_frame = scene.events().len(),
@@ -796,6 +847,15 @@ fn report_combat(
         frame_events_dropped = stats.combat_events_dropped,
         camera_strikes = shake.strikes(),
         camera_shaking = shake.is_active(),
+        vfx_live = vfx.live(),
+        vfx_impact_chips = vfx.live_of(VfxKind::Impact),
+        vfx_telegraph_motes = vfx.live_of(VfxKind::Telegraph),
+        vfx_high_water = vfx.high_water(),
+        vfx_spawned = vfx.spawned(),
+        vfx_dropped = vfx.dropped(),
+        vfx_draws = vfx_work.draws,
+        vfx_instances = vfx_work.instances,
+        vfx_instance_bytes = vfx_work.bytes,
         "combat work"
     );
 }

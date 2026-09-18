@@ -24,9 +24,21 @@ use crate::{
     debug::{DebugPrimitive, DebugShape},
     lighting::{Lighting, SHADOW_MAP_EDGE, Weather, shadow_centre, shadow_view_projection},
     streaming::{ChunkPresentation, ChunkUploadError, GpuResidency, PresentationCommitError},
+    vfx::{MAX_PARTICLES, VfxInstance},
 };
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// What one frame's effects cost: draw calls, instances, and bytes uploaded.
+///
+/// All three are zero with nothing in flight, which is the contract rather than
+/// a coincidence, and the reason it is three numbers and not a boolean.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VfxFrameWork {
+    pub draws: usize,
+    pub instances: u32,
+    pub bytes: usize,
+}
 
 /// What the GPU needs about one meshed voxel face corner.
 ///
@@ -129,6 +141,91 @@ impl DebugVertex {
             attributes: &Self::ATTRIBUTES,
         }
     }
+}
+
+/// One corner of the solid unit cube the effect chips are drawn from.
+///
+/// Position and normal, centred on the origin so an instance is a placement
+/// rather than a translation: the shader multiplies by the edge length and adds
+/// the centre, which is the same arithmetic the debug boxes use.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct VfxVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+}
+
+impl VfxVertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+impl VfxInstance {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4];
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+/// The six faces of a unit cube centred on the origin, as two triangles each.
+///
+/// Thirty-six vertices rather than an index buffer, because thirty-six is
+/// nothing and a second buffer to bind is not.
+fn vfx_cube() -> [VfxVertex; 36] {
+    const H: f32 = 0.5;
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        // normal, in-plane u, in-plane v
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+    ];
+    let mut out = [VfxVertex {
+        position: [0.0; 3],
+        normal: [0.0; 3],
+    }; 36];
+    let mut index = 0;
+    for (normal, u, v) in faces {
+        let corner = |su: f32, sv: f32| {
+            [
+                normal[0].mul_add(H, u[0].mul_add(su * H, v[0] * sv * H)),
+                normal[1].mul_add(H, u[1].mul_add(su * H, v[1] * sv * H)),
+                normal[2].mul_add(H, u[2].mul_add(su * H, v[2] * sv * H)),
+            ]
+        };
+        // Counter-clockwise seen from outside, matching every other pipeline.
+        for (su, sv) in [
+            (-1.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, 1.0),
+        ] {
+            out[index] = VfxVertex {
+                position: corner(su, sv),
+                normal,
+            };
+            index += 1;
+        }
+    }
+    out
 }
 
 /// Vertices of the 12 unit-cube edges, drawn as a `LineList`.
@@ -588,6 +685,16 @@ pub struct Renderer {
     /// Separate `LineList` pipeline for the debug views. Nothing below is
     /// touched while the views are off.
     debug_pipeline: wgpu::RenderPipeline,
+    /// One instanced pass for the two effects. The buffer is allocated once at
+    /// its maximum and never grows, so a frame with chips in it writes and a
+    /// frame without one does not.
+    vfx_pipeline: wgpu::RenderPipeline,
+    vfx_vertices: wgpu::Buffer,
+    vfx_instances: wgpu::Buffer,
+    /// Live instances written this frame. Zero means no write and no draw.
+    vfx_live: u32,
+    /// Bytes of instance data written this frame, for the accounting.
+    vfx_instance_bytes: usize,
     debug_layout: wgpu::BindGroupLayout,
     debug_vertices: wgpu::Buffer,
     debug_slots: Vec<DebugSlot>,
@@ -1062,6 +1169,63 @@ impl Renderer {
             contents: bytemuck::cast_slice(&debug_line_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+
+        // The effect chips. One pipeline, one static cube, one instance buffer
+        // allocated at its maximum once: a burst writes into it and an empty
+        // frame leaves it alone.
+        let vfx_shader = shader_module(&device, "M6 effect chip shader", include_str!("vfx.wgsl"));
+        let vfx_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("M6 effect chip pipeline layout"),
+            bind_group_layouts: &[Some(&scene_only_layout)],
+            immediate_size: 0,
+        });
+        let vfx_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("M6 effect chip pipeline"),
+            layout: Some(&vfx_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &vfx_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(VfxVertex::layout()), Some(VfxInstance::layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            // Solid geometry, so it writes depth like a body does: a chip
+            // behind a torso is behind it.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &vfx_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let vfx_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("M6 effect chip unit cube"),
+            contents: bytemuck::cast_slice(&vfx_cube()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let vfx_instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("M6 effect chip instances"),
+            size: (size_of::<VfxInstance>() * MAX_PARTICLES) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let depth_view = create_depth_view(&device, config.width, config.height);
 
         let mut renderer = Self {
@@ -1088,6 +1252,11 @@ impl Renderer {
             debug_pipeline,
             debug_layout,
             debug_vertices,
+            vfx_pipeline,
+            vfx_vertices,
+            vfx_instances,
+            vfx_live: 0,
+            vfx_instance_bytes: 0,
             debug_slots: Vec::new(),
             debug_draws: Vec::new(),
             debug_frame_work: DebugFrameWork::default(),
@@ -1165,6 +1334,37 @@ impl Renderer {
             );
             self.debug_draws
                 .push((index, debug_vertex_range(primitive.shape)));
+        }
+    }
+
+    /// Replaces the effect chips drawn this frame.
+    ///
+    /// An empty slice writes no bytes and issues no draw, which is the same
+    /// contract the debug views hold: with nothing in flight the effects cost
+    /// exactly the pipeline and the buffers that were created at startup.
+    /// Anything past [`MAX_PARTICLES`] is refused here as well as in the pool,
+    /// because a renderer that trusts a caller's length is one bad caller from
+    /// writing past a buffer.
+    pub fn set_vfx_instances(&mut self, instances: &[VfxInstance]) {
+        self.vfx_live = 0;
+        self.vfx_instance_bytes = 0;
+        if instances.is_empty() {
+            return;
+        }
+        let count = instances.len().min(MAX_PARTICLES);
+        let bytes = bytemuck::cast_slice(&instances[..count]);
+        self.queue.write_buffer(&self.vfx_instances, 0, bytes);
+        self.vfx_live = u32::try_from(count).unwrap_or(0);
+        self.vfx_instance_bytes = bytes.len();
+    }
+
+    /// What the effects cost the GPU in the last frame.
+    #[must_use]
+    pub const fn vfx_frame_work(&self) -> VfxFrameWork {
+        VfxFrameWork {
+            draws: if self.vfx_live == 0 { 0 } else { 1 },
+            instances: self.vfx_live,
+            bytes: self.vfx_instance_bytes,
         }
     }
 
@@ -1335,6 +1535,13 @@ impl Renderer {
                     pass.set_index_buffer(part.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..part.index_count, 0, 0..1);
                 }
+            }
+            if self.vfx_live > 0 {
+                pass.set_pipeline(&self.vfx_pipeline);
+                pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.vfx_vertices.slice(..));
+                pass.set_vertex_buffer(1, self.vfx_instances.slice(..));
+                pass.draw(0..36, 0..self.vfx_live);
             }
             if !self.debug_draws.is_empty() {
                 pass.set_pipeline(&self.debug_pipeline);

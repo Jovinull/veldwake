@@ -9,6 +9,7 @@ mod input;
 mod lighting;
 mod renderer;
 mod streaming;
+mod vfx;
 mod world;
 
 use std::process::ExitCode;
