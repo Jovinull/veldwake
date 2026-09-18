@@ -22,3 +22,6 @@ Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence
 | [0002](0002-presentation-independent-authority.md) | Presentation-independent authority | Accepted | 2026-09-16 |
 | [0003](0003-procedural-first-audiovisual-production.md) | Procedural-first audiovisual production | Accepted | 2026-09-16 |
 | [0004](0004-rigid-voxel-character-and-analytical-locomotion.md) | Rigid voxel character parts and analytical locomotion | Accepted | 2026-09-17 |
+| [0005](0005-fixed-step-headless-combat-domain.md) | Fixed-step headless combat domain | Proposed | 2026-09-18 |
+| [0006](0006-action-pose-layer-beside-analytical-locomotion.md) | Action pose layer beside analytical locomotion | Proposed | 2026-09-18 |
+| [0007](0007-procedural-impact-audio-boundary.md) | Procedural impact audio and its device boundary | Proposed | 2026-09-18 |
