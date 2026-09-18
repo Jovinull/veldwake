@@ -47,23 +47,46 @@ Then the code, in this order, because it is the surface M6 has to work against:
 - `apps/client/src/camera.rs` and `apps/client/src/input.rs` — a free-fly camera and keyboard state, with no player-character relationship of any kind;
 - `crates/procedural` and `apps/client/src/world.rs` — how terrain reaches the client.
 
-## Continue here — M6 — Combat Slice
+## Continue here — M6 branch QA
 
-**M6 is the next milestone and nothing of it exists.** No combat code, no weapon, no enemy, no AI, no hit model, no controller, and no dependency for any of them has been added.
+**M6 — Combat Slice is implemented on `feat/m6-combat-slice` and is not merged.** The next step is independent branch QA against that branch, exactly as M4 and M5 had. Nothing is asked of a QA session beyond reading [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) and disagreeing with it where the evidence does not support it.
 
-The accepted scope, copied from [`../planning/ROADMAP.md`](../planning/ROADMAP.md) and deliberately not expanded:
+All five phases are landed. The domain is `crates/combat`; the client work is in `apps/client/src/{arena,encounter,vfx,readout,synth,audio}.rs` and the changes to `app.rs`, `camera.rs`, `input.rs`, `debug.rs` and `renderer.rs`. Three ADRs were added ([0005](../adr/0005-fixed-step-headless-combat-domain.md), [0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), [0007](../adr/0007-procedural-impact-audio-boundary.md)) and one dependency (`cpal`), audited before it was added.
 
-> One weapon and one enemy with movement, attack/defense or dodge, telegraphs, hit reaction, camera response, procedural impact audio, VFX, animation, and encounter/readability playtest evidence.
+### The one thing that is not done
 
-That is a statement of intent, not a plan. Start by reading the repository and assessing the current state, exactly as M5 was started; `ARCHITECTURE.md` carries the test a new crate must pass before it exists, and `AGENTS.md` carries the rule for new dependencies.
+**A person has not listened to the impact audio.** Everything measurable about it is measured — device, event delivery, latency bound, amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle, whiff against hit — and none of that establishes whether an impact sounds like an impact. The offline fixture exists for exactly that judgement:
 
-### What is deliberately not decided
+```text
+cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
+```
 
-None of the following has been chosen, and nothing in the repository implies a choice. Do not treat silence as a decision, and do not adopt one by writing code that assumes it:
+It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`. Nobody has played it. **OWNER LISTENING CHECK REQUIRED** before M6 can be called complete.
 
-weapon representation; enemy architecture; whether there is an AI state machine, a behaviour tree, or neither; navigation; the hitbox and hurtbox model; the damage model; stamina; dodge invulnerability frames; the combat controller; physics integration of any kind, including whether Rapier is ever introduced; animation architecture beyond what M5 already does; a VFX system; audio event architecture; camera shake implementation; target lock; whether an ECS is introduced at all; and the entity model.
+A played victory is also outstanding (KI-024): the evidence harness cannot aim, so no played run has won. The fight is winnable by measurement and is won in `script` mode, but a person has not won it.
 
-These are for a session that investigates them against the consolidated repository. Earlier conversations contain speculation about several of them and none of that speculation is a decision.
+### What was decided, and where the reasoning lives
+
+Every item the previous handoff listed as open now has an answer in code and a written reason. Do not re-open one without reading the reason first:
+
+| question | answer | where |
+|---|---|---|
+| weapon representation | a descriptor of physical identity only; timing lives in `AttackSpec` | `crates/combat/src/weapon.rs`, and the milestone's *two corrections* |
+| enemy architecture | a four-state machine producing intent, never a second timeline | `crates/combat/src/adversary.rs` |
+| AI: state machine, behaviour tree, or neither | a state machine, with named deterministic decision streams | ADR-0005 |
+| navigation | none. The adversary steers, the arena is a disc, there is no navmesh | milestone non-goals |
+| hitbox and hurtbox model | a swept blade segment against one torso-column capsule refitted per tick | `crates/combat/src/hurt.rs`, KI-022 |
+| damage model | integer health, one damage figure per spec, no resistances | `crates/combat/src/spec.rs` |
+| stamina | none | milestone non-goals |
+| dodge invulnerability frames | none. A dodge succeeds by geometry or not at all | ADR-0005, KI-023 |
+| combat controller | latched edge input, camera-relative movement, facing follows movement | `apps/client/src/input.rs` |
+| physics integration | none, and no Rapier. Kinematic movement against `GroundSampler` | ADR-0005 |
+| animation architecture | a five-action keyed pose layer beside M5's locomotion, no graph | ADR-0006 |
+| VFX system | none. Two effects, one fixed pool, one instanced draw | `apps/client/src/vfx.rs` |
+| audio event architecture | one `CombatEvent`, a lock-free queue, a pure synth, one device | ADR-0007 |
+| camera shake | tick-driven, capped, confirmed hits only | `apps/client/src/camera.rs` |
+| target lock | none | milestone non-goals |
+| ECS | no. Two combatants indexed by `Side`, and that is the entity model | ADR-0005 |
 
 ### What M5 leaves you to build on
 
@@ -89,6 +112,14 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
+- **M6 has not been through independent QA and has not been heard.** The audio works technically and no one has judged it; a played victory has not happened (KI-024). Neither is a defect, and both are unfinished.
+- **`GOLDEN_ENCOUNTER_SIGNATURE` and `GOLDEN_ACTION_POSE_SIGNATURE` each moved twice, and every move has a written OLD/NEW/WHY beside the constant.** All five M5 signatures are byte-identical and `CHARACTER_STYLE_VERSION` was deliberately not bumped, because it is part of a character's identity and the action rules answer to `COMBAT_STYLE_VERSION` instead. Re-lock deliberately; never to make a test pass.
+- **Weapon identifiers are `192..224`.** Terrain is `64..128`, characters `128..192`, and the M2/M3 diagnostics are `1`, `2`, `7`. The client carries the global disjointness test and a new content domain declares its own range there.
+- **The hurt volume is not the M5 body capsule and must not be confused with it.** `BodyCapsule` keeps two bodies out of each other; `hurt::HurtVolume` decides damage. Sweeping the blade against the first is the defect that produced hits in empty air, and the module documentation carries the three rounds of measurement that chose the second.
+- **`Encounter::step` takes no `dt` and must not learn to.** One call is one tick. Every duration in the domain is a tick count and authored seconds are compiled by a validating constructor, which is what makes `NaN`, negative and infinite time unrepresentable rather than rejected.
+- **The audio callback's contract is checkable, not aspirational.** No allocation, no lock, no logging, no blocking, no panic. `std::sync::mpsc` is not documented to be allocation-free and must not replace the atomic ring; the ring needs no `unsafe`, which the workspace forbids anyway.
+- **The cpal dependency enables no backend features.** WASAPI is compiled into the Windows backend with no flag. Adding `asio`, `jack`, `pipewire`, `pulseaudio` or `realtime` is a dependency decision with its own audit, not a convenience.
+- **A named moment's camera frames the fight, not the arena.** `arena::frame_the_fight` reinterprets a pose's offset in the fight's own frame, because a fight is wherever it drifted to. A capture that reverts to a fixed world offset will sooner or later photograph one body standing in front of the other.
 - **M5's visual validation is one host and one adapter, and it is merged anyway.** The independent D3D12 exit gate passed on the audited Intel Iris Xe machine and nothing compares captures automatically (KI-021). Visual readability is not reducible to the headless fixtures, so a later reviewer disagreeing with a judgement in the milestone document is a legitimate finding, not a re-litigation.
 - **Do not start M6 by deciding its architecture from a previous conversation.** The list of open decisions above is deliberate. Investigate each against the merged repository.
 - **The character's visual contract is versioned and now locked.** `CHARACTER_STYLE_VERSION`, `CHARACTER_COMPILER_VERSION` and `CHARACTER_SCHEMA_VERSION` fold into a character's identity fingerprint, and seven fixture signatures are checked against the compiler on every test run. Moving a voxel, a bone or a gait constant without bumping the matching version is a failing test, which is the intent. Re-lock deliberately; never re-lock to make a test pass.
