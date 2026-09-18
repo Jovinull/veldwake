@@ -18,10 +18,10 @@ Nothing else. This is a vertical slice of combat, not a combat system.
 | phase | contents | status |
 |---|---|---|
 | M6A | `veldwake-combat`: tick clock, weapon compiler, attack specs, combatants, actions, hit sweep, movement, adversary, encounter, fixtures, `combat-probe` | complete |
-| M6B | client: input, encounter modes, accumulator, two actors, weapons, follow camera, armed gate, health readout, debug volumes, first real-game run | not started |
-| M6C | action motion, reaction, knockback, hitstop, camera shake, named moments, capture cycle | not started |
-| M6D | VFX and procedural impact audio, with measurements | not started |
-| M6E | playtest evidence, regressions, performance, documentation close-out | not started |
+| M6B | client: input, encounter modes, accumulator, two actors, weapons, follow camera, armed gate, health readout, debug volumes, first real-game run | complete |
+| M6C | action motion, reaction, knockback, hitstop, camera shake, named moments, capture cycle | complete |
+| M6D | VFX and procedural impact audio, with measurements | complete |
+| M6E | playtest evidence, regressions, performance, documentation close-out | in progress |
 
 ## The two corrections the design carried
 
@@ -217,13 +217,216 @@ The worst-case tick is two orders of magnitude above the mean and does not move 
 
 `VELDWAKE_ENCOUNTER` selects the mode, and `off` is the default and a regression contract: with it unset the client behaves exactly as it did at `5bebc4f` — free-fly camera, `VELDWAKE_CHARACTER` untouched, no combat simulation, no second actor on the GPU, no weapon, no particles, no audio device, and no extra draw or upload.
 
+### Modes
+
+| value | what it does |
+|---|---|
+| `off` | the default, and the regression contract above |
+| `armed` | playable: `WASD` relative to the camera, `J` or left mouse attacks, `K` or `Space` dodges, `F4` detaches the camera, `F1` cycles to a combat view that draws the volumes a hit is decided by |
+| `script` | the reference script drives the player, so a fight runs unattended |
+| `moment:<name>` | replays the script to a named moment and freezes there |
+| `moment:<name>+<ticks>` | the same, some whole ticks later |
+
+The offset exists because of a defect. A frozen frame is the only way to photograph a `0.1`-second window, and one frozen frame says nothing about an arc; `moment:confirmed-hit+6` is the same fight, the same camera and the same tick arithmetic, six ticks on, so a sequence of runs reconstructs a swing exactly rather than at whatever interval a screen grab happened to land on. It also had to be built twice. The first version ran the offset inside the moment search, which happens before the frame loop exists — so the events of the moment's own tick reached nothing, and the first frozen capture of a hit came back with zero chips and zero camera strikes. The search now finds *which* tick and a second pass replays to the tick before it, handing the rest to the frame loop, which runs them through exactly the path a played tick takes.
+
+### The arena
+
+The fight happens in a scanned clearing of the M4 golden region at `(-69, 49)`, chosen by a full-region scan for a level, vegetation-free, walkable column. `ARENA_RADIUS` is `5.5` rather than the `7.0` it started at: that clearing is free of vegetation only out to seven world units, and at `5.5` the widest body plus the arena radius is `6.36`, comfortably inside it. There is no vegetation collision, so an arena that let a body reach the boundary would let it stand inside a shrub.
+
+### What one encounter costs the GPU
+
+Measured on the audited host from the `encounter ready` line:
+
+| measure | value |
+|---|---|
+| actors | 2 |
+| weapons | 2 (the same compiled weapon, drawn twice) |
+| rigid parts uploaded | 32 |
+| quads | 5,342 |
+| static GPU bytes | 985,648 |
+| dynamic upload per frame | 2,720 bytes |
+| world draws | 34 |
+| shadow draws | 34 |
+
+Thirty-four is sixteen bones plus one weapon, twice. Geometry is uploaded once; a frame writes transforms only, which is what the `2,720` is.
+
+### The real-game gate
+
+A played run on the audited host, driven through the evidence harness: the encounter armed on the first input, the player swung thirteen times, was hit ten times, dodged four times, was defeated once and the encounter reset once. Zero errors, zero validation messages, exit code `0`, `events_dropped=0`, `frame_events_dropped=0`.
+
+That run also found two real defects, both fixed:
+
+- **The input latch was never consumed on the frozen path**, so `input_latched` was permanently true in the report. A frozen encounter now takes the latches and drops them, and the report splits attack from dodge so a stuck latch names itself.
+- **The follow camera sat at chest height directly behind the player**, which hid the adversary, and the adversary circling behind filled the frame. The camera is now at `2.10` eye height, `6.2` back, `1.15` to one side, pitched `-0.24`, yawing back toward its anchor. Occlusion solving remains an explicit non-goal; `F4` exists for the cases it would solve.
+
+The same run's blind key pattern landed only one of thirteen swings, which looked like a design problem and was not. `combat-probe aim` settles it by standing a passive body at a bearing and swinging: a swing aimed at the body connects at **every** range from `1.60` to `2.80`, and the window is roughly `-45°` to `+14°` at contact range narrowing to `-15°` to `+10°` at `2.80`. It is off-centre by about fifteen degrees because the swing is right-handed. A driver that presses `W` and `J` without seeing the screen aims no better than it walks; a player who aims, hits. No aim assist was added, and the measurement rather than an opinion is why.
+
+## M6C — action motion
+
 ## M6C — action motion
 
 The action layer lives in `veldwake-character` because that crate owns "what angle is every joint at". Combat says *which action and how far through*; the curves, the blending and the joint clamps stay in one place. Locomotion remains distance driven; the action layer is tick driven, and that second category is what [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) records.
 
+Five actions: `Carry`, `Attack`, `Dodge`, `Stagger`, `Defeated`. `pose()` is unchanged and `pose_with()` is the new path, which is why every M5 signature is byte-identical — see *What moved and what did not* below.
+
+### What the captures found
+
+The capture cycle is the point of M6C, and it earned its place: every one of the following was found by opening an image, not by reading code.
+
+**The hit was being decided against the wrong volume.** The contact frame showed the player's sword raised over its shoulder with its tip in the air above the adversary's head, and the rules said a hit had landed. The volume being swept was M5's `BodyCapsule`, which contains every voxel of the rest pose — arms included — so it came out `0.8274` wide on a body `0.50` through the chest and reached from `0.52` below the ground to above the crown. The blade was inside it for the whole windup. [`veldwake_combat::hurt`](../../crates/combat/src/hurt.rs) replaces it with a torso-column volume refitted every tick, and the hit moved from the fourth of twelve active ticks to the eighth, with the blade at chest height and through the body.
+
+Choosing that volume took three rounds of measurement and each one removed something:
+
+| core | radius, adversary | why it did not survive |
+|---|---|---|
+| whole rest pose (M5) | `0.8274` | as wide as the hands reach; took hits in empty air |
+| torso, thighs and shins | `0.6609` | a striding body throws a shin `0.30` clear of it |
+| torso and thighs | `0.6470` | a striding body throws a thigh `0.35` clear of it |
+| **torso column** | **`0.6335`** | kept |
+
+Refitting to the current pose does not rescue a leg: the width is the stride's, not the fit's. So everything that swings — both arms, both legs below the hip, the feet, the weapon — is outside the volume, and that limitation is asserted rather than hoped for. The blade's active window sweeps a height band of `1.14` to `2.84` above the ground, which is chest and head, so nothing the two attacks can do is lost by it.
+
+**A defeated body held the carry pose.** The last frame of a fight showed the loser standing with its sword out, indistinguishable from a body about to swing. `ActionKind::Defeated` sags the knees, folds the torso and drops the blade over a fixed `DEFEAT_SAG_TICKS` window. That window was then corrected in the same session: it eased over a quarter of itself, so the sag finished in six ticks of the twenty-four the constant promised and read as a snap.
+
+**A fixed camera cannot frame a moment.** The `defeat` capture came back showing one figure standing alone. Nothing was wrong with the renderer: the defeat landed three units off the arena centre with both bodies almost exactly in line with a camera that looks along `x`, so one stood in front of the other. `arena::frame_the_fight` reinterprets a named pose's offset, for a frozen moment, as a distance in the *fight's* own frame — across the line between the bodies, above the ground they stand on, along that line from the midpoint. Every moment is framed the same way whatever the fight did to get there, which is what makes two captures comparable.
+
+**The adversary's hands were two slabs.** At `0.20` of body height a thirty-three-voxel body gets a hand seven voxels deep, and the close contact frame came back with two brown slabs and two brass guards piled where the blades meet. `0.15` gives five, still inside the style contract's `1.20`–`1.80` hand-to-forearm band.
+
+**The impact chips left as a clump.** Twelve spread directions biased into the strike's half-space by adding `away * 0.9` very nearly cancelled the four pointing back at the attacker, so their velocity came out near zero and the spray was one blob. Reflecting about the plane perpendicular to the blow keeps twelve distinct unit directions and still sends none of them backwards.
+
+**Two measurement tools were wrong, and were corrected rather than trusted.** `combat-probe contact` printed `closest_points`' **squared** distance as a distance, and its bearing column had the `x` sign flipped against `movement::facing_of`, which made a swing that connected look like one aimed forty-one degrees wide. Both are fixed and the three independent measurements — the aim table, the contact table and the fight itself — now agree: the reference hit lands at a `-9.6°` facing error, inside the measured window.
+
+### Camera response
+
+Only a confirmed hit moves the camera. `HitShake` has no idea what a miss, a dodge or the start of a swing is: the only way to move it is `strike()`, and the only caller is a `CombatEvent::Hit`. It is capped at `SHAKE_MAX_OFFSET = 0.055` world units — a twelfth of the follow distance — decays over `SHAKE_TICKS = 16`, restarts rather than accumulates, and is a function of an integer tick counter, so the same hit displaces the camera identically on every run. A frozen moment runs no ticks and holds.
+
+## M6D — VFX and procedural audio
+
 ## M6D — VFX and procedural audio
 
 Deliberately last. If the combat does not feel right with the presentation extras off, particles and sound will not fix it; they are added after the core is judged, and the judgement is repeated with them on.
+
+### Two effects, one fixed pool
+
+No particle system: no emitters, no curves, no modules, no spawn descriptors, no sorting, no texture, and no way to add a third effect without writing it. `VfxKind` has two variants — impact chips off a confirmed hit, and a cold accent on the adversary's windup — and they are deliberately opposites, so neither can be mistaken for the other: chips are warm, fast and fall; motes are cold, slow and rise.
+
+The pool is a fixed array of `MAX_PARTICLES = 96`. Nothing allocates, including when it draws: `instances()` writes into a buffer the caller owns. Ages are tick counts and spread directions come from a fixed icosahedron table, so the same hit throws the same chips on every run — and a frozen moment holds them exactly where they were, which is what makes a frozen capture of an impact possible.
+
+The rendering is one instanced pass: one static unit cube, one instance buffer allocated once at its maximum, one draw call.
+
+### What one hit costs, measured
+
+From the frozen captures:
+
+| moment | impact chips | telegraph motes | camera strikes | vfx draws | instance bytes |
+|---|---|---|---|---|---|
+| `confirmed-hit+3` | 12 | 0 | 1 | 1 | 384 |
+| `telegraph-early+6` | 0 | 5 | 0 | 1 | 160 |
+| a settled frame, nothing in flight | 0 | 0 | 0 | 1 | 512 |
+
+One event, the right response, never the wrong one: the telegraph fires no chips and moves no camera; the hit fires no motes. The `512` bytes in the last row are the readout's sixteen pips, which are always present during an encounter — so **the "nothing in flight costs nothing" contract is about particles, and during an encounter there is always one effect draw for the readout**. With the encounter off there is no draw at all.
+
+### The readout
+
+A row of `READOUT_PIPS = 8` cubes above each head, bright for health held and dark for health lost. It shares the effect pipeline because a pip is the chip cube at a different size, so it costs one instance each and no second pipeline. A bar would want a non-uniform scale the instance does not carry. Any health at all keeps one pip lit, so "one hit from death" never looks like death, and a dead body still shows its row, all dark. Captured at `24` of `96` health: two bright, six dark.
+
+### The sound
+
+Generated, never recorded: no samples, no assets, no files. A hit is a noise transient through a fast envelope with a low body under it and a short metallic ring over it; a whiff is noise through a one-pole filter whose corner rises and falls. Both are a few hundred bytes of arithmetic.
+
+Three layers, and the separation is the design:
+
+- [`synth`](../../apps/client/src/synth.rs) is pure DSP with no cpal, no threads, no clock and no I/O — a function from voice requests and a sample rate to a buffer of `f32`. That is what makes every claim about it testable headlessly, against the same code the device plays.
+- `SoundQueue` is a lock-free single-producer single-consumer ring of packed requests. Atomics only, no `unsafe` — the workspace forbids it — and no `std::sync::mpsc`, because an `mpsc` receiver is not documented to be allocation-free and a channel that *probably* does not allocate is not a real-time channel.
+- `AudioDevice` is the only code in the repository that knows cpal exists.
+
+The real-time callback never allocates, never locks, never logs, never blocks and never panics, and each of those is a property rather than an intention. Everything it wants to report is an atomic the game thread reads and logs on its own time.
+
+A host with no sound card, no default output, or a device that does not want `f32` still plays the game: the failure is warned once, counted, and the fight is silent. CI has no audio device and must not fail for it.
+
+### Audio, measured on the audited host
+
+A `37.5`-second scripted fight, `VELDWAKE_ENCOUNTER=script`:
+
+| measure | value |
+|---|---|
+| device | `Alto-falantes`, WASAPI |
+| sample rate / channels / format | `48,000` Hz, `2`, `f32` |
+| callbacks | 10,412 |
+| frames rendered | 4,998,336 |
+| buffer high-water | 1,056 frames (`22.0` ms) |
+| voices started | 53 |
+| voices displaced by the voice limit | 0 |
+| voice high-water | 1 |
+| peak sample | `0.2323` against a `0.92` limit |
+| device errors | 0 |
+| queue consumed / dropped / waiting | 53 / 0 / 0 |
+
+The cross-check is the one that matters: the same run recorded 15 player hits, 15 adversary hits, 7 player whiffs and 16 adversary whiffs — **30 + 23 = 53, exactly the voices started**. Every combat event produced one sound, none were invented, and none were lost.
+
+The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture`) renders six seconds of every sound the fight makes to a `.wav` in the system temporary directory. Measured: `48` kHz, 16-bit mono, peak `0.7712` on the eight-simultaneous-hits burst, **zero clipped samples**, and per-half-second RMS that tracks the script — whiffs at `0.001`–`0.004`, the exchange at `0.010`–`0.017`, the burst at `0.052`.
+
+**What none of that establishes is whether an impact *sounds* like an impact.** That judgement needs ears and this agent has none, so it is not claimed. See the owner check in the milestone's closing status.
+
+### The cpal dependency, audited before it was added
+
+`cpal = { version = "=0.18.2", default-features = false }`, pinned exactly like every other dependency here.
+
+| check | result |
+|---|---|
+| licence | Apache-2.0; `dasp_sample` is MIT OR Apache-2.0. Both already in `deny.toml`'s allow list |
+| `rust-version` | `1.85`, against the toolchain's `1.98.1` |
+| default features | empty upstream, and written out anyway so the day a default appears is the day this line stops it |
+| features enabled | none. No `asio`, no `jack`, no `pipewire`, no `pulseaudio`, no `realtime`. WASAPI is compiled into the Windows backend with no feature flag |
+| `cargo tree` on `x86_64-pc-windows-msvc` | grows by exactly two crates: `cpal v0.18.2` and `dasp_sample v0.11.0`. The existing `windows v0.62.2` is reused, so no duplicate version |
+| `Cargo.lock` | 17 new packages, of which 15 (`alsa`, `coreaudio-rs`, `objc2-*`, …) are other platforms' backends that this target never compiles |
+| `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| `cargo audit` | 226 crate dependencies scanned, no vulnerabilities |
+
+### Cost
+
+| measure | value |
+|---|---|
+| combat tick, mean | `14.161` µs over 12,000 ticks |
+| a second of simulation at 120 Hz | `1.699` ms of one core |
+| ground queries per tick | `14.96` |
+| one hit query at 16 substeps | `0.3551` µs |
+| worst sweep substeps in a fight | 4 of 16 |
+| weapon compile, median | `125.5` µs |
+| `renderer_render_wall`, mean / max | `9,216` / `14,879` µs |
+
+The bench's worst single tick is `44,021` µs, two orders of magnitude above the mean and unrelated to the work: it is desktop scheduling, and the figure to read is the mean. `renderer_render_wall` is **wall time around the render call**, not GPU time; there are no GPU timestamps here and none is claimed.
+
+## What moved and what did not
+
+Every locked value that changed, and why. Nothing was re-locked to make a test pass; each entry names the semantic change that required it.
+
+### Unchanged, and the point of the exercise
+
+| signature | value |
+|---|---|
+| `GOLDEN_GEOMETRY_FINGERPRINT` | `0x3ebe8c822f549151` |
+| `GOLDEN_SKELETON_FINGERPRINT` | `0x2628aeb41d2979ed` |
+| `GOLDEN_COLLISION_FINGERPRINT` | `0x818156de8637d934` |
+| `GOLDEN_BEHAVIOUR_SIGNATURE` | `0x6ca752c70a5bf919` |
+| `GOLDEN_POSE_SIGNATURE` | `0xfd1e1f61ba1737d2` |
+| `STURDY_BEHAVIOUR_SIGNATURE` | `0xb7d67addb9845142` |
+| `VARIED_BEHAVIOUR_SIGNATURE` | `0xa931d3c2ede0d752` |
+
+`CHARACTER_STYLE_VERSION` was deliberately **not** bumped. It is part of `CharacterIdentity`, so bumping it would move the identity and behavioural signature of three compiled bodies to record a rule that moves no voxel. The action-motion rules answer to their own version in `docs/audiovisual/COMBAT_STYLE.md` instead, and `pose()` is untouched, which is why `GOLDEN_POSE_SIGNATURE` above is byte-identical.
+
+### Moved, with reasons
+
+| signature | old | new | why |
+|---|---|---|---|
+| `GOLDEN_ACTION_POSE_SIGNATURE` | `0xd736e07231cbd790` | `0xce4233533b66e60c` | a fifth action, `Defeated`, and the two named poses covering it. Carry, attack, dodge and stagger curves unchanged |
+| `GOLDEN_ACTION_POSE_SIGNATURE` | `0xce4233533b66e60c` | `0xd86daa4a8d870882` | the collapse eased over a quarter of its window instead of all of it, so it snapped |
+| `GOLDEN_ENCOUNTER_SIGNATURE` | `0x38e207fc7ead6c47` | `0xc2fc91e36fbd0ec4` | the adversary's hand depth came down from seven voxels to five after the close contact capture, which moves its capsule radius and so every separation |
+| `GOLDEN_ENCOUNTER_SIGNATURE` | `0xc2fc91e36fbd0ec4` | `0x008e8bd64f62f267` | the hurt volume became the torso column; every position in the fight follows from where a hit lands |
+
+The weapon's two fingerprints — `0x8a6b18edd4a2b879` geometry and `0x084bf386500bb0e4` identity — have not moved since they were first locked.
+
+The second encounter re-lock also made it a better fight rather than only a more legible one. The adversary now has to aim, so it whiffs seven of thirteen swings instead of connecting almost every time, and the reference run ends with the player on `24` health rather than `6`.
 
 ## M6E — evidence
 
