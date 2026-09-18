@@ -272,6 +272,7 @@ mod tests {
             state,
             Health::full(100),
             character.collision().capsule(),
+            crate::hurt::HurtVolume::derive(character),
             BodySide::Right,
             posed(character),
         )

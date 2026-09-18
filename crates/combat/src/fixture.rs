@@ -609,7 +609,21 @@ pub const GOLDEN_WEAPON_IDENTITY_FINGERPRINT: u64 = 0x084b_f386_500b_b0e4;
 /// `0.20` of body height to `0.15`. That moves its capsule radius from `0.8563`
 /// to `0.8274` and therefore every separation in the fight. The outcome is
 /// unchanged: six hits each, one defeat, the player down to six health.
-pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0xc2fc_91e3_6fbd_0ec4;
+///
+/// **Old** `0xc2fc91e36fbd0ec4`, **new** `0x008e8bd64f62f267`, **why**: the same
+/// capture, read a second time and with the debug volumes on, said the hit
+/// itself was wrong. A hit was landing on the fourth of twelve active ticks with
+/// the sword still raised over the shoulder and its tip in the air above the
+/// adversary's head, because the volume being tested was M5's whole-body capsule
+/// — `0.8274` wide on a body `0.50` through the chest, reaching from `0.52`
+/// below the ground to above the crown. [`crate::hurt`] replaces it with a
+/// torso-column volume refitted every tick, which moves the hit to the eighth
+/// active tick, with the blade at chest height and through the body. Every
+/// position in the fight follows from that. It is a better fight, too, and not
+/// only a more legible one: the adversary now has to aim, so it whiffs seven of
+/// thirteen swings instead of connecting almost every time, and the player
+/// finishes on `24` health rather than `6`.
+pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x008e_8bd6_4f62_f267;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]

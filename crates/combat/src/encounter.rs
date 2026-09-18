@@ -54,6 +54,7 @@ use crate::adversary::AdversaryBrain;
 use crate::combatant::{Action, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
 use crate::hit::{Segment, Sweep, sweep_capsule};
+use crate::hurt::HurtVolume;
 use crate::movement::{MoveRules, facing_of, separate, try_move, turn_toward};
 use crate::spec::{AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
 use crate::tick::{Ticks, tick_seconds};
@@ -214,6 +215,7 @@ impl Encounter {
                 state,
                 healths[index],
                 character.collision().capsule(),
+                HurtVolume::derive(character),
                 BodySide::Right,
                 posed,
             ));
@@ -611,7 +613,7 @@ impl Encounter {
         let state = *combatant.state();
         let previous = self.blade_world(side);
         let posed = pose_with(&self.characters[index], &state, ground, Some(&overlay));
-        self.combatants[index].set_posed(posed);
+        self.combatants[index].set_posed(posed, self.characters[index].collision());
         self.combatants[index].set_blade(previous);
     }
 
@@ -1064,10 +1066,16 @@ mod tests {
         let mut swings = 0_u32;
         for _ in 0..spec.total() * 6 {
             let free = encounter.combatant(Side::Player).can_act();
-            let events = encounter.step(
-                Intent::player(Vec2::new(0.0, -1.0), free, false),
-                Some(&ground),
-            );
+            // Toward the adversary, not toward a fixed compass direction.
+            // Facing follows movement, and a knockback slides the victim
+            // sideways, so a player walking due south ends up swinging thirty
+            // degrees past a body it is standing against. That is a real
+            // property of movement-driven facing and it belongs in a test about
+            // facing; here it is a variable that has nothing to do with whether
+            // one swing lands one hit.
+            let toward = encounter.combatant(Side::Adversary).position()
+                - encounter.combatant(Side::Player).position();
+            let events = encounter.step(Intent::player(toward, free, false), Some(&ground));
             for event in events.iter() {
                 match event {
                     CombatEvent::Hit {
@@ -1538,18 +1546,15 @@ mod tests {
 
     #[test]
     fn the_hurt_capsule_contains_the_core_of_the_body_at_every_moment_of_a_fight() {
-        // The accepted limitation, turned into a checked property: the arms, the
-        // hands and the weapon may leave the capsule, and a swing that only
-        // grazes an outstretched arm therefore does not register. The head, the
-        // torso and the legs may not leave it.
-        let core = [
-            BoneId::Root,
-            BoneId::Spine,
-            BoneId::Chest,
-            BoneId::Head,
-            BoneId::ThighL,
-            BoneId::ThighR,
-        ];
+        // The accepted limitation, turned into a checked property. Everything
+        // that swings is outside the volume — both arms, both legs below the
+        // hip, the feet, the weapon — because measurement showed a single
+        // capsule that held a leg at the top of its stride was as wide as the
+        // hands reach, which took hits in empty air. What is left, the torso
+        // column of `HURT_CORE`, may not leave it. The list is imported rather
+        // than repeated so that widening the core cannot quietly widen the
+        // claim as well.
+        let core = crate::hurt::HURT_CORE;
         let ground = ground();
         let mut encounter = armed(&fixture::golden_setup(), &ground);
         let mut runner = crate::script::ScriptRunner::new(

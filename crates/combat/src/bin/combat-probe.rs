@@ -13,10 +13,12 @@ use glam::Vec2;
 use veldwake_character::CHARACTER_VOXEL_SIZE;
 use veldwake_character::descriptor::BodyMetrics;
 use veldwake_character::ground::FlatGround;
+use veldwake_character::skeleton::BoneId;
 use veldwake_combat::combatant::{Intent, SIDES, Side};
 use veldwake_combat::encounter::{Encounter, EncounterSetup};
 use veldwake_combat::fixture;
-use veldwake_combat::hit::{Capsule, Segment, Sweep, sweep_capsule};
+use veldwake_combat::hit::{Capsule, Segment, Sweep, closest_points, sweep_capsule};
+use veldwake_combat::hurt::narrowing;
 use veldwake_combat::material::{ALL_WEAPON_MATERIALS, luminance};
 use veldwake_combat::script::{GOLDEN_SCRIPT, NAMED_MOMENTS, ScriptRunner};
 use veldwake_combat::tick::{COMBAT_TICK_HZ, CombatClock, seconds_for};
@@ -37,6 +39,10 @@ fn main() -> ExitCode {
         "trace" => trace(arguments.get(1).map(String::as_str)),
         "dodge" => dodge(),
         "bodies" => bodies(),
+        "contact" => contact(
+            arguments.get(1).map(String::as_str),
+            arguments.get(2).map(String::as_str),
+        ),
         other => Err(format!("unknown command `{other}`")),
     };
     match outcome {
@@ -151,6 +157,79 @@ fn bodies() -> Result<(), String> {
             character.body().height_units(),
             encounter.combatant(side).capsule().radius,
             character.fingerprint()
+        );
+    }
+    println!();
+    // The two volumes side by side. The whole-body capsule keeps the bodies out
+    // of each other; the hurt volume decides hits. They are different sizes on
+    // purpose, and a capture is why: see `crate::hurt`.
+    println!("side        volume       radius   band above ground   of body capsule");
+    for side in SIDES {
+        let body = encounter.combatant(side).capsule();
+        let hurt = encounter.combatant(side).hurt();
+        let (low, high) = hurt.band();
+        println!(
+            "{:<11} whole body   {:>6.4}   {:>6.4} to {:>6.4}   {:>15}",
+            side.name(),
+            body.radius,
+            -body.radius + body.base_height,
+            body.total_height(),
+            "1.0000"
+        );
+        println!(
+            "{:<11} hurt core    {:>6.4}   {:>6.4} to {:>6.4}   {:>15.4}",
+            "",
+            hurt.radius(),
+            low,
+            high,
+            narrowing(&hurt, body)
+        );
+    }
+    println!();
+    // The margin the hurt volume needs: how far the core actually leaves a
+    // capsule fitted to the body standing still, over the whole reference fight.
+    let ground = fixture::golden_ground();
+    let mut fight = Encounter::new(&fixture::golden_setup(), Some(&ground))
+        .map_err(|error| format!("setup: {error}"))?;
+    fight.arm();
+    let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(&fight));
+    let mut worst = [0.0_f32; 2];
+    let mut worst_bone = [BoneId::Root; 2];
+    for _ in 0..fixture::GOLDEN_RUN_TICKS {
+        let intent = runner.next_intent(&fight);
+        let _ = fight.step(intent, Some(&ground));
+        if runner.finished() {
+            runner.restart();
+        }
+        for side in SIDES {
+            let index = side.index();
+            let combatant = fight.combatant(side);
+            let capsule = combatant.hurt_capsule();
+            let collision = fight.character(side).collision();
+            let matrices = combatant.posed().part_matrices();
+            for bone in veldwake_combat::hurt::HURT_CORE {
+                let matrix = matrices[bone.index()];
+                for corner in collision.part_box(bone).corners() {
+                    let point = matrix.transform_point3(corner);
+                    let (_, _, distance) = closest_points(capsule.axis, Segment::new(point, point));
+                    let overshoot = distance - capsule.radius;
+                    if overshoot > worst[index] {
+                        worst[index] = overshoot;
+                        worst_bone[index] = bone;
+                    }
+                }
+            }
+        }
+    }
+    println!("side         worst core overshoot   bone     margin");
+    for side in SIDES {
+        let index = side.index();
+        println!(
+            "{:<11} {:>20.4}   {:<8} {:>6.4}",
+            side.name(),
+            worst[index],
+            worst_bone[index].name(),
+            veldwake_combat::hurt::HURT_MARGIN
         );
     }
     Ok(())
@@ -402,6 +481,131 @@ fn dodge() -> Result<(), String> {
             _ => println!("  no dodge escapes this swing at all"),
         }
         println!();
+    }
+    Ok(())
+}
+
+/// Where the blade actually is, tick by tick, across one side's swing.
+///
+/// The question a capture cannot answer on its own: when the rules say a hit
+/// landed, was it the edge of the blade that reached the body, or the guard end
+/// of it? `closest` is the distance between the two segments' nearest points and
+/// `gap` is what is left after the blade radius and the capsule radius are taken
+/// off, so a negative `gap` is penetration. `at` says which fraction along the
+/// blade the nearest point sits on: `0.00` is the guard, `1.00` is the tip.
+/// The yaw that points along a planar direction, in the client's convention:
+/// zero faces `-Z`.
+fn bearing_of(direction: glam::Vec2) -> f32 {
+    (-direction.x).atan2(-direction.y)
+}
+
+/// Signed difference in degrees, folded into `[-180, 180)`.
+fn wrap_degrees(radians: f32) -> f32 {
+    let mut degrees = radians.to_degrees() % 360.0;
+    if degrees >= 180.0 {
+        degrees -= 360.0;
+    }
+    if degrees < -180.0 {
+        degrees += 360.0;
+    }
+    degrees
+}
+
+fn contact(side: Option<&str>, arena: Option<&str>) -> Result<(), String> {
+    let attacker = match side.unwrap_or("player") {
+        "player" => Side::Player,
+        "adversary" => Side::Adversary,
+        other => return Err(format!("`{other}` is not a side")),
+    };
+    // The sandbox is the passive adversary the one-hit-per-swing tests use, and
+    // the reason it is offered here: a swing that stops connecting in it is a
+    // reach or a volume problem, with no brain in the way to blame.
+    let sandbox = match arena.unwrap_or("golden") {
+        "golden" => false,
+        "sandbox" => true,
+        other => return Err(format!("`{other}` is not an arena")),
+    };
+    let victim = attacker.other();
+    let ground = fixture::golden_ground();
+    let setup = if sandbox {
+        fixture::sandbox_setup()
+    } else {
+        fixture::golden_setup()
+    };
+    let mut encounter =
+        Encounter::new(&setup, Some(&ground)).map_err(|error| format!("setup: {error}"))?;
+    encounter.arm();
+    let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(&encounter));
+    let radius = encounter.weapon().blade_radius_world();
+    println!(
+        "{} swings, measured against {}'s hurt volume",
+        attacker.name(),
+        victim.name()
+    );
+    println!();
+    println!(
+        "  tick  phase       elapsed  distance   closest      gap    at  base y   tip y            facing  bearing    off  event"
+    );
+    let mut printed = 0_u32;
+    for _ in 0..fixture::GOLDEN_RUN_TICKS {
+        let intent = if sandbox {
+            let free = encounter.combatant(Side::Player).can_act();
+            Intent::player(Vec2::new(0.0, -1.0), free, false)
+        } else {
+            runner.next_intent(&encounter)
+        };
+        let previous = encounter.blade_world(attacker);
+        let events = encounter.step(intent, Some(&ground));
+        let action = encounter.combatant(attacker).action();
+        if !action.is_attacking() {
+            continue;
+        }
+        let blade = encounter.blade_world(attacker);
+        let capsule = encounter.combatant(victim).hurt_capsule();
+        let (on_blade, _, closest) = closest_points(blade, capsule.axis);
+        let gap = closest - radius - capsule.radius;
+        let along = if blade.length() > f32::EPSILON {
+            (on_blade - blade.base).length() / blade.length()
+        } else {
+            0.0
+        };
+        let sweep = Sweep::new(previous, blade, radius);
+        let landed = events.iter().any(|event| event.name() == "hit");
+        // Facing against bearing, because a swing that misses at contact range
+        // is either too short or pointed somewhere else, and the two look the
+        // same in a distance column.
+        let from = encounter.combatant(attacker).position();
+        let to = encounter.combatant(victim).position();
+        let facing = encounter.combatant(attacker).state().facing;
+        let bearing = bearing_of(to - from);
+        println!(
+            "{:>6}  {:<10} {:>7}  {:>8.4}  {:>8.4}  {:>7.4}  {:>4.2}  {:>6.3}  {:>6.3}               {:>7.2}  {:>7.2}  {:>5.2}  {}{}",
+            encounter.tick_index(),
+            action.label(encounter.attack_spec(attacker)),
+            action.elapsed(),
+            from.distance(to),
+            closest,
+            gap,
+            along,
+            blade.base.y,
+            blade.tip.y,
+            facing.to_degrees(),
+            bearing.to_degrees(),
+            wrap_degrees(bearing - facing),
+            if landed { "HIT" } else { "" },
+            if sweep_capsule(&sweep, &capsule).is_some() && !landed {
+                " (sweep would touch)"
+            } else {
+                ""
+            }
+        );
+        printed += 1;
+        if printed >= 240 {
+            break;
+        }
+        if !sandbox && runner.finished() {
+            runner.restart();
+        }
     }
     Ok(())
 }

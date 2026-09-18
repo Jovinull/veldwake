@@ -14,11 +14,12 @@
 use glam::{Vec2, Vec3};
 
 use veldwake_character::action::ActionOverlay;
-use veldwake_character::collision::BodyCapsule;
+use veldwake_character::collision::{BodyCapsule, CollisionRepresentation};
 use veldwake_character::skeleton::Side as BodySide;
 use veldwake_character::{CharacterState, PosedCharacter};
 
 use crate::hit::{Capsule, Segment};
+use crate::hurt::HurtVolume;
 use crate::spec::{AttackSpec, DodgeSpec};
 use crate::tick::Ticks;
 
@@ -412,6 +413,7 @@ pub struct Combatant {
     hitstop: Ticks,
     dodge_cooldown: Ticks,
     capsule: BodyCapsule,
+    hurt: HurtVolume,
     weapon_side: BodySide,
     posed: PosedCharacter,
     /// The blade at the end of the previous tick, which is what a sweep starts
@@ -427,6 +429,7 @@ impl Combatant {
         state: CharacterState,
         health: Health,
         capsule: BodyCapsule,
+        hurt: HurtVolume,
         weapon_side: BodySide,
         posed: PosedCharacter,
     ) -> Self {
@@ -439,6 +442,7 @@ impl Combatant {
             hitstop: 0,
             dodge_cooldown: 0,
             capsule,
+            hurt,
             weapon_side,
             posed,
             blade: None,
@@ -505,18 +509,25 @@ impl Combatant {
 
     /// The volume a blade has to touch to hurt this body.
     ///
-    /// The compiled rest-pose capsule, placed at the stand point. The arms and
-    /// the weapon can leave it, and a swing that only grazes an outstretched arm
-    /// therefore does not register; the head, torso and pelvis staying inside it
-    /// through every combat moment is an asserted property rather than a hope.
+    /// [`HurtVolume`] measured from the body's core, placed at the stand point.
+    /// Not the M5 whole-body capsule beside it: that one is as wide as the hands
+    /// reach and took hits in the air above the head. The arms, the hands, the
+    /// feet and the weapon can leave this volume, and a swing that only grazes
+    /// an outstretched arm therefore does not register; the head, chest, pelvis
+    /// and legs staying inside it through every combat moment is an asserted
+    /// property rather than a hope.
     #[must_use]
     pub fn hurt_capsule(&self) -> Capsule {
-        let stand = self.stand_point();
-        let low = stand + Vec3::Y * self.capsule.base_height;
-        let high = low + Vec3::Y * self.capsule.segment_height;
-        Capsule::new(Segment::new(low, high), self.capsule.radius)
+        self.hurt.placed(self.stand_point())
     }
 
+    #[must_use]
+    pub const fn hurt(&self) -> HurtVolume {
+        self.hurt
+    }
+
+    /// The whole-body capsule, which is what keeps two bodies from standing
+    /// inside each other. Never the hit volume; see [`Self::hurt_capsule`].
     #[must_use]
     pub const fn capsule(&self) -> BodyCapsule {
         self.capsule
@@ -571,7 +582,12 @@ impl Combatant {
         &mut self.health
     }
 
-    pub(crate) fn set_posed(&mut self, posed: PosedCharacter) {
+    /// Replaces the pose and refits the hurt volume to it.
+    ///
+    /// The two go together on purpose. A pose without its volume would leave a
+    /// hit being decided against the body of a tick ago.
+    pub(crate) fn set_posed(&mut self, posed: PosedCharacter, collision: &CollisionRepresentation) {
+        self.hurt = HurtVolume::from_pose(collision, posed.part_matrices(), self.stand_point());
         self.posed = posed;
     }
 

@@ -58,6 +58,7 @@ pub mod encounter;
 pub mod event;
 pub mod fixture;
 pub mod hit;
+pub mod hurt;
 pub mod material;
 pub mod movement;
 pub mod script;
@@ -70,6 +71,7 @@ pub use combatant::{Action, AttackPhase, Combatant, Health, Intent, SIDES, Side,
 pub use encounter::{CombatCounters, CountingGround, Encounter, EncounterError, EncounterSetup};
 pub use event::{CombatEvent, MAX_EVENTS_PER_TICK, StepEvents};
 pub use hit::{Capsule, MAX_SWEEP_SUBSTEPS, Segment, Sweep, SweepHit};
+pub use hurt::{HURT_CORE, HURT_MARGIN, HurtVolume};
 pub use material::{
     ALL_WEAPON_MATERIALS, CompiledWeaponPalette, FIRST_WEAPON_ID, WEAPON_ID_END, WeaponMaterial,
     WeaponScheme,
