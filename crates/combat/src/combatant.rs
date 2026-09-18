@@ -75,6 +75,20 @@ impl Health {
         Self { current: max, max }
     }
 
+    /// A partially spent body.
+    ///
+    /// `current` is clamped to `max`, so no caller can describe a body with
+    /// more health than it can hold. A fight only ever produces these by
+    /// damaging a full one; this exists for the tests that have to ask what a
+    /// readout does at every health between the two ends.
+    #[must_use]
+    pub const fn new(current: u16, max: u16) -> Self {
+        Self {
+            current: if current > max { max } else { current },
+            max,
+        }
+    }
+
     #[must_use]
     pub const fn current(&self) -> u16 {
         self.current

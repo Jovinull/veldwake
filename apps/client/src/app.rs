@@ -28,9 +28,10 @@ use crate::{
     encounter::{EncounterMode, EncounterScene},
     input::{CameraAction, CombatAction, InputState},
     lighting::Weather,
+    readout::{self, READOUT_INSTANCES},
     renderer::{RenderOutcome, Renderer, VfxFrameWork},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
-    vfx::{MAX_PARTICLES, VfxInstance, VfxKind, VfxPool},
+    vfx::{MAX_VFX_INSTANCES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
 
@@ -136,7 +137,7 @@ struct App {
     vfx: VfxPool,
     /// The instance staging buffer, owned here and reused every frame, so that
     /// drawing the effects allocates nothing at all.
-    vfx_instances: Box<[VfxInstance; MAX_PARTICLES]>,
+    vfx_instances: Box<[VfxInstance; MAX_VFX_INSTANCES]>,
     last_combat_report: Instant,
 }
 
@@ -160,7 +161,7 @@ impl Default for App {
             camera_detached: false,
             shake: HitShake::default(),
             vfx: VfxPool::default(),
-            vfx_instances: Box::new([VfxInstance::default(); MAX_PARTICLES]),
+            vfx_instances: Box::new([VfxInstance::default(); MAX_VFX_INSTANCES]),
             last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
@@ -557,8 +558,25 @@ impl App {
                     _ => {}
                 }
             }
+            // The chips first, then the readout in the space after them: one
+            // buffer, one upload, one draw for both.
             let live = self.vfx.instances(self.vfx_instances.as_mut_slice());
-            renderer.set_vfx_instances(&self.vfx_instances[..live]);
+            let right = self.camera.planar_right();
+            let right = glam::Vec3::new(right.x, 0.0, right.y);
+            let rows: [readout::Row; SIDES.len()] = SIDES.map(|side| {
+                let combatant = scene.encounter().combatant(side);
+                readout::Row {
+                    centre: readout::above(
+                        combatant.stand_point(),
+                        scene.encounter().character(side).body().height_units(),
+                    ),
+                    right,
+                    health: combatant.health(),
+                }
+            });
+            let pips = readout::write(&rows, &mut self.vfx_instances[live..]);
+            renderer.set_vfx_instances(&self.vfx_instances[..live + pips]);
+            debug_assert!(pips <= READOUT_INSTANCES);
             self.frame_stats.record_combat(outcome, scene.events());
             if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
                 self.last_combat_report = now;

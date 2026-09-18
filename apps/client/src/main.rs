@@ -7,6 +7,7 @@ mod diagnostics;
 mod encounter;
 mod input;
 mod lighting;
+mod readout;
 mod renderer;
 mod streaming;
 mod vfx;

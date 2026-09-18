@@ -46,6 +46,13 @@ pub const IMPACT_CHIPS: usize = 12;
 /// How many motes one telegraph accent carries.
 pub const TELEGRAPH_MOTES: usize = 5;
 
+/// Instances one frame can draw through the effect pipeline.
+///
+/// The pool plus the readout, which shares the pipeline because a pip is the
+/// same cube as a chip at a different size. One constant rather than two
+/// because it sizes one GPU buffer.
+pub const MAX_VFX_INSTANCES: usize = MAX_PARTICLES + crate::readout::READOUT_INSTANCES;
+
 /// How long an impact chip lives, in combat ticks.
 const IMPACT_LIFE: u32 = 34;
 

@@ -24,7 +24,7 @@ use crate::{
     debug::{DebugPrimitive, DebugShape},
     lighting::{Lighting, SHADOW_MAP_EDGE, Weather, shadow_centre, shadow_view_projection},
     streaming::{ChunkPresentation, ChunkUploadError, GpuResidency, PresentationCommitError},
-    vfx::{MAX_PARTICLES, VfxInstance},
+    vfx::{MAX_VFX_INSTANCES, VfxInstance},
 };
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -1222,7 +1222,7 @@ impl Renderer {
         });
         let vfx_instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("M6 effect chip instances"),
-            size: (size_of::<VfxInstance>() * MAX_PARTICLES) as u64,
+            size: (size_of::<VfxInstance>() * MAX_VFX_INSTANCES) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1342,7 +1342,7 @@ impl Renderer {
     /// An empty slice writes no bytes and issues no draw, which is the same
     /// contract the debug views hold: with nothing in flight the effects cost
     /// exactly the pipeline and the buffers that were created at startup.
-    /// Anything past [`MAX_PARTICLES`] is refused here as well as in the pool,
+    /// Anything past [`MAX_VFX_INSTANCES`] is refused here as well as in the pool,
     /// because a renderer that trusts a caller's length is one bad caller from
     /// writing past a buffer.
     pub fn set_vfx_instances(&mut self, instances: &[VfxInstance]) {
@@ -1351,7 +1351,7 @@ impl Renderer {
         if instances.is_empty() {
             return;
         }
-        let count = instances.len().min(MAX_PARTICLES);
+        let count = instances.len().min(MAX_VFX_INSTANCES);
         let bytes = bytemuck::cast_slice(&instances[..count]);
         self.queue.write_buffer(&self.vfx_instances, 0, bytes);
         self.vfx_live = u32::try_from(count).unwrap_or(0);
