@@ -294,6 +294,8 @@ Refitting to the current pose does not rescue a leg: the width is the stride's, 
 
 **The impact chips left as a clump.** Twelve spread directions biased into the strike's half-space by adding `away * 0.9` very nearly cancelled the four pointing back at the attacker, so their velocity came out near zero and the spray was one blob. Reflecting about the plane perpendicular to the blow keeps twelve distinct unit directions and still sends none of them backwards.
 
+**A press between two ticks was being thrown away.** The played path took the input latches at the top of the frame and only then checked how many ticks were due, so on a frame that ran none — at 144 Hz most frames run none — the press went straight in the bin. It is now held in the scene until a tick consumes it, and two tests carry the property: a press survives twenty consecutive zero-tick frames and then produces exactly one swing, and a frame that runs the whole four-tick catch-up cap turns one press into one swing rather than four. A played run after the fix recorded three frames that ran no ticks, fourteen swings and no stuck latch. The test list in the mandate is what found this; nothing in the game looked wrong.
+
 **Two measurement tools were wrong, and were corrected rather than trusted.** `combat-probe contact` printed `closest_points`' **squared** distance as a distance, and its bearing column had the `x` sign flipped against `movement::facing_of`, which made a swing that connected look like one aimed forty-one degrees wide. Both are fixed and the three independent measurements — the aim table, the contact table and the fight itself — now agree: the reference hit lands at a `-9.6°` facing error, inside the measured window.
 
 ### Camera response
@@ -392,6 +394,7 @@ The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignor
 | ground queries per tick | `14.96` |
 | one hit query at 16 substeps | `0.3551` µs |
 | worst sweep substeps in a fight | 4 of 16 |
+| workspace tests | 649 |
 | weapon compile, median | `125.5` µs |
 | `renderer_render_wall`, mean / max | `9,216` / `14,879` µs |
 
