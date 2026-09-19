@@ -1,8 +1,10 @@
 # Current handoff
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 ## Current position
+
+**M1 through M6 are all merged into `main`.** M6 — Combat Slice landed through [PR #10](https://github.com/Jovinull/veldwake/pull/10) at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922`, whose parents are `5bebc4fa5195b427216a296fff810a294b7bbd7b` and `296621dcdff9d93e92c3ccca0b21d2c822e418aa`, after independent branch QA, a green pull-request CI run ([run 35416586910](https://github.com/Jovinull/veldwake/actions/runs/35416586910)), and a green post-merge CI run on the merge commit ([run 35417282890](https://github.com/Jovinull/veldwake/actions/runs/35417282890)). The remote branch `feat/m6-combat-slice` is preserved at `296621dcdff9d93e92c3ccca0b21d2c822e418aa`.
 
 **M1, M2, M3, M4, and M5 are all merged into `main`.** M4 — Beautiful Terrain Vertical Slice landed through [PR #8](https://github.com/Jovinull/veldwake/pull/8) at merge commit `abadadff6ad1251e4f291d272577da6121d37540`, after independent branch QA, a green pull-request CI run, and a green post-merge CI run on the merge commit ([run 35281261587](https://github.com/Jovinull/veldwake/actions/runs/35281261587)). M3D landed through PR #7 at `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e`; M3C through PR #6 at `c669929b00427c2f438529b572931400a24b6d3d`.
 
@@ -47,29 +49,53 @@ Then the code, in this order, because it is the surface M6 has to work against:
 - `apps/client/src/camera.rs` and `apps/client/src/input.rs` — a free-fly camera and keyboard state, with no player-character relationship of any kind;
 - `crates/procedural` and `apps/client/src/world.rs` — how terrain reaches the client.
 
-## Continue here — M6, waiting on one listen
+## Continue here — propose the next milestone before building it
 
-**M6 — Combat Slice is implemented on `feat/m6-combat-slice` and is not merged.** Independent branch QA has run and every finding is fixed on the branch; see *Branch QA* in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) for what each one was. The encounter has been played to two victories and nine defeats in a closed loop, the visual and motion passes are done, the M3/M4/M5 regressions are clean, and every gate is green at the branch head.
+**M6 is merged and there is no next milestone.** That is deliberate, and it is the first thing to understand before doing anything else.
 
-All five phases are landed. The domain is `crates/combat`; the client work is in `apps/client/src/{arena,encounter,vfx,readout,synth,audio}.rs` and the changes to `app.rs`, `camera.rs`, `input.rs`, `debug.rs` and `renderer.rs`. Three ADRs were added ([0005](../adr/0005-fixed-step-headless-combat-domain.md), [0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), [0007](../adr/0007-procedural-impact-audio-boundary.md)) and one dependency (`cpal`), audited before it was added.
+[`../planning/ROADMAP.md`](../planning/ROADMAP.md) does **not** define an M7. What it defines is a set of *later capability groups*:
+
+> Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
+
+So the next session's job is **not** to pick one and start. It is to read what now exists, weigh it against those groups, and *propose* the next milestone — scope, exit criteria, and what it deliberately will not build — for the owner to accept before any code is written. Do not create a `feat/m7-*` branch, do not name a milestone M7, and do not treat the order of the list above as a decision. It is a list, not a queue.
+
+### What now exists
+
+The repository is a playable vertical slice of one fight in one deterministic region:
+
+- A finite 800 x 96 x 800 voxel region generated from a seed, streamed around the camera, lit with a sun, a shadow map, a procedural sky, fog and two weather states.
+- A humanoid compiled from a descriptor: sixteen rigid voxel parts on a sixteen-bone skeleton, analytical gaits driven by distance travelled, soles solved against the ground with two-bone IK.
+- A fight: two combatants, one procedurally generated sword, an adversary that telegraphs and commits, a swing decided by sweeping the blade against a torso-column volume, damage, stagger, knockback, hitstop, a camera that moves only on a confirmed hit, voxel chips, a diegetic health readout, and synthesised impact audio through one cpal device.
+- Evidence machinery: named camera poses, named frozen combat moments with tick offsets, five headless probes, locked fingerprints and behavioural signatures across five crates.
+
+### What still does not exist
+
+No persistence of any kind — no saves, no world edits, no encounter state that survives a run. No second enemy, weapon, archetype or biome beyond what M5 and M6 build. No inventory, stats, progression, quests or economy. No menu, HUD framework, pause or death screen. No networking, no multiplayer, no mod runtime, no editor. No physics engine and no collision simulation — movement is kinematic against a ground query. No aggregate world simulation, settlements or history. No music, reverb or mixer. No automated visual regression, and one host and one adapter for every visual claim in the repository (KI-006, KI-021).
+
+### What M6 leaves you to build on
+
+Facts, not suggestions:
+
+- **A fixed-step authoritative domain exists and works.** `Encounter::step` takes no duration; the client's accumulator is integer; twenty seconds at 30, 60 and 144 Hz produce the same 2,400 ticks and the same trace. Anything else that needs deterministic simulation should copy this shape rather than invent a second one.
+- **Presentation reads events and never infers.** Damage, stagger, knockback, hitstop, the reaction pose, chips, sound and the camera impulse all come from one `CombatEvent`. That boundary is [ADR-0002](../adr/0002-presentation-independent-authority.md) applied to a fight and it is the reason the audio cross-check comes out exact.
+- **Two animation categories coexist**: distance-driven locomotion and a tick-driven action layer, recorded in [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), which also records why ADR-0004 was *not* superseded.
+- **Audio has a boundary, not a system.** A pure synth with no I/O, a lock-free ring of atomics, and one thin device adapter ([ADR-0007](../adr/0007-procedural-impact-audio-boundary.md)). There is no mixer and no asset path, and adding either is a decision rather than an extension.
+- **Identifier ranges are declared and proven disjoint**: diagnostics `1`, `2`, `7`; terrain `64..128`; character `128..192`; weapon `192..224`. A new content domain declares its own range and adds its own test to the client, which is the one place all four are visible.
+- **The evidence harness has a written method** in [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md), including how a capture picks the right window. Branch QA caught the previous harness photographing a browser; the traps are recorded there rather than rediscovered.
 
 ### The owner gates, both closed
 
-**OWNER LISTENING: PASS** and **OWNER PLAYTEST: PASS**, 2026-09-19. The owner played the offline fixture — the hit reads as an impact, the whiff is distinguishable from it, and no clipping, click or problematic distortion was noticed — and played the armed encounter in the real client, finding the telegraph, attack, dodge, impact and camera legible enough for M6. Those were the two questions no measurement could answer, and they were left open on purpose until a person answered them.
+**OWNER LISTENING: PASS** and **OWNER PLAYTEST: PASS**, 2026-09-19. The owner played the offline audio fixture — the hit reads as an impact, the whiff is distinguishable from it, no clipping, click or problematic distortion — and played the armed encounter in the real client, finding the telegraph, attack, dodge, impact and camera legible enough for M6, and the slice *simple but functional, and the direction intended*.
 
-The fixture is still there, and is how the same judgement gets remade if the synth changes:
+Those judgements belong to a specific build. A change to the synth, the action curves, the camera or the telegraph invalidates them and needs a fresh one; no test will notice. The fixture is how it gets remade:
 
 ```text
 cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
 ```
 
-It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`.
+### What was decided in M6, and where the reasoning lives
 
-A played victory is not outstanding either: KI-024 is closed with two of them. KI-023 is closed too, and its premise turned out to be wrong rather than the dodge — the moment being captured was a dodge that *failed*.
-
-### What was decided, and where the reasoning lives
-
-Every item the previous handoff listed as open now has an answer in code and a written reason. Do not re-open one without reading the reason first:
+Every item the pre-M6 handoff listed as open has an answer in code and a written reason. Do not re-open one without reading the reason first:
 
 | question | answer | where |
 |---|---|---|
@@ -90,30 +116,15 @@ Every item the previous handoff listed as open now has an answer in code and a w
 | target lock | none | milestone non-goals |
 | ECS | no. Two combatants indexed by `Side`, and that is the entity model | ADR-0005 |
 
-### What M5 leaves you to build on
-
-Facts, not suggestions:
-
-- `veldwake-character` compiles one humanoid from a descriptor and poses it. It is headless, has no GPU or platform types, and does **not** depend on `veldwake-procedural`. A second body — an enemy — is a second descriptor before it is anything else.
-- The one coupling between a character and the world is the two-method `GroundSampler` trait, implemented by the client in eleven lines over `TerrainField`. Anything M6 needs from the world should be examined the same way before a crate reaches for another crate.
-- Locomotion is analytical and driven by distance, not by clips. There is no animation graph and no blend tree. An attack animation is not a clip to drop in; decide deliberately whether it becomes a second analytical layer or the thing that finally justifies an animation system, and record that decision as an ADR rather than in code.
-- Collision is a **representation** — one capsule and one box per part — and nothing consumes it. There is no collision response, no sweep, no query, and no broadphase. M6 is adding all of that from nothing if it needs it.
-- The camera is free-fly and the input module is keyboard state. Neither knows a character exists. There is no character controller and no player relationship at all.
-- The character is drawn through the same shared WGSL lighting function as terrain, with static geometry uploaded once and one small uniform per part per frame. Anything new that draws should be examined against that pattern before inventing a second lighting path.
-- `VELDWAKE_CHARACTER` and `VELDWAKE_POSE` drive the diagnostic scenes; `SETUP.md` lists every value. Those courses and camera poses are fixtures and are the cheapest way to get a reproducible frame of a character.
-
-### What M5 deliberately did not build
-
-Faces beyond two eye voxels, hair or clothing as geometry, equipment, weapons, a second archetype, character LOD, a character controller, player input, gameplay or camera integration, any physics or collision library, ragdoll, cloth, an animation graph, emotion, hand IK, and a save format. Those are later milestones and the merged branch must not be read as having prejudged any of them.
-
 ## Questions before context reset
 
-None. Everything a session starting M6 needs is in the repository: the merged state and its SHAs, the accepted scope of M6 and the explicit list of decisions left open, the crate boundaries and the test a new crate must pass, the invariants, the determinism rules, the measurement method with its host, the visual contracts, the evidence harness, and every accepted limitation as a numbered open issue rather than as prose.
+None. Everything a session with no prior context needs is in the repository: the merged state and its SHAs, what M6 built and what it deliberately did not, the crate boundaries and the test a new crate must pass, the invariants, the determinism rules, the measurement method with its host, the visual contracts, the evidence harness with its traps, and every accepted limitation as a numbered open issue rather than as prose.
 
-Nothing material about the project's real state exists only in a conversation. The M5 implementation decisions that outlive the milestone are in [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md); the ones that do not are in the milestone document with the capture or the measurement that produced them.
+Nothing material about the project's real state exists only in a conversation. The decisions that outlive M6 are in [ADR-0005](../adr/0005-fixed-step-headless-combat-domain.md), [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) and [ADR-0007](../adr/0007-procedural-impact-audio-boundary.md); the ones that do not are in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) beside the capture or the measurement that produced them. The branch-QA findings, the closed-loop play, the owner gates and both re-locked signatures are all recorded there with their reasons.
 
 ## Immediate risks
 
+- **There is no next milestone, and inventing one is the failure mode.** `ROADMAP.md` lists later capability groups and says explicitly not to manufacture detailed milestones before the evidence exists. Propose, get acceptance, then build.
 - **The owner's judgement is recorded, not re-derivable.** OWNER LISTENING: PASS and OWNER PLAYTEST: PASS are a person's assessment of a specific build, kept beside the measurements rather than folded into them. A change to the synth, the action curves, the camera or the telegraph invalidates that judgement and needs a fresh one; no test will notice.
 - **A swing now aims itself, inside bounds, and that is a gameplay decision rather than a convenience.** `AIM_ASSIST_CONE` is `35°` and `AIM_ASSIST_RANGE` is the reach of the attack. It exists because closed-loop play measured one hit in four from positions the aim table says connect: facing follows movement, so a body that stands still to swing cannot track one that is moving, while the adversary's brain steers continuously. Widening it turns the fight into a lock; removing it makes the fight unwinnable by aiming. Change it only against a new measurement.
 - **A named moment must check what its name claims.** `successful-dodge` asserted only that a dodge was in progress while a blade was live, and the captures taken at it were of a dodge that failed. Any new moment predicate gets the same scrutiny: the name is a claim about the frame.
