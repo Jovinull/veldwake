@@ -53,7 +53,7 @@ use veldwake_character::{
 use crate::adversary::AdversaryBrain;
 use crate::combatant::{Action, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
-use crate::hit::{Segment, Sweep, sweep_capsule};
+use crate::hit::{Segment, Sweep, moving_substeps, sweep_moving_capsule};
 use crate::hurt::HurtVolume;
 use crate::movement::{MoveRules, facing_of, separate, try_move, turn_toward};
 use crate::spec::{AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
@@ -631,9 +631,11 @@ impl Encounter {
                 .overlay(&spec, combatant.weapon_side(), combatant.state().facing);
         let state = *combatant.state();
         let previous = self.blade_world(side);
+        let previous_hurt = combatant.hurt_capsule();
         let posed = pose_with(&self.characters[index], &state, ground, Some(&overlay));
         self.combatants[index].set_posed(posed, self.characters[index].collision());
         self.combatants[index].set_blade(previous);
+        self.combatants[index].set_previous_hurt_capsule(previous_hurt);
     }
 
     /// Sweeps one side's blade and applies what it touched.
@@ -673,10 +675,17 @@ impl Encounter {
         let end = self.blade_world(attacker);
         let start = self.combatants[index].previous_blade().unwrap_or(end);
         let sweep = Sweep::new(start, end, self.weapon.blade_radius_world());
+        let capsule_end = self.combatants[victim_index].hurt_capsule();
+        let capsule_start = self.combatants[victim_index]
+            .previous_hurt_capsule()
+            .unwrap_or(capsule_end);
         self.counters.hit_queries = self.counters.hit_queries.saturating_add(1);
-        self.counters.sweep_substeps_max = self.counters.sweep_substeps_max.max(sweep.substeps());
-        let capsule = self.combatants[victim_index].hurt_capsule();
-        let Some(contact) = sweep_capsule(&sweep, &capsule) else {
+        self.counters.sweep_substeps_max = self.counters.sweep_substeps_max.max(moving_substeps(
+            &sweep,
+            &capsule_start,
+            &capsule_end,
+        ));
+        let Some(contact) = sweep_moving_capsule(&sweep, &capsule_start, &capsule_end) else {
             return;
         };
 

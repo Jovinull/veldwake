@@ -447,6 +447,9 @@ pub struct Combatant {
     /// The blade at the end of the previous tick, which is what a sweep starts
     /// from. `None` until the first pose exists.
     blade: Option<Segment>,
+    /// The hurt capsule at the previous tick's pose, paired with `blade` so
+    /// contact accounts for realised motion of both combatants.
+    previous_hurt: Option<Capsule>,
 }
 
 impl Combatant {
@@ -474,6 +477,7 @@ impl Combatant {
             weapon_side,
             posed,
             blade: None,
+            previous_hurt: None,
         }
     }
 
@@ -521,6 +525,12 @@ impl Combatant {
     #[must_use]
     pub const fn previous_blade(&self) -> Option<Segment> {
         self.blade
+    }
+
+    /// The hurt capsule at the end of the previous tick.
+    #[must_use]
+    pub const fn previous_hurt_capsule(&self) -> Option<Capsule> {
+        self.previous_hurt
     }
 
     /// Planar position.
@@ -623,8 +633,13 @@ impl Combatant {
         self.blade = Some(blade);
     }
 
+    pub(crate) fn set_previous_hurt_capsule(&mut self, hurt: Capsule) {
+        self.previous_hurt = Some(hurt);
+    }
+
     pub(crate) fn clear_blade(&mut self) {
         self.blade = None;
+        self.previous_hurt = None;
     }
 
     pub(crate) fn reset(&mut self, state: CharacterState) {
@@ -634,6 +649,7 @@ impl Combatant {
         self.hitstop = 0;
         self.dodge_cooldown = 0;
         self.blade = None;
+        self.previous_hurt = None;
         // `next_swing` deliberately keeps counting: a swing identifier is unique
         // for the life of the encounter, not for the life of one round.
     }

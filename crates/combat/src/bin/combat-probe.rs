@@ -782,18 +782,20 @@ fn script() -> Result<(), String> {
 
 /// The partition-equivalence evidence.
 ///
-/// The same elapsed time, delivered as 30, 60 and 144 frames a second, must
+/// The same exact elapsed time, delivered as 30, 60 and 144 frames a second, must
 /// produce the same number of ticks in the same order — and therefore the same
 /// encounter, because the script is keyed to ticks.
 fn partition() -> Result<(), String> {
     let seconds = 20_u32;
-    println!("delivering {seconds} s of wall time at three frame rates");
+    println!("delivering exactly {seconds} s of wall time at three frame rates");
     println!();
     println!(" Hz   frames   ticks   capped frames   dropped ticks   signature");
     let mut signatures = Vec::new();
     for hz in [30_u32, 60, 144] {
-        let frame = Duration::from_nanos(u64::from(1_000_000_000_u32 / hz));
         let frames = u64::from(hz) * u64::from(seconds);
+        let total_nanos = u128::from(seconds) * 1_000_000_000;
+        let base_nanos = total_nanos / u128::from(frames);
+        let remainder_nanos = total_nanos % u128::from(frames);
         let ground = fixture::golden_ground();
         let setup = fixture::golden_setup();
         let mut encounter =
@@ -803,7 +805,13 @@ fn partition() -> Result<(), String> {
         let mut clock = CombatClock::new();
         let mut ticks = 0_u64;
         let mut bytes = Vec::new();
-        for _ in 0..frames {
+        let mut delivered = 0_u128;
+        for index in 0..u128::from(frames) {
+            let nanos = base_nanos + u128::from(index < remainder_nanos);
+            let frame = Duration::from_nanos(
+                u64::try_from(nanos).map_err(|_| "frame duration overflows u64")?,
+            );
+            delivered += frame.as_nanos();
             let due = clock.advance(frame);
             for _ in 0..due {
                 let intent = runner.next_intent(&encounter);
@@ -823,6 +831,11 @@ fn partition() -> Result<(), String> {
                     runner.restart();
                 }
             }
+        }
+        if delivered != total_nanos {
+            return Err(format!(
+                "{hz} Hz did not deliver the requested total duration"
+            ));
         }
         let signature = veldwake_combat::fixture::trace_signature(&bytes);
         println!(
@@ -846,12 +859,7 @@ fn partition() -> Result<(), String> {
     println!(
         "every partition produced {first_ticks} ticks and the identical trace {first_signature:#018x}"
     );
-    println!(
-        "note: 144 does not divide a second exactly in nanoseconds, so the agreement here is the"
-    );
-    println!(
-        "      clock's carried remainder doing its job rather than an accident of the numbers"
-    );
+    println!("every partition delivered exactly {seconds} s, including its nanosecond remainder");
     Ok(())
 }
 

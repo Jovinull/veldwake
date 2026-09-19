@@ -198,7 +198,9 @@ So a player has about four tenths of a second to read the swing, and the window 
 
 One reset, 693 separations, 160 hit queries, worst sweep 4 substeps of a bound of 16, 91 multi-hit contacts suppressed, **zero events dropped**, and a worst body overlap after separation of `0.0000` world units. The player wins, and with six health left out of ninety-six — a reference fight that is a fight. All eleven named moments occur, the earliest at tick 1 and the last, the defeat, at tick 3,054.
 
-**Partition equivalence**, from `combat-probe partition`: 20 s of wall time delivered at 30, 60 and 144 frames a second produced **2,399 ticks and the identical trace `0x0807fcad37689f9f`** in all three, with no capped frames and no dropped ticks. 144 does not divide a second exactly in nanoseconds, so the agreement is the clock's carried remainder working rather than an accident of the numbers.
+**Partition equivalence**, from `combat-probe partition`: the old probe truncated each nominal frame duration before delivery. Its 30/60/144 Hz runs therefore delivered slightly less than 20 s (and correctly produced 2,399 ticks), despite the report calling them “20 s”. QA corrected the probe to distribute nanosecond remainders across frames: each 30/60/144 Hz partition now delivers **exactly 20 s**, produces **2,400 ticks**, no capped frames and no dropped ticks, and the same deterministic trace. The headless clock test carries the same exact-total property for additional partitions.
+
+**Relative sweep correction.** Independent QA found that the original sweep interpolated both blade endpoints but tested the victim only at its final-tick hurt capsule. The runtime now retains the prior capsule with the prior blade and samples their relative motion using the largest displacement of either blade endpoint or either capsule-axis endpoint. This closes the moving-victim/dodge tunnelling gap; an independent geometry test holds the blade still while a capsule crosses it between two clear endpoint poses. `sweep_substeps_max` now reports that actual relative-sweep count.
 
 **Cost**, release build on the audited Windows 11 / Intel Iris Xe host, as observations on that host:
 
@@ -394,7 +396,7 @@ The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignor
 | ground queries per tick | `14.96` |
 | one hit query at 16 substeps | `0.3551` µs |
 | worst sweep substeps in a fight | 4 of 16 |
-| workspace tests | 649 |
+| workspace tests | 651 |
 | weapon compile, median | `125.5` µs |
 | `renderer_render_wall`, mean / max | `9,216` / `14,879` µs |
 

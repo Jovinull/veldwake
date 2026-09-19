@@ -277,6 +277,32 @@ mod tests {
     }
 
     #[test]
+    fn exact_twenty_seconds_produce_2400_ticks_in_every_exact_partition() {
+        let total = Duration::from_secs(20);
+        let expected = 2_400_u64;
+        for parts in [1_u32, 30, 60, 144, 300, 2_400] {
+            let part_count = u128::from(parts);
+            let base = total.as_nanos() / part_count;
+            let remainder = total.as_nanos() % part_count;
+            let mut clock = CombatClock::new();
+            let mut delivered = 0_u128;
+            let mut ticks = 0_u64;
+            for index in 0..u128::from(parts) {
+                // Give the first `remainder` pieces one extra nanosecond so
+                // this is an exact partition, unlike truncating a nominal
+                // refresh interval such as `1_000_000_000 / 144`.
+                let nanos = base + u128::from(index < remainder);
+                let frame = Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX));
+                delivered += frame.as_nanos();
+                ticks += u64::from(clock.advance_with_cap(frame, 3_000));
+            }
+            assert_eq!(delivered, total.as_nanos(), "partition {parts}");
+            assert_eq!(ticks, expected, "partition {parts}");
+            assert_eq!(clock.dropped(), 0, "partition {parts}");
+        }
+    }
+
+    #[test]
     fn the_remainder_is_preserved_across_frames() {
         // A frame shorter than a tick produces no tick, but the time is not
         // lost: the tick arrives once enough frames have accumulated.

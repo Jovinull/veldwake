@@ -56,7 +56,7 @@ impl Segment {
 
     /// Linear interpolation of both endpoints toward another segment.
     #[must_use]
-    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+    pub(crate) fn lerp(&self, other: &Self, t: f32) -> Self {
         Self {
             base: self.base.lerp(other.base, t),
             tip: self.tip.lerp(other.tip, t),
@@ -80,6 +80,15 @@ impl Capsule {
     #[must_use]
     pub fn is_finite(&self) -> bool {
         self.axis.is_finite() && self.radius.is_finite()
+    }
+
+    /// Linear interpolation of a hurt capsule between two poses.
+    #[must_use]
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        Self {
+            axis: self.axis.lerp(&other.axis, t),
+            radius: self.radius + (other.radius - self.radius) * t,
+        }
     }
 
     /// Whether a point is inside the capsule.
@@ -171,21 +180,24 @@ impl Sweep {
     /// How many interpolated samples this sweep needs.
     #[must_use]
     pub fn substeps(&self) -> u32 {
-        let advance = self.advance();
-        if !advance.is_finite() || advance <= SWEEP_MAX_ADVANCE {
-            return 1;
-        }
-        let wanted = (advance / SWEEP_MAX_ADVANCE).ceil();
-        if wanted >= f32::from(u16::MAX) {
-            return MAX_SWEEP_SUBSTEPS;
-        }
-        (wanted as u32).clamp(1, MAX_SWEEP_SUBSTEPS)
+        substeps_for_advance(self.advance())
     }
 
     #[must_use]
     pub fn is_finite(&self) -> bool {
         self.start.is_finite() && self.end.is_finite() && self.radius.is_finite()
     }
+}
+
+fn substeps_for_advance(advance: f32) -> u32 {
+    if !advance.is_finite() || advance <= SWEEP_MAX_ADVANCE {
+        return 1;
+    }
+    let wanted = (advance / SWEEP_MAX_ADVANCE).ceil();
+    if wanted >= f32::from(u16::MAX) {
+        return MAX_SWEEP_SUBSTEPS;
+    }
+    (wanted as u32).clamp(1, MAX_SWEEP_SUBSTEPS)
 }
 
 /// Where and when a sweep first touched a capsule.
@@ -206,15 +218,26 @@ pub struct SweepHit {
 /// sample rather than missed.
 #[must_use]
 pub fn sweep_capsule(sweep: &Sweep, capsule: &Capsule) -> Option<SweepHit> {
-    if !sweep.is_finite() || !capsule.is_finite() {
+    sweep_moving_capsule(sweep, capsule, capsule)
+}
+
+/// Sweeps a blade against a hurt capsule moving between two poses.
+#[must_use]
+pub(crate) fn sweep_moving_capsule(
+    sweep: &Sweep,
+    capsule_start: &Capsule,
+    capsule_end: &Capsule,
+) -> Option<SweepHit> {
+    if !sweep.is_finite() || !capsule_start.is_finite() || !capsule_end.is_finite() {
         return None;
     }
-    let substeps = sweep.substeps();
-    let reach = sweep.radius + capsule.radius;
-    let reach_squared = reach * reach;
+    let substeps = moving_substeps(sweep, capsule_start, capsule_end);
     for step in 0..=substeps {
         let t = step as f32 / substeps as f32;
         let blade = sweep.start.lerp(&sweep.end, t);
+        let capsule = capsule_start.lerp(capsule_end, t);
+        let reach = sweep.radius + capsule.radius;
+        let reach_squared = reach * reach;
         let (on_blade, on_axis, squared) = closest_points(blade, capsule.axis);
         if squared > reach_squared {
             continue;
@@ -236,11 +259,24 @@ pub fn sweep_capsule(sweep: &Sweep, capsule: &Capsule) -> Option<SweepHit> {
     None
 }
 
+/// The number of samples a relative blade/body sweep uses.
+#[must_use]
+pub(crate) fn moving_substeps(
+    sweep: &Sweep,
+    capsule_start: &Capsule,
+    capsule_end: &Capsule,
+) -> u32 {
+    let capsule_advance = (capsule_end.axis.base - capsule_start.axis.base)
+        .length()
+        .max((capsule_end.axis.tip - capsule_start.axis.tip).length());
+    substeps_for_advance(sweep.advance().max(capsule_advance))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Capsule, MAX_SWEEP_SUBSTEPS, SWEEP_MAX_ADVANCE, Segment, Sweep, closest_points,
-        sweep_capsule,
+        sweep_capsule, sweep_moving_capsule,
     };
     use glam::Vec3;
 
@@ -318,6 +354,24 @@ mod tests {
         let end = Segment::new(Vec3::new(0.0, 3.0, 1.0), Vec3::new(0.0, 3.0, 2.0));
         let sweep = Sweep::new(start, end, 0.08);
         assert!(sweep_capsule(&sweep, &upright(0.0, 0.0, 0.5)).is_none());
+    }
+
+    #[test]
+    fn a_moving_victim_crossing_a_stationary_blade_is_not_missed() {
+        // The blade is stationary. The capsule starts and ends safely on
+        // opposite sides but crosses the blade halfway through the tick.
+        let blade = Segment::new(Vec3::new(-1.0, 1.2, 0.0), Vec3::new(1.0, 1.2, 0.0));
+        let sweep = Sweep::new(blade, blade, 0.05);
+        let start = upright(0.0, -1.0, 0.2);
+        let end = upright(0.0, 1.0, 0.2);
+        assert!(
+            sweep_capsule(&sweep, &end).is_none(),
+            "the final pose is clear"
+        );
+        assert!(
+            sweep_moving_capsule(&sweep, &start, &end).is_some(),
+            "the relative path crosses the blade"
+        );
     }
 
     #[test]

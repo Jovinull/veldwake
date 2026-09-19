@@ -104,7 +104,11 @@ impl SoundQueue {
     pub fn push(&self, params: VoiceParams) -> bool {
         let write = self.write.load(Ordering::Relaxed);
         let read = self.read.load(Ordering::Acquire);
-        if write.wrapping_sub(read) >= QUEUE_MASK {
+        // `write` and `read` are monotonic counters, not masked indices.  The
+        // distance can therefore represent all 64 occupied slots; the mask is
+        // solely for selecting the backing-array slot.  Reserving one slot
+        // would make a 64-slot queue silently deliver only 63 requests.
+        if write.wrapping_sub(read) >= QUEUE_SLOTS as u32 {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -383,7 +387,7 @@ mod tests {
                 taken += 1;
             }
         }
-        assert!(taken < QUEUE_SLOTS * 4, "the queue never filled");
+        assert_eq!(taken, QUEUE_SLOTS, "all declared slots are usable");
         assert_eq!(queue.dropped(), (QUEUE_SLOTS * 4 - taken) as u64);
         // And it recovers: draining makes room again.
         for _ in 0..taken {
