@@ -260,7 +260,16 @@ pub enum MomentKind {
     HitReaction,
     /// The adversary's blade can connect.
     AdversaryActive,
-    /// The player is mid dodge while the adversary's blade is out.
+    /// The player is still dodging and the adversary's swing has gone all the
+    /// way past its active window without touching it.
+    ///
+    /// The "successful" is load-bearing and was not always checked. The first
+    /// version of this asked only whether the player was dodging while the
+    /// blade happened to be live, which is a different and much weaker claim:
+    /// branch QA captured the moment and found the player staggered ten ticks
+    /// later, so the frame labelled *avoidance as geometry* was a frame of a
+    /// dodge that failed. A swing that has run out its whole active window
+    /// without hitting the dodger is a swing that missed.
     SuccessfulDodge,
     /// The tick the player was hit.
     PlayerHit,
@@ -407,8 +416,8 @@ pub fn at_moment(kind: MomentKind, encounter: &Encounter, events: &StepEvents) -
         MomentKind::SuccessfulDodge => {
             let spec = encounter.attack_spec(Side::Adversary);
             player.action().is_dodging()
-                && matches!(adversary.action(), Action::Attack { elapsed, .. }
-                    if spec.is_active(*elapsed))
+                && matches!(adversary.action(), Action::Attack { elapsed, hits, .. }
+                    if *elapsed >= spec.active_end() && !hits[Side::Player.index()])
         }
         MomentKind::Defeat => {
             events.any(|event| matches!(event, CombatEvent::Defeated { .. }))
@@ -515,9 +524,9 @@ mod tests {
         EncounterScript, GOLDEN_SCRIPT, MomentKind, NAMED_MOMENTS, ScriptLeg, ScriptMotion,
         ScriptRunner, ScriptTrigger, at_moment, moment,
     };
-    use crate::combatant::Side;
+    use crate::combatant::{Action, Side};
     use crate::encounter::Encounter;
-    use crate::event::StepEvents;
+    use crate::event::{CombatEvent, StepEvents};
     use crate::fixture;
     use glam::Vec2;
     use std::collections::BTreeSet;
@@ -530,6 +539,88 @@ mod tests {
         };
         encounter.arm();
         encounter
+    }
+
+    #[test]
+    fn the_successful_dodge_moment_is_a_dodge_that_actually_succeeded() {
+        // Branch QA captured this moment and found the player staggered ten
+        // ticks after it, because the predicate only asked whether a dodge was
+        // in progress while a blade happened to be live. The frame labelled
+        // "avoidance as geometry" was a frame of a dodge that failed.
+        //
+        // The oracle here is the event stream rather than the action's own
+        // bookkeeping: replay to the moment and check that the adversary swing
+        // the player was dodging never published a hit against the player.
+        let ground = fixture::golden_ground();
+        let setup = fixture::golden_setup();
+        let mut encounter = match Encounter::new(&setup, Some(&ground)) {
+            Ok(encounter) => encounter,
+            Err(error) => panic!("{error}"),
+        };
+        encounter.arm();
+        let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(&encounter));
+
+        // Which adversary swing is in the air, and whether it has ever hit the
+        // player, tracked independently of the action state.
+        let mut swing_hit_player = false;
+        let mut swing_id = None;
+        let mut found = None;
+        for _ in 0..fixture::GOLDEN_RUN_TICKS {
+            let intent = runner.next_intent(&encounter);
+            let events = encounter.step(intent, Some(&ground));
+            if runner.finished() {
+                runner.restart();
+            }
+            for event in events.iter() {
+                match event {
+                    CombatEvent::SwingStarted {
+                        side: Side::Adversary,
+                        swing,
+                    } => {
+                        swing_id = Some(swing);
+                        swing_hit_player = false;
+                    }
+                    CombatEvent::Hit {
+                        victim: Side::Player,
+                        ..
+                    } => swing_hit_player = true,
+                    _ => {}
+                }
+            }
+            if at_moment(MomentKind::SuccessfulDodge, &encounter, &events) {
+                found = Some((encounter.tick_index(), swing_hit_player, swing_id));
+                break;
+            }
+        }
+
+        let (tick, hit, swing) = match found {
+            Some(found) => found,
+            None => panic!("the reference script never reaches a successful dodge"),
+        };
+        assert!(
+            swing.is_some(),
+            "the moment fired at tick {tick} with no adversary swing in the air"
+        );
+        assert!(
+            !hit,
+            "the moment fired at tick {tick} on a swing that had already hit the player"
+        );
+
+        // And the dodge survives the rest of that swing: the adversary cannot
+        // still land it, because its active window is behind it.
+        let spec = *encounter.attack_spec(Side::Adversary);
+        match encounter.combatant(Side::Adversary).action() {
+            Action::Attack { elapsed, hits, .. } => {
+                assert!(
+                    *elapsed >= spec.active_end(),
+                    "the blade is still live at elapsed {elapsed} of {}",
+                    spec.active_end()
+                );
+                assert!(!hits[Side::Player.index()], "the swing had hit the player");
+            }
+            other => panic!("the adversary is not swinging: {other:?}"),
+        }
+        assert!(encounter.combatant(Side::Player).action().is_dodging());
     }
 
     #[test]
