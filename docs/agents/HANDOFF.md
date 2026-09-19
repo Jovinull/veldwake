@@ -47,9 +47,9 @@ Then the code, in this order, because it is the surface M6 has to work against:
 - `apps/client/src/camera.rs` and `apps/client/src/input.rs` — a free-fly camera and keyboard state, with no player-character relationship of any kind;
 - `crates/procedural` and `apps/client/src/world.rs` — how terrain reaches the client.
 
-## Continue here — M6 branch QA
+## Continue here — M6, waiting on one listen
 
-**M6 — Combat Slice is implemented on `feat/m6-combat-slice` and is not merged.** The next step is independent branch QA against that branch, exactly as M4 and M5 had. Nothing is asked of a QA session beyond reading [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) and disagreeing with it where the evidence does not support it.
+**M6 — Combat Slice is implemented on `feat/m6-combat-slice` and is not merged.** Independent branch QA has run and every finding is fixed on the branch; see *Branch QA* in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) for what each one was. The encounter has been played to two victories and nine defeats in a closed loop, the visual and motion passes are done, the M3/M4/M5 regressions are clean, and every gate is green at the branch head.
 
 All five phases are landed. The domain is `crates/combat`; the client work is in `apps/client/src/{arena,encounter,vfx,readout,synth,audio}.rs` and the changes to `app.rs`, `camera.rs`, `input.rs`, `debug.rs` and `renderer.rs`. Three ADRs were added ([0005](../adr/0005-fixed-step-headless-combat-domain.md), [0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), [0007](../adr/0007-procedural-impact-audio-boundary.md)) and one dependency (`cpal`), audited before it was added.
 
@@ -63,7 +63,7 @@ cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
 
 It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`. Nobody has played it. **OWNER LISTENING CHECK REQUIRED** before M6 can be called complete.
 
-A played victory is also outstanding (KI-024): the evidence harness cannot aim, so no played run has won. The fight is winnable by measurement and is won in `script` mode, but a person has not won it.
+A played victory is no longer outstanding: KI-024 is closed with two of them. KI-023 is closed too, and its premise turned out to be wrong rather than the dodge — the moment being captured was a dodge that *failed*.
 
 ### What was decided, and where the reasoning lives
 
@@ -112,7 +112,9 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M6 has not been through independent QA and has not been heard.** The audio works technically and no one has judged it; a played victory has not happened (KI-024). Neither is a defect, and both are unfinished.
+- **M6 has been through independent QA but has not been heard.** The audio works technically — device, delivery, latency bound, amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle — and no one has judged whether it sounds like an impact. That is the only thing between this branch and a pull request.
+- **A swing now aims itself, inside bounds, and that is a gameplay decision rather than a convenience.** `AIM_ASSIST_CONE` is `35°` and `AIM_ASSIST_RANGE` is the reach of the attack. It exists because closed-loop play measured one hit in four from positions the aim table says connect: facing follows movement, so a body that stands still to swing cannot track one that is moving, while the adversary's brain steers continuously. Widening it turns the fight into a lock; removing it makes the fight unwinnable by aiming. Change it only against a new measurement.
+- **A named moment must check what its name claims.** `successful-dodge` asserted only that a dodge was in progress while a blade was live, and the captures taken at it were of a dodge that failed. Any new moment predicate gets the same scrutiny: the name is a claim about the frame.
 - **`GOLDEN_ENCOUNTER_SIGNATURE` and `GOLDEN_ACTION_POSE_SIGNATURE` each moved twice, and every move has a written OLD/NEW/WHY beside the constant.** All five M5 signatures are byte-identical and `CHARACTER_STYLE_VERSION` was deliberately not bumped, because it is part of a character's identity and the action rules answer to `COMBAT_STYLE_VERSION` instead. Re-lock deliberately; never to make a test pass.
 - **Weapon identifiers are `192..224`.** Terrain is `64..128`, characters `128..192`, and the M2/M3 diagnostics are `1`, `2`, `7`. The client carries the global disjointness test and a new content domain declares its own range there.
 - **The hurt volume is not the M5 body capsule and must not be confused with it.** `BodyCapsule` keeps two bodies out of each other; `hurt::HurtVolume` decides damage. Sweeping the blade against the first is the defect that produced hits in empty air, and the module documentation carries the three rounds of measurement that chose the second.

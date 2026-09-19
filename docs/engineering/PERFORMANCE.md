@@ -154,14 +154,14 @@ Headless, from `combat-probe bench`:
 
 | measure | value |
 |---|---|
-| combat tick, mean over 12,000 ticks | `14.161` µs |
-| a second of simulation at `120` Hz | `1.699` ms of one core |
+| combat tick, mean over 12,000 ticks | `5.463` µs |
+| a second of simulation at `120` Hz | `0.656` ms of one core |
 | ground queries per tick | `14.96` |
-| one hit query at 16 substeps | `0.3551` µs |
+| one hit query at 16 substeps | `0.1447` µs |
 | worst sweep substeps observed in a fight | 4 of a bounded 16 |
-| weapon compile, median of 64 runs | `125.5` µs |
+| weapon compile, median of 64 runs | `85.3` µs |
 
-The bench's worst single tick is `44,021` µs — two orders of magnitude above the mean and unrelated to the work. It is desktop scheduling; the mean is the figure.
+The bench's worst single tick is `134` µs — an order of magnitude above the mean and unrelated to the work. It is desktop scheduling; the mean is the figure. These were re-measured after branch QA, with a sweep that now interpolates both the blade and the moving body.
 
 In the client, with an encounter running:
 
@@ -178,4 +178,4 @@ In the client, with an encounter running:
 | audio voice high-water | 1 of 8; zero displaced |
 | audio peak sample | `0.2323` against a `0.92` limit |
 
-`renderer_render_wall` measured a mean of `12,091` µs with the encounter off and `10,697` µs with it on, over identical 75-second settles. **The run with more work in it measured faster.** That is noise: the figure is dominated by present and vsync, it is wall time around the render call and not GPU time, and it is not a measure of what combat costs. What combat costs is the `1.699` ms per second above.
+`renderer_render_wall` measured a mean of `12,091` µs with the encounter off and `10,697` µs with it on, over identical 75-second settles. **The run with more work in it measured faster.** That is noise: the figure is dominated by present and vsync, it is wall time around the render call and not GPU time, and it is not a measure of what combat costs. What combat costs is the `0.656` ms per second above.

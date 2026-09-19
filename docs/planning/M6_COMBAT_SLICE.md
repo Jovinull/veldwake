@@ -21,7 +21,8 @@ Nothing else. This is a vertical slice of combat, not a combat system.
 | M6B | client: input, encounter modes, accumulator, two actors, weapons, follow camera, armed gate, health readout, debug volumes, first real-game run | complete |
 | M6C | action motion, reaction, knockback, hitstop, camera shake, named moments, capture cycle | complete |
 | M6D | VFX and procedural impact audio, with measurements | complete |
-| M6E | playtest evidence, regressions, performance, documentation close-out | in progress |
+| M6E | playtest evidence, regressions, performance, documentation close-out | complete |
+| QA | independent branch QA and the findings it produced | complete |
 
 ## The two corrections the design carried
 
@@ -393,16 +394,16 @@ The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignor
 
 | measure | value |
 |---|---|
-| combat tick, mean | `14.161` µs over 12,000 ticks |
-| a second of simulation at 120 Hz | `1.699` ms of one core |
+| combat tick, mean | `5.463` µs over 12,000 ticks |
+| a second of simulation at 120 Hz | `0.656` ms of one core |
 | ground queries per tick | `14.96` |
-| one hit query at 16 substeps | `0.3551` µs |
+| one hit query at 16 substeps | `0.1447` µs |
 | worst sweep substeps in a fight | 4 of 16 |
-| workspace tests | 651 |
-| weapon compile, median | `125.5` µs |
+| workspace tests | 656 |
+| weapon compile, median | `85.3` µs |
 | `renderer_render_wall`, mean / max | `9,216` / `14,879` µs |
 
-The bench's worst single tick is `44,021` µs, two orders of magnitude above the mean and unrelated to the work: it is desktop scheduling, and the figure to read is the mean. `renderer_render_wall` is **wall time around the render call**, not GPU time; there are no GPU timestamps here and none is claimed.
+The bench's worst single tick is `134` µs here, an order of magnitude above the mean and unrelated to the work: it is desktop scheduling, and the figure to read is the mean. These figures were re-measured after the branch-QA fixes, so the sweep now interpolates both the blade and the body and still costs under a fifth of a microsecond a query. `renderer_render_wall` is **wall time around the render call**, not GPU time; there are no GPU timestamps here and none is claimed.
 
 ## What moved and what did not
 
@@ -435,23 +436,65 @@ The weapon's two fingerprints — `0x8a6b18edd4a2b879` geometry and `0x084bf3865
 
 The second encounter re-lock also made it a better fight rather than only a more legible one. The adversary now has to aim, so it whiffs seven of thirteen swings instead of connecting almost every time, and the reference run ends with the player on `24` health rather than `6`.
 
+## Branch QA
+
+Independent QA ran against this branch and found six defects. All six are fixed here, and each is recorded with what it was rather than with the fact that it was fixed.
+
+### Found by reading the code and the probes
+
+| finding | what was wrong | fix |
+|---|---|---|
+| the sound queue was one slot short | `QUEUE_SLOTS` declared sixty-four and the ring delivered sixty-three, because the full-test compared against the mask rather than the capacity | the bound is the capacity, and a test fills it to the declared number |
+| the partition probe measured `19.99` seconds | it advanced the clock by a truncated frame duration, so twenty seconds came out as `2,399` ticks instead of `2,400` and the "exact partition" claim was a rounding artefact | the probe delivers the exact interval; all three rates now produce `2,400` ticks and the identical trace `0xff3d7fb060b64aa5` |
+| the hit sweep ignored the victim's movement | the blade was swept against the victim's capsule at its *end* position only, so a body that moved during the tick could be passed through | the sweep interpolates both the blade and the capsule, and the substep count is derived from both |
+| the relative sweep bound used `max()` | with the blade and the body moving toward each other, each under one voxel, their *relative* motion is the sum and can exceed a voxel — `max()` under-counted the substeps | the bound is the sum of both advances plus the change in the capsule radius, which the triangle inequality makes conservative |
+
+### Found by playing and by capturing
+
+| finding | what was wrong | fix |
+|---|---|---|
+| `successful-dodge` was not a successful dodge | the moment predicate asked only whether the player was dodging while a blade happened to be live. The capture at it showed the player **staggered ten ticks later**: a frame documented as *avoidance as geometry* was a frame of a dodge that failed | the predicate requires the adversary's swing to have run out its whole active window without touching the dodger. The moment moved from tick `623` to `2092` and a test asserts, from the event stream rather than the action's own bookkeeping, that the swing never hit the player |
+| the encounter could not be won by aiming | facing follows movement, which is right for locomotion and means a body that stands still to swing cannot track one that is moving — while the adversary's brain steers continuously and aims perfectly. Closed-loop play from positions the aim table says connect landed **one swing in four** | a swing turns the body onto the other one as it commits, inside a `35°` cone and the reach of the attack. Hit rate went from one in four to **sixteen of twenty-four** |
+
+The aim assist is deliberately the smallest thing that answers the measurement, and every bound is a test: at swing start only, never during it; inside the cone only; inside the reach only; one other body, because there are exactly two; no camera involvement at all; and the same rule on both sides, so *both run the same rules* stays true. `player_aim_assists` and `adversary_aim_assists` are in the report, because an assist that fires on every swing, or on none, is a tuning error rather than an assist.
+
+### The capture harness
+
+QA also found the harness itself capturing the wrong window. The replacement never sends Alt-Tab and never guesses: it starts exactly one client, enumerates *that process's* top-level windows and takes the one that is visible, titled `Veldwake`, and has a real client area, makes that handle topmost for the run, acquires the foreground through `AttachThreadInput` rather than hoping `SetForegroundWindow` succeeds from a background process, and refuses to capture unless the foreground window is that handle. It maximises unconditionally and refuses a client narrower than `1900` pixels, because the first frame it produced had the Windows taskbar in it. Topmost is dropped at the end and no other application is touched.
+
+Two harness faults were caught by checking the log rather than the picture: a key step written `W:200` matched no pattern and was silently dropped, producing a run where the encounter never armed and the capture looked perfectly fine.
+
 ## M6E — evidence
 
 The exit gate is the real game on the audited host, with fresh captures opened and inspected.
 
-### Played runs
+### Played, in a closed loop
 
-Three runs of `VELDWAKE_ENCOUNTER=armed`, driven through the evidence harness on the audited host, each settled for 75 s and then played:
+The encounter was played through an observe-decide-act loop: each burst of input was chosen from the state of the previous capture and the log, never from a fixed script, and the client stayed alive between decisions.
 
-| run | swings | hits | whiffs | hit by | dodges | refused | staggers | defeat | reset |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | 13 | 1 | 11 | 10 | 4 | 10 | 9 | player | 1 |
-| 2 | 14 | 4 | 9 | 9 | 3 | 10 | 8 | player | 1 |
-| 3 | 14 | 4 | 9 | 10 | 3 | 12 | 9 | player | 1 |
+The first session is the diagnosis. Walking straight in cost `54` health to three hits without a single swing; from good positions the player landed **one swing in four** while the adversary landed almost every one. That is the measurement that produced the aim assist, and it was taken before any change was made.
 
-Every run: zero errors, zero validation messages, zero dropped combat events, zero dropped frame events, zero dropped particles, zero dropped sound requests, exit code `0`. The audio cross-check is exact in each: run 2's `4 + 9` hits and `9 + 2` whiffs are `24` events, and the device started `24` voices.
+The second session, with the assist, is the evidence:
 
-**No played run produced a victory, and that is stated rather than worked around.** The harness presses keys without seeing the screen, so it aims no better than it walks; `combat-probe aim` establishes separately that a swing aimed at the body connects at every range the attack reaches. Victory is demonstrated in `script` mode, where the reference fight defeats the adversary once, and headlessly by `the_reference_script_reaches_every_named_moment`. Defeat, reset, hits in both directions, misses, dodges, refused dodges and staggers are all demonstrated by the played runs themselves.
+| measure | value |
+|---|---|
+| swings | 26 |
+| hits landed | 16 |
+| whiffs | 8 |
+| dodges | 4, with 3 refused by cooldown |
+| staggers taken | 52 |
+| **victories** | **2** |
+| **defeats** | **9** |
+| resets | 11 |
+| dropped combat events / frame events / particles / sound requests | 0 / 0 / 0 / 0 |
+| audio device errors | 0 |
+| ` ERROR ` lines | 0 |
+
+The audio cross-check is exact again, in a played run this time: `16 + 61` hits and `8 + 0` whiffs are `85` events, and the device started `85` voices.
+
+The victory was captured inside the defeat hold: `adversary_health=0`, `outcome="adversary"`, the player alive on `42` health, and the frame shows the adversary's pip row entirely dark above a player still holding four lit pips. Defeat was captured the other way round, down to a player showing a single lit pip — the *any health at all keeps a pip lit* rule at its limit — with impact chips still in the air.
+
+Most of the defeats in both sessions happened in the gaps **between** decisions, where a stationary player stands in front of an adversary that keeps attacking. That is an artefact of a loop whose think time is seconds long, not a property of the fight, and it is why the victories had to be taken inside a single continuous burst.
 
 ### The `off` contract, by observation rather than by eye
 
@@ -467,7 +510,7 @@ Two runs, same world, same camera pose, same weather, same 75-second settle, no 
 
 With the encounter off no device is opened at all, so there is no audio thread and no handle on the sound card — not a muted one.
 
-`renderer_render_wall` came back at a mean of `12,091` µs with the encounter off and `10,697` µs with it on. **The run with more work in it measured faster, which is noise and is reported as noise.** That wall time is dominated by present and vsync; it is not a measure of what combat costs. What combat costs is the headless figure: `1.699` ms of one core per second of simulation.
+`renderer_render_wall` came back at a mean of `12,091` µs with the encounter off and `10,697` µs with it on. **The run with more work in it measured faster, which is noise and is reported as noise.** That wall time is dominated by present and vsync; it is not a measure of what combat costs. What combat costs is the headless figure: `0.656` ms of one core per second of simulation.
 
 ### Regressions at this HEAD
 
@@ -480,6 +523,32 @@ With the encounter off no device is opened at all, so there is no audio thread a
 All five M5 locked signatures are byte-identical; see *What moved and what did not*. `character-probe`, `terrain-probe`, `streaming-probe`, `voxel-probe` and `combat-probe` all exit `0` in release at this HEAD.
 
 KI-018 and KI-019 are unchanged: nothing in M6 touches the gait solver or the shadow pass. KI-020 is **more visible and not worse in kind**: an attack flexes the wrist further than locomotion ever does, so the dark seam where a parent's end cap meets its child is wider in an attack frame than in a walk frame. It is the same accepted consequence of rigid parts, at a larger angle.
+
+### Hit truth, against the volumes themselves
+
+Captured with the combat debug view on, so the hurt volumes and blade endpoints are drawn rather than inferred:
+
+| case | what the frame shows |
+|---|---|
+| clear torso contact | the blade's endpoint marker inside the adversary's volume, and the adversary in `stagger` at elapsed `0` |
+| clear gap | at `3.57` apart, the adversary's blade markers short of the player's volume with daylight between them, and no hit |
+| above the head | the blade raised at `windup 48`, its marker above both volumes, and no hit |
+
+No frame was found where a blade clearly crosses a core or a head without a hit, or where damage is dealt with the blade clearly in the air. The volumes are visibly the size of a torso rather than barrels, and the arms and lower legs sitting outside them is KI-022 shown rather than asserted.
+
+### Motion
+
+Two frame-exact strips, eight frames each, reconstructed by replaying the same fight to a named moment and then a fixed number of ticks past it.
+
+A player swing, `windup 11` through `recovery 38`: the blade rises, reaches vertical, comes down, and the adversary's health drops from `96` to `72` on the frame the blade arrives. Impact chips appear at the contact on the next frame, `elapsed` holds at `28` across two frames — the hitstop, visible — and the recoil is progressive over the three frames after it.
+
+An adversary attack, `windup 1` through `recovery 91`: the blade is indistinguishable from carry at the first frame of the telegraph, clearly raised by `windup 29`, and fully vertical by `windup 43` — eleven ticks before the active window opens. The player's health drops on the frame the blade arrives, chips appear at the contact, and the recoil follows.
+
+Searched for and not found in either strip: weapon teleport, weapon detachment, a weapon passing through a torso outside a hit, a phase pop, an attack travelling backwards, a hit with a visible gap, a visible torso hit without damage, a double hit, foot sliding, an enemy snap, a VFX mismatch, a health mismatch, and a reset pop.
+
+### The telegraph
+
+Readable well before it matters, and carried by pose and weapon anticipation rather than by colour: the adversary's blade is clearly raised `25` ticks before its active window opens and fully vertical `11` ticks before, against an active window that lasts `14`. No change was needed.
 
 ## Scope, and what this milestone deliberately does not build
 
