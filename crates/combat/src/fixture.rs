@@ -624,7 +624,17 @@ pub const GOLDEN_WEAPON_IDENTITY_FINGERPRINT: u64 = 0x084b_f386_500b_b0e4;
 /// only a more legible one: the adversary now has to aim, so it whiffs seven of
 /// thirteen swings instead of connecting almost every time, and the player
 /// finishes on `24` health rather than `6`.
-pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x008e_8bd6_4f62_f267;
+///
+/// **Old** `0x008e8bd64f62f267`, **new** `0x64157522d2535658`, **why**: a swing
+/// now turns the body onto the other one as it commits, inside a thirty-five
+/// degree cone and the reach of the attack. Branch QA played the encounter
+/// through a closed loop and could not win it: from positions the aim table
+/// says connect, the player landed one swing in four, because facing follows
+/// movement and a body that stands still to swing cannot track one that is
+/// moving. The scripted fight barely notices — it already aimed, so the outcome
+/// is the same five hits to four with the adversary defeated — but every
+/// facing in it is a hair different and the trace follows.
+pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x6415_7522_d253_5658;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]

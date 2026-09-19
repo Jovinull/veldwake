@@ -906,6 +906,11 @@ fn report_combat(
         dodges_refused = counters.dodges_refused[0],
         player_staggers = counters.staggers[0],
         adversary_staggers = counters.staggers[1],
+        // Swings turned onto the other body as they committed. An assist that
+        // fires on every swing, or on none, is a tuning error rather than an
+        // assist, and this is how that is seen.
+        player_aim_assists = counters.aim_assists[0],
+        adversary_aim_assists = counters.aim_assists[1],
         defeats_player = counters.defeats[0],
         defeats_adversary = counters.defeats[1],
         resets = counters.resets,

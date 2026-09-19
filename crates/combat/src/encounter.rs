@@ -55,7 +55,7 @@ use crate::combatant::{Action, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
 use crate::hit::{Segment, Sweep, moving_substeps, sweep_moving_capsule};
 use crate::hurt::HurtVolume;
-use crate::movement::{MoveRules, facing_of, separate, try_move, turn_toward};
+use crate::movement::{MoveRules, facing_of, separate, try_move, turn_toward, wrap_angle};
 use crate::spec::{AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
 use crate::tick::{Ticks, tick_seconds};
 use crate::weapon::{CompiledWeapon, WeaponCompiler, WeaponDescriptor, WeaponError};
@@ -132,6 +132,10 @@ pub struct CombatCounters {
     /// Dodges asked for and refused, by cooldown or by a running action.
     pub dodges_refused: [u32; SIDES.len()],
     pub staggers: [u32; SIDES.len()],
+    /// Swings that were turned onto the other body as they started. Countable
+    /// because an assist that fires on every swing, or on none, is a tuning
+    /// error rather than an assist.
+    pub aim_assists: [u32; SIDES.len()],
     pub defeats: [u32; SIDES.len()],
     pub resets: u32,
     /// Moves the rules refused outright.
@@ -438,6 +442,53 @@ impl Encounter {
         events
     }
 
+    /// Turns a body onto the other one at the instant a swing starts, if it is
+    /// already close enough and nearly facing it.
+    ///
+    /// **Why this exists, and why it is this small.** Facing follows movement,
+    /// which is right for locomotion and is what makes a body turn as it walks.
+    /// It also means a body that stands still to swing cannot track a target
+    /// that is moving, and the adversary's brain steers continuously — so the
+    /// adversary aims perfectly and the player cannot. Branch QA played the
+    /// encounter through a closed loop and measured the result: from good
+    /// positions, inside the range and the facing window that `combat-probe
+    /// aim` says connect, the player landed one swing in four while the
+    /// adversary landed almost every one. That is the "artificially difficult
+    /// despite good positioning" case, and this is the bounded answer to it.
+    ///
+    /// The bounds are the whole design:
+    ///
+    /// - **At swing start only.** Nothing tracks during the swing, so a target
+    ///   that moves after the blade is committed is still missed.
+    /// - **Inside [`AIM_ASSIST_CONE`] only.** A body facing away does not
+    ///   snap round; this closes the last few degrees of a turn the body was
+    ///   already most of the way through.
+    /// - **Inside [`AIM_ASSIST_RANGE`] only.** Beyond the reach of the attack
+    ///   there is nothing to assist.
+    /// - **One other body**, because the encounter has exactly two. This is not
+    ///   target selection and there is nothing to select.
+    /// - **No camera involvement at all.** The camera is not consulted and not
+    ///   moved; this is a rule of the domain and applies identically to both
+    ///   sides, which keeps "both run the same rules" true.
+    fn aim_at_the_other_body(&mut self, side: Side) {
+        let index = side.index();
+        let from = self.combatants[index].position();
+        let to = self.combatants[side.other().index()].position();
+        let offset = to - from;
+        if offset.length() > AIM_ASSIST_RANGE {
+            return;
+        }
+        let Some(bearing) = facing_of(offset) else {
+            return;
+        };
+        let facing = self.combatants[index].state().facing;
+        if wrap_angle(bearing - facing).abs() > AIM_ASSIST_CONE {
+            return;
+        }
+        self.combatants[index].state_mut().facing = bearing;
+        self.counters.aim_assists[index] = self.counters.aim_assists[index].saturating_add(1);
+    }
+
     /// Starts an attack or a dodge if one was asked for and is legal.
     fn start_action(&mut self, side: Side, intent: Intent, events: &mut StepEvents) {
         let index = side.index();
@@ -451,6 +502,7 @@ impl Encounter {
         // Attack wins over dodge when both arrive in one tick: committing is the
         // decision the slice is about, and a tie has to resolve somewhere.
         if intent.attack() {
+            self.aim_at_the_other_body(side);
             let swing = self.combatants[index].take_swing_id();
             self.combatants[index].set_action(Action::Attack {
                 swing,
@@ -879,6 +931,23 @@ fn start_state(
     CharacterState::standing(position.x, position.y, facing, ground)
 }
 
+/// How far off a body may already be looking and still be turned onto the other
+/// one when its swing starts, in radians.
+///
+/// `0.61` is thirty-five degrees. `combat-probe aim` measures the window a
+/// swing connects in as roughly `-20` to `+10` degrees at the far end of the
+/// reach and `-45` to `+14` close in, so a cone of thirty-five degrees closes
+/// the last part of a turn a body was already most of the way through and does
+/// nothing for one that is facing elsewhere. It is deliberately smaller than a
+/// quarter turn: a body attacking behind itself keeps missing.
+pub const AIM_ASSIST_CONE: f32 = 0.61;
+
+/// How far away the other body may be and still be aimed at, in world units.
+///
+/// `2.90`, just past the `2.8949` centre-to-centre distance a hit connects out
+/// to. Beyond the reach of the attack there is nothing to assist.
+pub const AIM_ASSIST_RANGE: f32 = 2.90;
+
 /// Ticks a whole action would take, for the probe and the tests.
 #[must_use]
 pub fn action_duration(action: &Action, spec: &AttackSpec) -> Ticks {
@@ -892,7 +961,10 @@ pub fn action_duration(action: &Action, spec: &AttackSpec) -> Ticks {
 
 #[cfg(test)]
 mod tests {
-    use super::{CountingGround, Encounter, EncounterError, EncounterSetup, action_duration};
+    use super::{
+        AIM_ASSIST_CONE, AIM_ASSIST_RANGE, CountingGround, Encounter, EncounterError,
+        EncounterSetup, action_duration,
+    };
     use crate::combatant::{Action, Intent, SIDES, Side};
     use crate::event::CombatEvent;
     use crate::fixture;
@@ -1579,6 +1651,105 @@ mod tests {
             swings >= 2,
             "the adversary must actually swing, got {swings}"
         );
+    }
+
+    #[test]
+    fn a_swing_is_aimed_only_from_inside_its_cone_and_its_range() {
+        // The bounds are the whole design, so each one is asserted. A body
+        // already nearly facing the other is turned the last few degrees; a
+        // body facing away, or too far to reach, is left exactly as it was.
+        let ground = ground();
+        let aim = |offset_degrees: f32, range: f32| {
+            let mut setup = fixture::sandbox_setup();
+            setup.player_offset = Vec2::new(0.0, range * 0.5);
+            setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+            setup.facing_offsets[Side::Player.index()] = offset_degrees.to_radians();
+            let mut encounter = armed(&setup, &ground);
+            let before = encounter.combatant(Side::Player).state().facing;
+            let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+            let after = encounter.combatant(Side::Player).state().facing;
+            let assists = encounter.counters().aim_assists[Side::Player.index()];
+            (before, after, assists)
+        };
+
+        // Inside both bounds: turned onto the other body, and counted.
+        let (before, after, assists) = aim(30.0, 2.0);
+        assert_eq!(assists, 1, "a swing inside the cone was not aimed");
+        assert!(
+            (after - before).abs() > 0.1,
+            "the facing did not move: {before} to {after}"
+        );
+        assert!(
+            after.abs() < 1.0e-4,
+            "the swing was not aimed at the body: {after}"
+        );
+
+        // Outside the cone: untouched.
+        let (before, after, assists) = aim(80.0, 2.0);
+        assert_eq!(assists, 0, "a swing facing away was aimed anyway");
+        assert!((after - before).abs() < 1.0e-6, "{before} became {after}");
+
+        // Inside the cone but beyond the reach: untouched.
+        let (before, after, assists) = aim(30.0, AIM_ASSIST_RANGE + 0.5);
+        assert_eq!(assists, 0, "a swing out of range was aimed anyway");
+        assert!((after - before).abs() < 1.0e-6, "{before} became {after}");
+
+        // Exactly on the cone boundary is inside it; a hair past is not.
+        let just_inside = AIM_ASSIST_CONE.to_degrees() - 0.5;
+        let just_outside = AIM_ASSIST_CONE.to_degrees() + 0.5;
+        assert_eq!(aim(just_inside, 2.0).2, 1);
+        assert_eq!(aim(just_outside, 2.0).2, 0);
+        // And it is symmetric: turning left is the same rule as turning right.
+        assert_eq!(aim(-just_inside, 2.0).2, 1);
+        assert_eq!(aim(-just_outside, 2.0).2, 0);
+    }
+
+    #[test]
+    fn aiming_happens_at_the_swing_and_never_during_it() {
+        // A swing that kept tracking would be a homing attack. The facing is
+        // set once, when the blade commits, and then the body is on its own.
+        let ground = ground();
+        let mut setup = fixture::sandbox_setup();
+        setup.player_offset = Vec2::new(0.0, 1.0);
+        setup.adversary_offset = Vec2::new(0.0, -1.0);
+        setup.facing_offsets[Side::Player.index()] = 0.3;
+        let mut encounter = armed(&setup, &ground);
+        let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+        assert_eq!(encounter.counters().aim_assists[Side::Player.index()], 1);
+        let aimed = encounter.combatant(Side::Player).state().facing;
+
+        // The rest of the swing, standing still: the facing must not move again
+        // however the other body drifts.
+        let spec = *encounter.attack_spec(Side::Player);
+        for _ in 0..spec.total() {
+            let _ = encounter.step(Intent::player(Vec2::ZERO, false, false), Some(&ground));
+            let now = encounter.combatant(Side::Player).state().facing;
+            assert!(
+                (now - aimed).abs() < 1.0e-6,
+                "the facing moved mid swing: {aimed} to {now}"
+            );
+        }
+        assert_eq!(
+            encounter.counters().aim_assists[Side::Player.index()],
+            1,
+            "the assist fired more than once for one swing"
+        );
+    }
+
+    #[test]
+    fn a_dodge_is_never_aimed() {
+        // Only a swing is aimed. A dodge has a direction of its own and taking
+        // it over would be a different and much larger decision.
+        let ground = ground();
+        let mut setup = fixture::sandbox_setup();
+        setup.facing_offsets[Side::Player.index()] = 0.3;
+        let mut encounter = armed(&setup, &ground);
+        let before = encounter.combatant(Side::Player).state().facing;
+        let _ = encounter.step(Intent::player(Vec2::ZERO, false, true), Some(&ground));
+        assert_eq!(encounter.counters().aim_assists[Side::Player.index()], 0);
+        assert!(encounter.combatant(Side::Player).action().is_dodging());
+        let after = encounter.combatant(Side::Player).state().facing;
+        assert!((after - before).abs() < 1.0e-6, "a dodge turned the body");
     }
 
     #[test]
