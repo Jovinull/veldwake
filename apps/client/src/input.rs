@@ -1,3 +1,17 @@
+/// A combat verb, which is pressed rather than held.
+///
+/// These are **latched** rather than sampled, and that is not a detail. The
+/// authoritative simulation runs at its own fixed rate, so a frame can produce
+/// no ticks at all or four of them; a press read by sampling a held flag would be
+/// lost in the first case and repeated in the second. A latch set on the key-down
+/// edge and cleared by the tick that consumes it is the only shape that keeps one
+/// press meaning one swing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CombatAction {
+    Attack,
+    Dodge,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CameraAction {
     Forward,
@@ -25,6 +39,12 @@ pub struct InputState {
     down: bool,
     look_active: bool,
     look_delta: (f32, f32),
+    /// Set on a key-down edge, cleared by the combat tick that consumes it.
+    attack_latched: bool,
+    dodge_latched: bool,
+    /// Whether the key is currently held, so a repeat event cannot re-latch.
+    attack_held: bool,
+    dodge_held: bool,
 }
 
 impl InputState {
@@ -45,6 +65,46 @@ impl InputState {
             right: axis(self.right, self.left),
             up: axis(self.up, self.down),
         }
+    }
+
+    /// Records a combat key's state, latching on the down edge only.
+    ///
+    /// `winit` repeats a held key, so the held flag is what stops one press from
+    /// becoming a swing every frame.
+    pub fn set_combat_action(&mut self, action: CombatAction, pressed: bool) {
+        match action {
+            CombatAction::Attack => {
+                if pressed && !self.attack_held {
+                    self.attack_latched = true;
+                }
+                self.attack_held = pressed;
+            }
+            CombatAction::Dodge => {
+                if pressed && !self.dodge_held {
+                    self.dodge_latched = true;
+                }
+                self.dodge_held = pressed;
+            }
+        }
+    }
+
+    /// Takes the latched combat presses, clearing them.
+    ///
+    /// Called by the first combat tick of a frame. A frame that runs no tick does
+    /// not call it, so the press waits rather than disappearing.
+    pub fn take_combat_latches(&mut self) -> (bool, bool) {
+        let latched = (self.attack_latched, self.dodge_latched);
+        self.attack_latched = false;
+        self.dodge_latched = false;
+        latched
+    }
+
+    /// Which presses are waiting, for the report line.
+    ///
+    /// Reported separately because a latch that is stuck has to name itself: the
+    /// first real run showed one set and the two flags are what told us which.
+    pub const fn combat_latches(&self) -> (bool, bool) {
+        (self.attack_latched, self.dodge_latched)
     }
 
     pub fn set_look_active(&mut self, active: bool) {

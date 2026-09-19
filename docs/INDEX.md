@@ -45,6 +45,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`audiovisual/ART_DIRECTION.md`](audiovisual/ART_DIRECTION.md)
 - [`audiovisual/STYLE_BIBLE.md`](audiovisual/STYLE_BIBLE.md): the versioned, checkable constraint set the M4 generator and shaders are held to
 - [`audiovisual/CHARACTER_STYLE.md`](audiovisual/CHARACTER_STYLE.md): the versioned, checkable constraint set the M5 character compiler and locomotion are held to
+- [`audiovisual/COMBAT_STYLE.md`](audiovisual/COMBAT_STYLE.md): the versioned constraint set the M6 weapon, action motion, effects, readout and camera response are held to, and why it is a separate version from the character's
 - [`audiovisual/RENDERING_VISION.md`](audiovisual/RENDERING_VISION.md)
 - [`audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md`](audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md)
 
@@ -75,6 +76,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M3_STREAMING_WORLD.md`](planning/M3_STREAMING_WORLD.md)
 - [`planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](planning/M4_BEAUTIFUL_TERRAIN_SLICE.md)
 - [`planning/M5_PROCEDURAL_CHARACTER.md`](planning/M5_PROCEDURAL_CHARACTER.md)
+- [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)

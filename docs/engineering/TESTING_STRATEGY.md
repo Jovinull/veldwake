@@ -67,3 +67,25 @@ Locomotion is where the interesting tests are, because this is the part a captur
 The client's 88 tests keep the boundary honest without a GPU: the identifier ranges of all three content domains are proved disjoint where all three tables are visible, the ground adapter is proved to return block tops and to keep absence absent, and its finite terrain extent is proved as a continuous half-open rectangle at both negative and fractional final-column edges. The portrait clearing is proved level, open and free of vegetation, the terrace stand is proved to have a step in front of the toes, every camera pose is proved to stand above ground at both stand points, and each of the three diagnostic courses is proved to stay in the region, stay dry, close into a loop, and — for the two that are meant to — either stay level or actually climb.
 
 Automated visual regression remains **NOT YET APPLICABLE** for characters exactly as it is for terrain (KI-006, KI-021). The locked signatures catch a changed voxel, bone or gait constant without a renderer; nothing checks that the result still looks right, and the written assessment in the milestone document is the artefact that stands in for it.
+
+## Combat
+
+The combat domain is headless by construction, so everything it claims is asserted without a GPU, a window or an audio device. Four kinds of test carry it:
+
+- **Property tests with independent oracles**, not tautologies. Partition equivalence compares three frame rates against each other rather than against the formula that produced them; the aim window is measured by standing a passive body at a bearing and swinging, not by re-deriving the reach; a swing's hits-per-swing is counted against the events, not against the intent that requested them.
+- **Locked signatures with written reasons.** `GOLDEN_WEAPON_GEOMETRY_FINGERPRINT`, `GOLDEN_WEAPON_IDENTITY_FINGERPRINT`, `GOLDEN_ENCOUNTER_SIGNATURE` and `GOLDEN_ACTION_POSE_SIGNATURE`. Every re-lock carries an OLD/NEW/WHY paragraph beside the constant naming the semantic change that required it. Re-locking to make a test pass is the failure mode these exist to prevent.
+- **Bounds asserted as properties.** A full event buffer drops and counts rather than growing; a full particle pool refuses and counts; a full sound queue refuses and counts; the voice limit displaces the oldest and counts. Each of those is a test, because "bounded" written in a comment is not bounded.
+- **The edge cases an ordering bug hides in.** Tick boundaries off by one, the first and last tick of an active window, simultaneous attacks, a double knockout, a hit on the last active tick, a dodge one tick before, at and after an active window, a reset while effects are in flight, the accumulator cap and its remainder, zero-tick frames, a huge frame spike, coincident bodies, separation against the arena edge and against terrain a body cannot climb, and rotation-only, translation-only and combined blade sweeps.
+
+The audio is the one place where the tests stop short on purpose. Amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle and whiff-against-hit are all assertions. Whether an impact *sounds* like an impact is not, and the offline listening fixture exists so a person can decide rather than so a test can pretend to.
+
+### What branch QA added
+
+Four properties that were assumed rather than checked, and each was wrong:
+
+- **A declared bound is the bound.** The sound queue said sixty-four and delivered sixty-three. A capacity test now fills it to the declared number.
+- **A probe measures what it says it measures.** The partition probe truncated each frame duration, so "twenty seconds" was `19.99` and produced `2,399` ticks. It now delivers the exact interval, and the headless clock test carries the same exact-total property.
+- **A sweep is relative.** The blade was swept against the victim's *end* position, and then against both endpoints with a `max()` bound — but two bodies closing on each other move, relative to one another, by the *sum* of their advances. Both are fixed and both have a test that fails under the old rule.
+- **A named moment means what its name says.** `successful-dodge` only checked that a dodge was in progress while a blade was live; the capture at it showed the player staggered ten ticks later. The predicate now requires the swing to run out its active window without touching the dodger, and the test asserts it from the event stream rather than from the action's own bookkeeping.
+
+The aim assist that followed is bounded by tests rather than by intent: at swing start only and never during it, inside its cone, inside its range, symmetric left and right, and never applied to a dodge.

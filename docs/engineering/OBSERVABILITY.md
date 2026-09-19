@@ -68,3 +68,15 @@ One `character ready` line at startup: `selection`, the identity `fingerprint`, 
 A `character state` line every five seconds: `selection`, `elapsed`, `x`, `z`, `base_height`, `facing_degrees`, `speed`, `phase`, the `moving` and `run` blend weights, `grounded`, and per side `stance` and `clearance`, together with the `landform` and `zone` of the column underneath. `clearance` is the signed distance from a sole to the block top it should be resting on, so a contact defect is a number in the log before it is a defect in a capture — but the number is not the evidence, because a sole can be exactly on a surface the viewer cannot see. Both are checked.
 
 Frame timing is unchanged and is where the character's cost is read: `renderer_render_wall_mean_us` and `renderer_render_wall_max_us` with the character off and on, at the same world, camera, weather and settle.
+
+## What the M6 combat client reports today
+
+Two lines on the same five-second cadence the streaming and character reports use, so one capture aligns with one interval.
+
+`combat state` — where the fight is: mode, whether it is armed and whether it is frozen, the tick index, how many ticks a named moment still owes, the distance between the bodies, each side's action, elapsed ticks, health, position and facing, the adversary's brain state and timer, the outcome, and the three input-latch flags split so a stuck latch names itself.
+
+`combat work` — what it has done and what it cost: ticks run, ticks this run, ticks the frame cap discarded, the most ticks one frame ran, frames that ran none, the clock's own dropped and capped-frame counters, swings, hits, whiffs, dodges, refused dodges, staggers, defeats and resets per side, separations, blocked moves per side, hit queries, the worst sweep substep count, suppressed multi-hits, dropped events at both levels, the camera's strike count and whether it is moving, live particles split by effect with their high-water and dropped counts, effect draws, instances and instance bytes, and the audio block — whether a device is open, its rate and channels, callbacks, frames, voices started and displaced, voice and buffer high-water marks, peak sample in millionths, device errors, and the queue's waiting, consumed and dropped counts.
+
+The counters that must stay zero are stated as such: `events_dropped`, `frame_events_dropped`, `vfx_dropped`, `audio_queue_dropped` and `audio_device_errors`. A non-zero value in any of them is a bound that was too small, and the number says by how much.
+
+With `VELDWAKE_ENCOUNTER=off` neither line is emitted at all, no encounter is built and no audio device is opened — the absence is the observation, and it is how the off contract is checked rather than by looking at a screenshot.

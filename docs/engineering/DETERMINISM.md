@@ -17,6 +17,8 @@ Determinism is a compatibility contract, not a blanket claim that every floating
 - Canonical seed derivation and random-stream partitioning.
 - World-generation results covered by `WORLD-001` within declared compatible versions.
 - Descriptor canonicalization and procedural asset cache keys, including character descriptors: a compiled character is a pure function of its descriptor, and a posed character is a pure function of a compiled character, a runtime state, and a ground query.
+- Combat, which is integer-stepped end to end. `Encounter::step` advances exactly one tick; every duration in the domain is a tick count; authored seconds are compiled to ticks before they can reach the runtime. The client's accumulator is integer too — elapsed nanoseconds times the tick rate against `1_000_000_000`, keeping the sub-tick remainder — so the same twenty seconds delivered at 30, 60 and 144 Hz produce the same 2,399 ticks and the identical trace `0x0807fcad37689f9f`. The adversary draws from named FNV-1a streams with an explicit decision counter, never from a sequential global source.
+- Presentation driven by combat, for the same reason: the camera impulse, the effect chips and the synthesised voices are all functions of integer tick counts and fixed tables, with no wall clock and no random source, so a capture fixture can be compared against another capture rather than only looked at.
 - Save migration transforms and golden fixtures.
 - Protocol identifiers and authoritative ordering where replay/reconciliation require it.
 
@@ -24,7 +26,7 @@ Determinism is a compatibility contract, not a blanket claim that every floating
 
 - Bitwise-identical renderer output across GPU vendors/drivers.
 - Universal bitwise physics equivalence across all CPUs/platforms.
-- Identical audio sample output across every backend.
+- Identical audio sample output across every backend. The synth itself is deterministic — the same requests give the same samples, and a test asserts it — but the device's sample rate, channel count and buffer size are the host's, and a different rate renders different samples.
 - A permanently unchanged world when the explicit world/generator version changes.
 
 ## Design requirements

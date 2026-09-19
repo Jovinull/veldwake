@@ -1,12 +1,18 @@
 mod app;
+mod arena;
+mod audio;
 mod camera;
 mod character;
 mod debug;
 mod diagnostics;
+mod encounter;
 mod input;
 mod lighting;
+mod readout;
 mod renderer;
 mod streaming;
+mod synth;
+mod vfx;
 mod world;
 
 use std::process::ExitCode;

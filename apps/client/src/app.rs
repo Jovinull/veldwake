@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic},
     time::{Duration, Instant},
 };
 
@@ -18,15 +18,22 @@ use winit::{
 };
 
 use veldwake_character::GroundSampler;
+use veldwake_combat::{CombatEvent, SIDES, Side};
 
 use crate::{
-    camera::{Camera, CameraController},
+    arena,
+    audio::AudioDevice,
+    camera::{Camera, CameraController, FollowController, HitShake},
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
-    debug::{DebugMode, debug_primitives},
-    input::{CameraAction, InputState},
+    debug::{DebugMode, combat_primitives, debug_primitives},
+    encounter::{EncounterMode, EncounterScene},
+    input::{CameraAction, CombatAction, InputState},
     lighting::Weather,
-    renderer::{RenderOutcome, Renderer},
+    readout::{self, READOUT_INSTANCES},
+    renderer::{RenderOutcome, Renderer, VfxFrameWork},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
+    synth::{VoiceKind, VoiceParams},
+    vfx::{MAX_VFX_INSTANCES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
 
@@ -42,6 +49,9 @@ const CACHE_DIR_VARIABLE: &str = "VELDWAKE_CACHE_DIR";
 /// can be aligned with one interval line rather than with two clocks.
 const CHARACTER_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How often the encounter's state is reported, on the same cadence again.
+const COMBAT_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Where the camera starts.
 ///
 /// `VELDWAKE_POSE` names either one of the world's golden terrain poses or
@@ -54,9 +64,15 @@ fn spawn_camera() -> Camera {
     let requested = requested_pose();
     if let Some(name) = requested.as_deref()
         && let Some(generator) = world.generator()
-        && let Some(camera) = spawn_character_camera(name, &generator)
     {
-        return camera;
+        // A combat pose first: it frames the arena, and a frozen moment needs a
+        // fixed camera rather than one that follows a body.
+        if let Some(camera) = arena::spawn_combat_camera(name, &generator) {
+            return camera;
+        }
+        if let Some(camera) = spawn_character_camera(name, &generator) {
+            return camera;
+        }
     }
     world.spawn_camera(requested.as_deref())
 }
@@ -110,6 +126,24 @@ struct App {
     /// The character, its state, and the diagnostic course driving it.
     character: Option<CharacterScene>,
     last_character_report: Instant,
+    /// The fight, its clock, and what drives it. `None` when the encounter is off.
+    encounter: Option<EncounterScene>,
+    /// The third-person camera, when one is following the player.
+    follow: Option<FollowController>,
+    /// Whether `F4` has detached the camera for a look around.
+    camera_detached: bool,
+    /// The camera's response to a landed hit. Fed by `CombatEvent::Hit` and by
+    /// nothing else.
+    shake: HitShake,
+    /// The two effects, in one fixed pool.
+    vfx: VfxPool,
+    /// The sound device, opened only when an encounter runs and silent when
+    /// the host has none.
+    audio: Option<AudioDevice>,
+    /// The instance staging buffer, owned here and reused every frame, so that
+    /// drawing the effects allocates nothing at all.
+    vfx_instances: Box<[VfxInstance; MAX_VFX_INSTANCES]>,
+    last_combat_report: Instant,
 }
 
 impl Default for App {
@@ -127,6 +161,14 @@ impl Default for App {
             terrain: None,
             character: None,
             last_character_report: Instant::now(),
+            encounter: None,
+            follow: None,
+            camera_detached: false,
+            shake: HitShake::default(),
+            vfx: VfxPool::default(),
+            audio: None,
+            vfx_instances: Box::new([VfxInstance::default(); MAX_VFX_INSTANCES]),
+            last_combat_report: Instant::now(),
             debug_mode: DebugMode::Off,
             debug_boxes: true,
             weather: Weather::default(),
@@ -137,7 +179,7 @@ impl Default for App {
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<(), AppRunError> {
         let attributes = Window::default_attributes()
-            .with_title("Veldwake - M3B Streaming Runtime")
+            .with_title("Veldwake")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_visible(false);
         let window = Arc::new(
@@ -203,7 +245,96 @@ impl App {
         // parts make its geometry static, so nothing here runs again.
         let selection = CharacterSelection::from_environment();
         self.terrain = world.generator();
-        let character = if selection.is_off() {
+
+        // The encounter comes first, because it owns both bodies when it is on
+        // and the M5 preview character would otherwise draw over actor zero.
+        let encounter_mode = EncounterMode::from_environment();
+        if !encounter_mode.is_off() {
+            let Some(generator) = self.terrain.as_ref() else {
+                return Err(AppRunError(
+                    "VELDWAKE_ENCOUNTER needs generated terrain; the diagnostic corridor has no \
+                     walkable surface to fight on"
+                        .to_owned(),
+                ));
+            };
+            let ground = TerrainGround::new(generator);
+            let scene = EncounterScene::new(encounter_mode, generator, Some(&ground))
+                .map_err(|error| AppRunError(format!("the encounter did not build: {error}")))?;
+            for side in SIDES {
+                renderer
+                    .upload_actor(
+                        scene.encounter().character(side),
+                        Some(scene.encounter().weapon()),
+                    )
+                    .map_err(|error| {
+                        AppRunError(format!("{} did not upload: {error}", side.name()))
+                    })?;
+            }
+            let stats = renderer.character_stats();
+            let player = scene.encounter().combatant(Side::Player);
+            let adversary = scene.encounter().combatant(Side::Adversary);
+            info!(
+                mode = encounter_mode.name(),
+                arena = ?arena::centre().to_array(),
+                arena_radius = arena::ARENA_RADIUS,
+                tick_hz = veldwake_combat::COMBAT_TICK_HZ,
+                max_ticks_per_frame = veldwake_combat::MAX_TICKS_PER_FRAME,
+                weapon = format_args!("{:#018x}", scene.encounter().weapon().fingerprint()),
+                player = format_args!("{:#018x}", scene.encounter().character(Side::Player).fingerprint()),
+                adversary =
+                    format_args!("{:#018x}", scene.encounter().character(Side::Adversary).fingerprint()),
+                player_health = player.health().max(),
+                adversary_health = adversary.health().max(),
+                actors = stats.actors,
+                weapons = stats.weapons,
+                parts = stats.parts,
+                quads = stats.quads,
+                gpu_bytes = stats.vertex_bytes + stats.index_bytes + stats.uniform_bytes,
+                dynamic_upload_bytes_per_frame = stats.dynamic_upload_bytes,
+                world_draws = stats.world_draws,
+                shadow_draws = stats.shadow_draws,
+                frozen = scene.is_frozen(),
+                moment_tick = scene.moment_tick(),
+                played = encounter_mode.is_played(),
+                clearing_level_radius = arena::LEVEL_RADIUS,
+                clearing_clear_radius = arena::CLEAR_RADIUS,
+                clearing_open_radius = arena::OPEN_RADIUS,
+                clearing_open_rise = arena::OPEN_RISE,
+                "encounter ready"
+            );
+            // A frozen moment with a named pose gets that pose placed against
+            // the two bodies, because the fight is wherever it drifted to by the
+            // tick the moment happens on. The `defeat` capture is why: aimed at
+            // the arena centre, it caught the two bodies in line and showed one
+            // figure standing alone. A fight being played gets a camera that
+            // follows the player instead.
+            let named_pose = requested_pose()
+                .as_deref()
+                .and_then(arena::combat_camera_pose);
+            if let Some(pose) = named_pose
+                && scene.is_frozen()
+                && let Some((position, yaw, pitch)) = arena::frame_the_fight(
+                    pose,
+                    scene.encounter().combatant(Side::Player).stand_point(),
+                    scene.encounter().combatant(Side::Adversary).stand_point(),
+                )
+            {
+                self.camera.place(position, yaw, pitch);
+            }
+            if encounter_mode.follows_the_player() && named_pose.is_none() && !scene.is_frozen() {
+                self.follow = Some(FollowController::behind(
+                    scene.camera_target(),
+                    player.state().facing,
+                ));
+            }
+            // The device opens here and nowhere else, so `VELDWAKE_ENCOUNTER=off`
+            // opens no device, starts no audio thread and holds no handle on
+            // the sound card.
+            self.audio = Some(AudioDevice::open());
+            self.encounter = Some(scene);
+        }
+
+        let character = if selection.is_off() || self.encounter.is_some() {
             None
         } else {
             let ground = self.terrain.as_ref().map(TerrainGround::new);
@@ -218,6 +349,13 @@ impl App {
                 })?;
             Some(scene)
         };
+        if self.encounter.is_some() && !selection.is_off() {
+            info!(
+                selection = selection.name(),
+                "VELDWAKE_CHARACTER is ignored while an encounter is running: the two combatants \
+                 are the characters"
+            );
+        }
         if let Some(scene) = &character {
             let stats = renderer.character_stats();
             info!(
@@ -268,9 +406,16 @@ impl App {
         window.request_redraw();
         info!(
             "controls: WASD move, Space/Ctrl vertical, hold right mouse to look, \
-             F1 cycles debug views (off/lod/residency/boundaries), F2 toggles debug boxes, F3 toggles weather, \
+             F1 cycles debug views (off/lod/residency/boundaries/combat), F2 toggles debug boxes, F3 toggles weather, \
              Escape exits"
         );
+        if self.encounter.is_some() {
+            info!(
+                "combat controls: WASD moves relative to the camera, J or left mouse attacks, \
+                 K or Space dodges, F4 detaches the camera to look around, F1 to the combat view \
+                 shows the volumes a hit is decided by"
+            );
+        }
         Ok(())
     }
 
@@ -293,11 +438,23 @@ impl App {
             return;
         }
 
+        // Combat verbs are latched on the key-down edge, because a frame can run
+        // no ticks or four and a held flag would be lost or repeated.
+        if let Some(action) = combat_action(code) {
+            self.input.set_combat_action(action, pressed);
+        }
+
         if pressed && let Some(action) = debug_action(code) {
             match action {
                 DebugAction::CycleMode => self.debug_mode = self.debug_mode.next(),
                 DebugAction::ToggleBoxes => self.debug_boxes = !self.debug_boxes,
                 DebugAction::CycleWeather => self.weather = self.weather.next(),
+                DebugAction::DetachCamera => {
+                    self.camera_detached = !self.camera_detached;
+                    // The free-fly camera starts from wherever the follow camera
+                    // left off, so a detach is a step back rather than a jump.
+                    info!(detached = self.camera_detached, "camera detach toggled");
+                }
             }
             info!(
                 mode = self.debug_mode.name(),
@@ -322,8 +479,33 @@ impl App {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
-        self.controller
-            .update(&mut self.camera, &mut self.input, elapsed);
+        // The camera moves before the fight does: a player's movement intent is
+        // expressed in the camera's frame, so the two must not disagree by a frame.
+        let following = self.follow.is_some() && !self.camera_detached;
+        if following {
+            let ground = self.terrain.as_ref().map(TerrainGround::new);
+            let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+            let target = self
+                .encounter
+                .as_ref()
+                .map_or(self.camera.position(), EncounterScene::camera_target);
+            // The impulse from last frame's hits, along this frame's view.
+            let right = self.camera.planar_right();
+            let offset = self.shake.offset(glam::Vec3::new(right.x, 0.0, right.y));
+            if let Some(follow) = self.follow.as_mut() {
+                follow.update(
+                    &mut self.camera,
+                    &mut self.input,
+                    target,
+                    offset,
+                    elapsed,
+                    sampler,
+                );
+            }
+        } else {
+            self.controller
+                .update(&mut self.camera, &mut self.input, elapsed);
+        }
 
         let (Some(renderer), Some(streaming)) = (self.renderer.as_mut(), self.streaming.as_mut())
         else {
@@ -340,10 +522,125 @@ impl App {
                 return;
             }
         };
-        // The character is posed on the CPU and reaches the GPU as sixteen
-        // transforms. Its geometry is never re-uploaded.
+        // The fight advances in whole ticks, however long the frame was. Its
+        // geometry is never re-uploaded; a frame writes transforms only.
         let ground = self.terrain.as_ref().map(TerrainGround::new);
         let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+        if let Some(scene) = self.encounter.as_mut() {
+            let outcome = scene.update(elapsed, &mut self.input, &self.camera, sampler);
+            for side in SIDES {
+                let combatant = scene.encounter().combatant(side);
+                renderer.set_actor_pose(
+                    side.index(),
+                    combatant.posed(),
+                    Some(scene.encounter().weapon_matrix(side)),
+                );
+            }
+            // A confirmed hit is the only thing that moves the camera. A miss, a
+            // successful dodge and the start of a swing all reach here and all
+            // leave it alone.
+            self.shake.advance(outcome.ticks);
+            self.vfx.advance(outcome.ticks);
+            for event in scene.events().iter() {
+                match event {
+                    // One event, every response: the camera, the chips and
+                    // later the sound all come from this and never from a
+                    // presentation guess about what probably happened.
+                    CombatEvent::Hit {
+                        point,
+                        from,
+                        damage,
+                        victim,
+                        ..
+                    } => {
+                        self.shake.strike();
+                        // The contact point the rules computed, and the
+                        // direction the blow travelled: the chips leave the
+                        // body the way the blade pushed it.
+                        self.vfx
+                            .impact(point, glam::Vec3::new(from.x, 0.35, from.y));
+                        if let Some(audio) = self.audio.as_ref() {
+                            // Intensity from the damage the rules dealt, weight
+                            // from how big the body struck is: a hit on the
+                            // broad adversary lands lower than one on the
+                            // player, and neither is a guess.
+                            let full = scene.encounter().combatant(victim).health().max().max(1);
+                            let intensity = f32::from(damage) / f32::from(full) * 4.0;
+                            let tallest = scene
+                                .encounter()
+                                .character(Side::Adversary)
+                                .body()
+                                .height_units();
+                            let height = scene.encounter().character(victim).body().height_units();
+                            let weight = if tallest > 0.0 { height / tallest } else { 0.5 };
+                            audio.play(VoiceParams::new(VoiceKind::Hit, intensity, weight));
+                        }
+                    }
+                    // A miss is heard and is never heard as damage: the whiff
+                    // is a different voice with no impact in it, and it moves
+                    // no camera and throws no chips.
+                    CombatEvent::SwingWhiffed { side, .. } => {
+                        if let Some(audio) = self.audio.as_ref() {
+                            let height = scene.encounter().character(side).body().height_units();
+                            let tallest = scene
+                                .encounter()
+                                .character(Side::Adversary)
+                                .body()
+                                .height_units();
+                            let weight = if tallest > 0.0 { height / tallest } else { 0.5 };
+                            audio.play(VoiceParams::new(VoiceKind::Whiff, 0.75, weight));
+                        }
+                    }
+                    // The accent goes on the adversary's windup only. The
+                    // player does not need to be told what the player just
+                    // pressed.
+                    CombatEvent::SwingStarted {
+                        side: Side::Adversary,
+                        ..
+                    } => {
+                        let blade = scene.encounter().blade_world(Side::Adversary);
+                        self.vfx.telegraph(blade.tip);
+                    }
+                    CombatEvent::EncounterReset => self.vfx.clear(),
+                    _ => {}
+                }
+            }
+            // The chips first, then the readout in the space after them: one
+            // buffer, one upload, one draw for both.
+            let live = self.vfx.instances(self.vfx_instances.as_mut_slice());
+            let right = self.camera.planar_right();
+            let right = glam::Vec3::new(right.x, 0.0, right.y);
+            let rows: [readout::Row; SIDES.len()] = SIDES.map(|side| {
+                let combatant = scene.encounter().combatant(side);
+                readout::Row {
+                    centre: readout::above(
+                        combatant.stand_point(),
+                        scene.encounter().character(side).body().height_units(),
+                    ),
+                    right,
+                    health: combatant.health(),
+                }
+            });
+            let pips = readout::write(&rows, &mut self.vfx_instances[live..]);
+            renderer.set_vfx_instances(&self.vfx_instances[..live + pips]);
+            debug_assert!(pips <= READOUT_INSTANCES);
+            self.frame_stats.record_combat(outcome, scene.events());
+            if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
+                self.last_combat_report = now;
+                let (attack_latched, dodge_latched) = self.input.combat_latches();
+                report_combat(
+                    scene,
+                    &self.frame_stats,
+                    PresentationReport {
+                        shake: &self.shake,
+                        vfx: &self.vfx,
+                        vfx_work: renderer.vfx_frame_work(),
+                        audio: self.audio.as_ref(),
+                    },
+                    (attack_latched, dodge_latched),
+                );
+            }
+        }
         if let Some(scene) = self.character.as_mut() {
             let posed = scene.update(elapsed.as_secs_f32(), sampler);
             renderer.set_character_pose(&posed);
@@ -389,7 +686,10 @@ impl App {
         // Off produces no primitives, debug-slot allocations, debug uniform
         // writes, or debug draws. Fixed startup resources and any reusable
         // slots retained after prior debug use still exist.
-        let primitives = debug_primitives(streaming, self.debug_mode, self.debug_boxes);
+        let primitives = match (self.debug_mode.shows_combat(), self.encounter.as_ref()) {
+            (true, Some(scene)) => combat_primitives(scene.encounter(), self.debug_boxes),
+            _ => debug_primitives(streaming, self.debug_mode, self.debug_boxes),
+        };
         renderer.set_debug_primitives(&primitives);
         renderer.update_scene(&self.camera, self.weather, self.debug_mode.lod_tint());
         let render_started = Instant::now();
@@ -465,6 +765,13 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => self.input.set_look_active(state == ElementState::Pressed),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => self
+                .input
+                .set_combat_action(CombatAction::Attack, state == ElementState::Pressed),
             WindowEvent::Focused(focused) => {
                 self.last_frame = Instant::now();
                 if !focused {
@@ -515,6 +822,160 @@ impl ApplicationHandler for App {
     }
 }
 
+/// What the presentation layers did, for the one report line that names them.
+///
+/// Grouped rather than passed one by one, because a report of a fight that
+/// takes nine loose arguments is a report nobody will add the tenth thing to.
+struct PresentationReport<'a> {
+    shake: &'a HitShake,
+    vfx: &'a VfxPool,
+    vfx_work: VfxFrameWork,
+    audio: Option<&'a AudioDevice>,
+}
+
+/// Two aggregate lines about the fight, on the same five-second cadence the
+/// streaming and character reports use, so one capture aligns with one interval.
+fn report_combat(
+    scene: &EncounterScene,
+    stats: &FrameStats,
+    presentation: PresentationReport<'_>,
+    latches: (bool, bool),
+) {
+    let PresentationReport {
+        shake,
+        vfx,
+        vfx_work,
+        audio,
+    } = presentation;
+    let (attack_latched, dodge_latched) = latches;
+    let input_latched = attack_latched || dodge_latched;
+    let encounter = scene.encounter();
+    let counters = encounter.counters();
+    let player = encounter.combatant(Side::Player);
+    let adversary = encounter.combatant(Side::Adversary);
+    info!(
+        mode = scene.mode().name(),
+        armed = encounter.is_armed(),
+        frozen = scene.is_frozen(),
+        moment_ticks_pending = scene.pending(),
+        tick = encounter.tick_index(),
+        scene_ticks = scene.ticks(),
+        events_this_frame = scene.events().len(),
+        input_latched,
+        input_attack_latched = attack_latched,
+        input_dodge_latched = dodge_latched,
+        // A press waiting for a tick. It should clear within a frame or two; a
+        // value that stays set across report intervals is a stuck input.
+        input_held_attack = scene.held_input().0,
+        input_held_dodge = scene.held_input().1,
+        distance = scene.distance(),
+        player_action = player.action().label(encounter.attack_spec(Side::Player)),
+        player_elapsed = player.action().elapsed(),
+        player_health = player.health().current(),
+        player_x = player.position().x,
+        player_z = player.position().y,
+        player_facing_degrees = player.state().facing.to_degrees(),
+        player_grounded = player.state().grounded,
+        adversary_action = adversary
+            .action()
+            .label(encounter.attack_spec(Side::Adversary)),
+        adversary_elapsed = adversary.action().elapsed(),
+        adversary_health = adversary.health().current(),
+        adversary_x = adversary.position().x,
+        adversary_z = adversary.position().y,
+        brain = encounter.brain().state().name(),
+        brain_timer = encounter.brain().timer(),
+        outcome = encounter.outcome().map(Side::name),
+        "combat state"
+    );
+    info!(
+        ticks = counters.ticks,
+        ticks_this_run = stats.combat_ticks,
+        ticks_dropped = stats.combat_ticks_dropped,
+        ticks_max_per_frame = stats.combat_ticks_max,
+        frames_without_a_tick = stats.combat_frames_idle,
+        clock_dropped = scene.clock().dropped(),
+        clock_capped_frames = scene.clock().capped_frames(),
+        player_swings = counters.swings[0],
+        adversary_swings = counters.swings[1],
+        player_hits = counters.hits[0],
+        adversary_hits = counters.hits[1],
+        player_whiffs = counters.whiffs[0],
+        adversary_whiffs = counters.whiffs[1],
+        player_dodges = counters.dodges[0],
+        dodges_refused = counters.dodges_refused[0],
+        player_staggers = counters.staggers[0],
+        adversary_staggers = counters.staggers[1],
+        // Swings turned onto the other body as they committed. An assist that
+        // fires on every swing, or on none, is a tuning error rather than an
+        // assist, and this is how that is seen.
+        player_aim_assists = counters.aim_assists[0],
+        adversary_aim_assists = counters.aim_assists[1],
+        defeats_player = counters.defeats[0],
+        defeats_adversary = counters.defeats[1],
+        resets = counters.resets,
+        separations = counters.separations,
+        blocked_moves_player = counters.blocked_moves[0],
+        blocked_moves_adversary = counters.blocked_moves[1],
+        hit_queries = counters.hit_queries,
+        sweep_substeps_max = counters.sweep_substeps_max,
+        multi_hit_suppressed = counters.multi_hit_suppressed,
+        events_dropped = counters.events_dropped,
+        frame_events_dropped = stats.combat_events_dropped,
+        camera_strikes = shake.strikes(),
+        camera_shaking = shake.is_active(),
+        vfx_live = vfx.live(),
+        vfx_impact_chips = vfx.live_of(VfxKind::Impact),
+        vfx_telegraph_motes = vfx.live_of(VfxKind::Telegraph),
+        vfx_high_water = vfx.high_water(),
+        vfx_spawned = vfx.spawned(),
+        vfx_dropped = vfx.dropped(),
+        vfx_draws = vfx_work.draws,
+        vfx_instances = vfx_work.instances,
+        vfx_instance_bytes = vfx_work.bytes,
+        audio_open = audio.is_some_and(AudioDevice::is_open),
+        audio_sample_rate = audio.map_or(0, AudioDevice::sample_rate),
+        audio_channels = audio.map_or(0, AudioDevice::channels),
+        audio_callbacks = audio.map_or(0, |device| {
+            device.counters().callbacks.load(atomic::Ordering::Relaxed)
+        }),
+        audio_frames = audio.map_or(0, |device| {
+            device.counters().frames.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voices_started = audio.map_or(0, |device| {
+            device.counters().started.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voices_displaced = audio.map_or(0, |device| {
+            device.counters().displaced.load(atomic::Ordering::Relaxed)
+        }),
+        audio_voice_high_water = audio.map_or(0, |device| {
+            device
+                .counters()
+                .voice_high_water
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_buffer_high_water = audio.map_or(0, |device| {
+            device
+                .counters()
+                .buffer_high_water
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_peak_micros = audio.map_or(0, |device| {
+            device
+                .counters()
+                .peak_micros
+                .load(atomic::Ordering::Relaxed)
+        }),
+        audio_device_errors = audio.map_or(0, |device| {
+            device.counters().errors.load(atomic::Ordering::Relaxed)
+        }),
+        audio_queue_waiting = audio.map_or(0, |device| device.queue().waiting()),
+        audio_queue_consumed = audio.map_or(0, |device| device.queue().consumed()),
+        audio_queue_dropped = audio.map_or(0, |device| device.queue().dropped()),
+        "combat work"
+    );
+}
+
 /// Keyboard control of the debug views. Separate from camera actions so the
 /// mapping is testable without a window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -522,6 +983,7 @@ enum DebugAction {
     CycleMode,
     ToggleBoxes,
     CycleWeather,
+    DetachCamera,
 }
 
 const fn debug_action(key: KeyCode) -> Option<DebugAction> {
@@ -529,6 +991,20 @@ const fn debug_action(key: KeyCode) -> Option<DebugAction> {
         KeyCode::F1 => Some(DebugAction::CycleMode),
         KeyCode::F2 => Some(DebugAction::ToggleBoxes),
         KeyCode::F3 => Some(DebugAction::CycleWeather),
+        KeyCode::F4 => Some(DebugAction::DetachCamera),
+        _ => None,
+    }
+}
+
+/// The two combat verbs.
+///
+/// `Space` doubles as the dodge because the free-fly camera's vertical axis is not
+/// used while a fight is on, and a keyboard alias for each verb is what lets the
+/// driven smoke inject them: the evidence harness sends key events, not clicks.
+const fn combat_action(key: KeyCode) -> Option<CombatAction> {
+    match key {
+        KeyCode::KeyJ => Some(CombatAction::Attack),
+        KeyCode::KeyK | KeyCode::Space => Some(CombatAction::Dodge),
         _ => None,
     }
 }
@@ -620,9 +1096,54 @@ struct FrameStats {
     removals: u64,
     deferred_uploads: u64,
     demand_changes: u64,
+    /// Combat ticks run, and the ones a frame spike had to discard.
+    combat_ticks: u64,
+    combat_ticks_dropped: u64,
+    /// Highest number of ticks one frame ran, which is how close the catch-up cap
+    /// gets to being hit.
+    combat_ticks_max: u32,
+    /// Frames that ran no tick at all: ordinary at a high frame rate, and the case
+    /// an unlatched key press would be lost in.
+    combat_frames_idle: u64,
+    /// Events a frame could not hold. Must stay zero.
+    combat_events_dropped: u64,
+    combat_hits: [u64; 2],
+    combat_swings: [u64; 2],
 }
 
 impl FrameStats {
+    /// Records what one frame's combat ticks did.
+    fn record_combat(
+        &mut self,
+        outcome: crate::encounter::FrameOutcome,
+        events: &crate::encounter::FrameEvents,
+    ) {
+        self.combat_ticks = self.combat_ticks.saturating_add(u64::from(outcome.ticks));
+        self.combat_ticks_dropped = self
+            .combat_ticks_dropped
+            .saturating_add(outcome.dropped_ticks);
+        self.combat_ticks_max = self.combat_ticks_max.max(outcome.ticks);
+        if outcome.ticks == 0 {
+            self.combat_frames_idle = self.combat_frames_idle.saturating_add(1);
+        }
+        self.combat_events_dropped = self
+            .combat_events_dropped
+            .saturating_add(u64::from(events.dropped()));
+        for event in events.iter() {
+            match event {
+                CombatEvent::Hit { attacker, .. } => {
+                    let index = attacker.index();
+                    self.combat_hits[index] = self.combat_hits[index].saturating_add(1);
+                }
+                CombatEvent::SwingStarted { side, .. } => {
+                    let index = side.index();
+                    self.combat_swings[index] = self.combat_swings[index].saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             report_started: Instant::now(),
@@ -638,6 +1159,13 @@ impl FrameStats {
             removals: 0,
             deferred_uploads: 0,
             demand_changes: 0,
+            combat_ticks: 0,
+            combat_ticks_dropped: 0,
+            combat_ticks_max: 0,
+            combat_frames_idle: 0,
+            combat_events_dropped: 0,
+            combat_hits: [0; 2],
+            combat_swings: [0; 2],
         }
     }
 
@@ -874,9 +1402,9 @@ impl FrameStats {
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugAction, camera_action, debug_action};
+    use super::{DebugAction, camera_action, combat_action, debug_action};
     use crate::debug::DebugMode;
-    use crate::input::CameraAction;
+    use crate::input::{CameraAction, CombatAction};
     use winit::keyboard::KeyCode;
 
     #[test]
@@ -884,14 +1412,29 @@ mod tests {
         assert_eq!(debug_action(KeyCode::F1), Some(DebugAction::CycleMode));
         assert_eq!(debug_action(KeyCode::F2), Some(DebugAction::ToggleBoxes));
         assert_eq!(debug_action(KeyCode::F3), Some(DebugAction::CycleWeather));
-        assert_eq!(debug_action(KeyCode::F4), None);
+        assert_eq!(debug_action(KeyCode::F4), Some(DebugAction::DetachCamera));
+        assert_eq!(debug_action(KeyCode::F5), None);
         assert_eq!(debug_action(KeyCode::KeyW), None);
         assert_eq!(camera_action(KeyCode::F1), None);
         assert_eq!(camera_action(KeyCode::F2), None);
+        assert_eq!(camera_action(KeyCode::F4), None);
 
-        // Four presses of F1 return to the shipped rendering.
+        // The combat verbs have keyboard aliases so a driven smoke can inject
+        // them, and they do not collide with the camera's own keys.
+        assert_eq!(combat_action(KeyCode::KeyJ), Some(CombatAction::Attack));
+        assert_eq!(combat_action(KeyCode::KeyK), Some(CombatAction::Dodge));
+        assert_eq!(combat_action(KeyCode::Space), Some(CombatAction::Dodge));
+        assert_eq!(combat_action(KeyCode::KeyW), None);
+        assert_eq!(combat_action(KeyCode::F1), None);
+        // `Space` is the one key with two meanings: the free-fly camera's rise and
+        // the dodge. The two never apply at once, because the follow camera
+        // ignores the vertical axis.
+        assert_eq!(camera_action(KeyCode::Space), Some(CameraAction::Up));
+
+        // Five presses of F1 return to the shipped rendering: M6 added the
+        // combat-volume view to the cycle.
         let mut mode = DebugMode::Off;
-        for _ in 0..4 {
+        for _ in 0..5 {
             mode = mode.next();
         }
         assert_eq!(mode, DebugMode::Off);

@@ -13,6 +13,7 @@
 //! budget. The fixed debug pipeline/unit geometry created at startup, and any
 //! reusable slots retained after a debug mode was used, still exist.
 
+use veldwake_combat::{Encounter, SIDES};
 use veldwake_streaming::{LodLevel, MeshStatus, ResidencyStatus};
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Face};
 
@@ -40,6 +41,15 @@ pub enum DebugMode {
     /// Presented chunk boundaries, mixed-level seams, pending replacements,
     /// and transition groups.
     Boundaries,
+    /// The volumes a hit is decided by: each body's hurt capsule and each
+    /// blade's own line.
+    ///
+    /// This is the view that answers "the blade looked like it touched and
+    /// nothing happened" and its opposite, which are two of the defects a
+    /// combat capture is searched for. It draws ten primitives, against the
+    /// hundreds the streaming views draw, so its cost is not the concern
+    /// KI-012 records.
+    Combat,
 }
 
 impl DebugMode {
@@ -50,7 +60,8 @@ impl DebugMode {
             Self::Off => Self::Lod,
             Self::Lod => Self::Residency,
             Self::Residency => Self::Boundaries,
-            Self::Boundaries => Self::Off,
+            Self::Boundaries => Self::Combat,
+            Self::Combat => Self::Off,
         }
     }
 
@@ -61,13 +72,20 @@ impl DebugMode {
             Self::Lod => "lod",
             Self::Residency => "residency",
             Self::Boundaries => "boundaries",
+            Self::Combat => "combat",
         }
     }
 
     /// Whether the `F2` box toggle changes anything in this mode.
     #[must_use]
     pub const fn uses_boxes(self) -> bool {
-        matches!(self, Self::Residency | Self::Boundaries)
+        matches!(self, Self::Residency | Self::Boundaries | Self::Combat)
+    }
+
+    /// Whether this view draws combat volumes rather than streaming state.
+    #[must_use]
+    pub const fn shows_combat(self) -> bool {
+        matches!(self, Self::Combat)
     }
 
     /// How far the mesh shader blends `Lod1` toward the debug tint.
@@ -181,6 +199,10 @@ pub enum DebugKind {
     Replacement { staged: bool },
     /// `Boundaries`: a member of a transition group that has not committed.
     TransitionGroup { size: usize },
+    /// `Combat`: the volume a blade has to touch to hurt a body.
+    CombatHurt,
+    /// `Combat`: the line a blade occupies right now.
+    CombatBlade,
 }
 
 impl DebugKind {
@@ -195,6 +217,8 @@ impl DebugKind {
             Self::Replacement { staged: true } => [0.96, 0.78, 0.38],
             Self::TransitionGroup { size } if size >= LARGE_TRANSITION_GROUP => [1.00, 0.25, 0.45],
             Self::TransitionGroup { .. } => [0.76, 0.36, 0.96],
+            Self::CombatHurt => [0.96, 0.36, 0.36],
+            Self::CombatBlade => [0.38, 0.96, 0.58],
         }
     }
 
@@ -203,7 +227,7 @@ impl DebugKind {
     pub const fn inset(self) -> f32 {
         match self {
             Self::Record { membership, .. } => membership.inset(),
-            Self::Presented(_) | Self::MixedSeam(_) => 0.0,
+            Self::Presented(_) | Self::MixedSeam(_) | Self::CombatHurt | Self::CombatBlade => 0.0,
             Self::TransitionGroup { .. } => 2.0,
             Self::Replacement { .. } => 5.0,
         }
@@ -226,6 +250,13 @@ pub struct DebugPrimitive {
     /// World-unit inset applied to every side of the chunk volume.
     pub inset: f32,
     pub color: [f32; 3],
+    /// When set, the primitive sits at a world-space origin with this edge
+    /// length instead of on a chunk.
+    ///
+    /// Additive rather than a second primitive type: a combat volume is drawn by
+    /// exactly the pipeline, the unit geometry and the slot pool M3C3 already
+    /// built, and the only thing it needs is to be somewhere that is not a chunk.
+    pub world: Option<([f32; 3], f32)>,
 }
 
 impl DebugPrimitive {
@@ -236,12 +267,30 @@ impl DebugPrimitive {
             shape,
             inset: kind.inset(),
             color: kind.color(),
+            world: None,
+        }
+    }
+
+    /// A cube at a world-space position, for a volume that is not a chunk.
+    #[must_use]
+    pub fn at_world(kind: DebugKind, centre: [f32; 3], edge: f32) -> Self {
+        let half = edge * 0.5;
+        Self {
+            coord: ChunkCoord::new(0, 0, 0),
+            kind,
+            shape: DebugShape::Box,
+            inset: 0.0,
+            color: kind.color(),
+            world: Some(([centre[0] - half, centre[1] - half, centre[2] - half], edge)),
         }
     }
 
     /// World-space origin and edge length of the volume to draw.
     #[must_use]
     pub fn placement(&self) -> ([f32; 3], f32) {
+        if let Some(placement) = self.world {
+            return placement;
+        }
         let edge = CHUNK_EDGE as f32;
         let origin = [
             self.coord.x as f32 * edge + self.inset,
@@ -250,6 +299,46 @@ impl DebugPrimitive {
         ];
         (origin, edge - 2.0 * self.inset)
     }
+}
+
+/// The volumes a hit is decided by, for the `Combat` view.
+///
+/// Ten primitives: three cubes along each body's hurt capsule and one at each end
+/// of each blade. A capsule is not a cube and a blade is not a point, so this is
+/// an approximation — but it is drawn from the same values the rules use, which is
+/// the whole purpose. If the blade cube is inside the body cubes and nothing
+/// happened, the defect is in the rules; if it is clear of them and a hit landed,
+/// the defect is in the pose.
+#[must_use]
+pub fn combat_primitives(encounter: &Encounter, boxes: bool) -> Vec<DebugPrimitive> {
+    if !boxes {
+        return Vec::new();
+    }
+    let mut primitives = Vec::with_capacity(10);
+    for side in SIDES {
+        let combatant = encounter.combatant(side);
+        let capsule = combatant.hurt_capsule();
+        let edge = capsule.radius * 2.0;
+        let base = capsule.axis.base;
+        let tip = capsule.axis.tip;
+        for point in [base, (base + tip) * 0.5, tip] {
+            primitives.push(DebugPrimitive::at_world(
+                DebugKind::CombatHurt,
+                point.to_array(),
+                edge,
+            ));
+        }
+        let blade = encounter.blade_world(side);
+        let blade_edge = encounter.weapon().blade_radius_world() * 4.0;
+        for point in [blade.base, blade.tip] {
+            primitives.push(DebugPrimitive::at_world(
+                DebugKind::CombatBlade,
+                point.to_array(),
+                blade_edge,
+            ));
+        }
+    }
+    primitives
 }
 
 /// Every primitive the active view wants drawn.
@@ -267,7 +356,10 @@ pub fn debug_primitives(
         return Vec::new();
     }
     match mode {
-        DebugMode::Off | DebugMode::Lod => Vec::new(),
+        // `Combat` draws no streaming state: the client calls
+        // `combat_primitives` for it, because the volumes it wants come from the
+        // encounter and the renderer must not learn what an encounter is.
+        DebugMode::Off | DebugMode::Lod | DebugMode::Combat => Vec::new(),
         DebugMode::Residency => residency_primitives(bridge),
         DebugMode::Boundaries => boundary_primitives(bridge),
     }
@@ -378,7 +470,7 @@ mod tests {
         let mut mode = DebugMode::default();
         assert_eq!(mode, DebugMode::Off);
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             mode = mode.next();
             seen.push(mode);
         }
@@ -388,6 +480,7 @@ mod tests {
                 DebugMode::Lod,
                 DebugMode::Residency,
                 DebugMode::Boundaries,
+                DebugMode::Combat,
                 DebugMode::Off
             ]
         );
@@ -598,6 +691,9 @@ mod tests {
                     );
                 }
                 DebugKind::Replacement { .. } | DebugKind::TransitionGroup { .. } => {}
+                DebugKind::CombatHurt | DebugKind::CombatBlade => {
+                    panic!("a streaming view must never emit a combat volume")
+                }
                 DebugKind::Record { .. } => panic!("boundaries draws no record boxes"),
             }
         }
