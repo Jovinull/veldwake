@@ -16,7 +16,7 @@ Current status: **M6 — Combat Slice is complete and merged; M1 through M6 are 
 
 ## Initial technical direction
 
-Rust 2024 on pinned stable Rust, with `wgpu`, WGSL, `winit`, and `glam` in the presentation client. This is a custom engine project; future candidates such as Rapier3D, `cpal`, `zstd`, `quinn`, and WebAssembly are not dependencies until their milestone needs them.
+Rust 2024 on pinned stable Rust, with `wgpu`, WGSL, `winit`, and `glam` in the presentation client. This is a custom engine project, and a dependency enters only when a milestone needs it. `cpal` is now one: M6 added it, pinned exactly and with no backend features enabled, for the procedural-audio device adapter. Rapier3D, `zstd`, `quinn` and WebAssembly are still not dependencies — none of them is declared anywhere in the workspace or compiled on the Windows target.
 
 ## Setup and validation
 
