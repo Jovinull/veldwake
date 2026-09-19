@@ -98,3 +98,17 @@ Six conclusions that cost real time to reach, kept here because they are about p
 ## Why the scripts are not in the repository
 
 The harness is operator tooling for one host: Windows-only PowerShell with Win32 interop, useful to an agent working on the audited machine and to nobody else. It has been kept in the agent's scratchpad so far rather than committed, because adding it would create a second, unreviewed surface that ages independently of the client it drives. Everything needed to rebuild it is above. Committing it is a reasonable owner decision, not an agent one; if it ever happens, it carries the same review and documentation obligations as code.
+
+## Capture the window you mean, not the one in front
+
+Independent branch QA caught the harness photographing a browser instead of the game, and the replacement is built around never letting that happen again. The traps, in the order they bite:
+
+- **`MainWindowHandle` is not the window.** winit creates more than one top-level window, and the first non-zero handle the process reports can be a title-less helper with a zero client rect. Enumerate *that process's* top-level windows and take the one that is visible, titled `Veldwake`, and has a real client area. If more than one matches, fail rather than pick.
+- **Never Alt-Tab.** It selects whatever the shell thinks is next, which is how a browser ends up in the frame. Raise the game's own handle instead.
+- **`SetForegroundWindow` fails silently from a background process.** Windows refuses it unless the caller is already foreground. Attach this thread's input queue to the current foreground thread for the duration of the call (`AttachThreadInput`), then detach. That touches no other application's windows.
+- **Assert the foreground before every capture and every key**, and abort the run rather than save a frame that might be something else.
+- **Maximise unconditionally, not only when raising.** An early return that skipped the geometry whenever the window already had focus left the client at its default size and put the Windows taskbar in the frame. Refuse to capture a client narrower than the screen.
+- **Topmost is temporary and belongs to the game alone.** Set it for the run, drop it with `HWND_NOTOPMOST` at the end, and close nothing the person was using.
+- **Check the log, not just the picture.** A key step written in a form the parser did not recognise was silently dropped, producing a run where the encounter never armed and a capture that looked perfectly ordinary. A run is valid when its log says the thing under test actually happened.
+
+`PrintWindow` and other HWND-bound grabs are a fallback, not a default: a D3D swapchain can return a black or stale frame to them, so any such image has to be opened and checked before it is trusted.
