@@ -10,8 +10,8 @@
 //! a rotation about a nearly stationary hand safe, because there the tip moves
 //! and the base does not.
 //!
-//! Everything here is closed form. There is no solver, no iteration count to
-//! tune, and no tolerance that decides correctness.
+//! Closest points are closed form. Temporal contact is bounded sampling whose
+//! count is derived from movement; [`MAX_SWEEP_SUBSTEPS`] caps the work.
 
 use glam::Vec3;
 
@@ -24,7 +24,7 @@ use veldwake_character::CHARACTER_VOXEL_SIZE;
 /// that needs more than this has a pose problem rather than a sampling problem.
 pub const MAX_SWEEP_SUBSTEPS: u32 = 16;
 
-/// How far a blade endpoint may travel between two substeps.
+/// How far relative blade/body configuration may change between two substeps.
 ///
 /// One character voxel. The blade is two voxels thick, so a step of one voxel
 /// cannot pass a body between samples: the swept volumes of adjacent substeps
@@ -269,14 +269,19 @@ pub(crate) fn moving_substeps(
     let capsule_advance = (capsule_end.axis.base - capsule_start.axis.base)
         .length()
         .max((capsule_end.axis.tip - capsule_start.axis.tip).length());
-    substeps_for_advance(sweep.advance().max(capsule_advance))
+    // Triangle inequality bounds any blade/capsule endpoint's relative motion
+    // by their individual advances. The radius comes from the refitted pose and
+    // may change too; its absolute delta bounds the changing contact threshold.
+    let relative_upper_bound =
+        sweep.advance() + capsule_advance + (capsule_end.radius - capsule_start.radius).abs();
+    substeps_for_advance(relative_upper_bound)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         Capsule, MAX_SWEEP_SUBSTEPS, SWEEP_MAX_ADVANCE, Segment, Sweep, closest_points,
-        sweep_capsule, sweep_moving_capsule,
+        moving_substeps, sweep_capsule, sweep_moving_capsule,
     };
     use glam::Vec3;
 
@@ -371,6 +376,37 @@ mod tests {
         assert!(
             sweep_moving_capsule(&sweep, &start, &end).is_some(),
             "the relative path crosses the blade"
+        );
+    }
+
+    #[test]
+    fn opposing_subvoxel_moves_need_relative_substeps() {
+        // Each object moves 0.075, less than one character voxel (0.0833),
+        // but their relative configuration moves 0.150. Both endpoint poses
+        // are clear; the contact at t = 0.5 is a directly calculable crossing.
+        let blade_start = Segment::new(Vec3::new(-0.5, 1.2, -0.05), Vec3::new(0.5, 1.2, -0.05));
+        let blade_end = Segment::new(Vec3::new(-0.5, 1.2, 0.025), Vec3::new(0.5, 1.2, 0.025));
+        let sweep = Sweep::new(blade_start, blade_end, 0.02);
+        let start = upright(0.0, 0.05, 0.02);
+        let end = upright(0.0, -0.025, 0.02);
+        assert!(sweep.advance() <= SWEEP_MAX_ADVANCE);
+        assert!((end.axis.base - start.axis.base).length() <= SWEEP_MAX_ADVANCE);
+        assert!(
+            sweep_capsule(&Sweep::new(blade_start, blade_start, 0.02), &start).is_none(),
+            "start is clear"
+        );
+        assert!(
+            sweep_capsule(&Sweep::new(blade_end, blade_end, 0.02), &end).is_none(),
+            "end is clear"
+        );
+        assert_eq!(
+            moving_substeps(&sweep, &start, &end),
+            2,
+            "opposing sub-voxel moves need two relative samples"
+        );
+        assert!(
+            sweep_moving_capsule(&sweep, &start, &end).is_some(),
+            "the midpoint is a contact"
         );
     }
 

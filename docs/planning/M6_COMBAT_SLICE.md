@@ -202,6 +202,8 @@ One reset, 693 separations, 160 hit queries, worst sweep 4 substeps of a bound o
 
 **Relative sweep correction.** Independent QA found that the original sweep interpolated both blade endpoints but tested the victim only at its final-tick hurt capsule. The runtime now retains the prior capsule with the prior blade and samples their relative motion using the largest displacement of either blade endpoint or either capsule-axis endpoint. This closes the moving-victim/dodge tunnelling gap; an independent geometry test holds the blade still while a capsule crosses it between two clear endpoint poses. `sweep_substeps_max` now reports that actual relative-sweep count.
 
+**Relative bound correction.** The first QA relative-sweep repair still used the maximum of the blade and capsule advances. That is not conservative when they move in opposite directions: relative movement can be their sum. The final bound is blade endpoint advance plus capsule-axis endpoint advance plus the absolute change in pose-refitted capsule radius. The sum follows directly from the triangle inequality and the radius term bounds the changing contact threshold; it is capped by the existing sixteen-substep limit.
+
 **Cost**, release build on the audited Windows 11 / Intel Iris Xe host, as observations on that host:
 
 | measure | value |
