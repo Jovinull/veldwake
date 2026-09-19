@@ -373,7 +373,7 @@ The cross-check is the one that matters: the same run recorded 15 player hits, 1
 
 The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture`) renders six seconds of every sound the fight makes to a `.wav` in the system temporary directory. Measured: `48` kHz, 16-bit mono, peak `0.7712` on the eight-simultaneous-hits burst, **zero clipped samples**, and per-half-second RMS that tracks the script — whiffs at `0.001`–`0.004`, the exchange at `0.010`–`0.017`, the burst at `0.052`.
 
-**What none of that establishes is whether an impact *sounds* like an impact.** That judgement needs ears and this agent has none, so it is not claimed. See the owner check in the milestone's closing status.
+**What none of that establishes is whether an impact *sounds* like an impact.** That judgement needs ears and this agent has none, so it was never claimed — it was deferred to the owner, who has now made it. See *The owner gates* below.
 
 ### The cpal dependency, audited before it was added
 
@@ -404,6 +404,23 @@ The offline listening fixture (`cargo nextest run -p veldwake-client --run-ignor
 | `renderer_render_wall`, mean / max | `9,216` / `14,879` µs |
 
 The bench's worst single tick is `134` µs here, an order of magnitude above the mean and unrelated to the work: it is desktop scheduling, and the figure to read is the mean. These figures were re-measured after the branch-QA fixes, so the sweep now interpolates both the blade and the body and still costs under a fifth of a microsecond a query. `renderer_render_wall` is **wall time around the render call**, not GPU time; there are no GPU timestamps here and none is claimed.
+
+## The owner gates
+
+Two things about this milestone were never decidable by an agent, and both were deliberately left open until a person judged them. Both are now closed, on 2026-09-19, by the repository owner.
+
+**OWNER LISTENING: PASS.** The owner played the offline fixture and reported: the hit reads as an impact; the whiff is distinguishable from the hit; no clipping, click or problematic distortion was noticed. That is the judgement the measurements could not make. Everything measurable about the audio was already established — device, event delivery, buffer bound, amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle, whiff against hit — and none of it could answer this question.
+
+**OWNER PLAYTEST: PASS.** The owner also played the armed encounter in the real client on the audited host and reported the telegraph, attack, dodge, impact and camera sufficiently legible for M6, with the slice judged *simple but functional, and the direction intended*. The human playtest requirement is met.
+
+This does not replace the closed-loop evidence recorded above, and neither supersedes the other. They answer different questions and both are kept:
+
+| evidence | what it establishes | what it cannot |
+|---|---|---|
+| closed-loop play by the agent | that the fight is winnable and losable by input, with counted swings, hits, whiffs, dodges, victories, defeats and zero dropped events — 2 victories and 9 defeats, and an exact `85` events to `85` voices | whether any of it reads or sounds right to a person |
+| the owner's playtest and listen | that the telegraph, attack, dodge, impact, camera and audio are legible and adequate to a person | nothing countable; it is a judgement, recorded as one |
+
+The slice is accepted as simple. That is the scope: a vertical slice of combat, not a combat system, and the list of what it deliberately does not build is at the end of this document.
 
 ## What moved and what did not
 

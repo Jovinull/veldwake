@@ -53,17 +53,19 @@ Then the code, in this order, because it is the surface M6 has to work against:
 
 All five phases are landed. The domain is `crates/combat`; the client work is in `apps/client/src/{arena,encounter,vfx,readout,synth,audio}.rs` and the changes to `app.rs`, `camera.rs`, `input.rs`, `debug.rs` and `renderer.rs`. Three ADRs were added ([0005](../adr/0005-fixed-step-headless-combat-domain.md), [0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), [0007](../adr/0007-procedural-impact-audio-boundary.md)) and one dependency (`cpal`), audited before it was added.
 
-### The one thing that is not done
+### The owner gates, both closed
 
-**A person has not listened to the impact audio.** Everything measurable about it is measured — device, event delivery, latency bound, amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle, whiff against hit — and none of that establishes whether an impact sounds like an impact. The offline fixture exists for exactly that judgement:
+**OWNER LISTENING: PASS** and **OWNER PLAYTEST: PASS**, 2026-09-19. The owner played the offline fixture — the hit reads as an impact, the whiff is distinguishable from it, and no clipping, click or problematic distortion was noticed — and played the armed encounter in the real client, finding the telegraph, attack, dodge, impact and camera legible enough for M6. Those were the two questions no measurement could answer, and they were left open on purpose until a person answered them.
+
+The fixture is still there, and is how the same judgement gets remade if the synth changes:
 
 ```text
 cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
 ```
 
-It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`. Nobody has played it. **OWNER LISTENING CHECK REQUIRED** before M6 can be called complete.
+It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`.
 
-A played victory is no longer outstanding: KI-024 is closed with two of them. KI-023 is closed too, and its premise turned out to be wrong rather than the dodge — the moment being captured was a dodge that *failed*.
+A played victory is not outstanding either: KI-024 is closed with two of them. KI-023 is closed too, and its premise turned out to be wrong rather than the dodge — the moment being captured was a dodge that *failed*.
 
 ### What was decided, and where the reasoning lives
 
@@ -112,7 +114,7 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M6 has been through independent QA but has not been heard.** The audio works technically — device, delivery, latency bound, amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle — and no one has judged whether it sounds like an impact. That is the only thing between this branch and a pull request.
+- **The owner's judgement is recorded, not re-derivable.** OWNER LISTENING: PASS and OWNER PLAYTEST: PASS are a person's assessment of a specific build, kept beside the measurements rather than folded into them. A change to the synth, the action curves, the camera or the telegraph invalidates that judgement and needs a fresh one; no test will notice.
 - **A swing now aims itself, inside bounds, and that is a gameplay decision rather than a convenience.** `AIM_ASSIST_CONE` is `35°` and `AIM_ASSIST_RANGE` is the reach of the attack. It exists because closed-loop play measured one hit in four from positions the aim table says connect: facing follows movement, so a body that stands still to swing cannot track one that is moving, while the adversary's brain steers continuously. Widening it turns the fight into a lock; removing it makes the fight unwinnable by aiming. Change it only against a new measurement.
 - **A named moment must check what its name claims.** `successful-dodge` asserted only that a dodge was in progress while a blade was live, and the captures taken at it were of a dodge that failed. Any new moment predicate gets the same scrutiny: the name is a claim about the frame.
 - **`GOLDEN_ENCOUNTER_SIGNATURE` and `GOLDEN_ACTION_POSE_SIGNATURE` each moved twice, and every move has a written OLD/NEW/WHY beside the constant.** All five M5 signatures are byte-identical and `CHARACTER_STYLE_VERSION` was deliberately not bumped, because it is part of a character's identity and the action rules answer to `COMBAT_STYLE_VERSION` instead. Re-lock deliberately; never to make a test pass.
