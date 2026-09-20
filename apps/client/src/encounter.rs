@@ -903,6 +903,23 @@ mod tests {
         }
     }
 
+    /// How an exact partition spreads the nanoseconds that do not divide
+    /// evenly among its frames.
+    ///
+    /// Both are exact — every nanosecond of the interval is delivered — and at
+    /// most frame rates the choice is invisible. At exactly the catch-up cap it
+    /// is not, which is what `a_frame_at_the_catch_up_cap_can_lose_a_tick_to_the_remainder`
+    /// measures.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Remainder {
+        /// The extra nanoseconds go to the first frames, which is what
+        /// `combat-probe partition` does.
+        FrontLoaded,
+        /// Frame `n` ends at `total * n / frames`, so the extra nanoseconds are
+        /// spread through the run.
+        Interleaved,
+    }
+
     /// Walks a traversal session for an exact total, cut into `rate` frames a
     /// second, delivering every nanosecond of it.
     ///
@@ -914,6 +931,7 @@ mod tests {
         world: WorldContact<'_>,
         rate: u32,
         seconds: u64,
+        remainder: Remainder,
     ) -> EncounterScene {
         let mut scene = traversal_scene(generator);
         let mut input = InputState::default();
@@ -924,11 +942,15 @@ mod tests {
 
         let total = Duration::from_secs(seconds).as_nanos();
         let frames = u128::from(rate) * u128::from(seconds);
+        let base = total / frames;
+        let spare = total % frames;
         let mut delivered = 0_u128;
         for frame in 1..=frames {
-            let until = total * frame / frames;
-            let step = until - delivered;
-            delivered = until;
+            let step = match remainder {
+                Remainder::FrontLoaded => base + u128::from(frame <= spare),
+                Remainder::Interleaved => total * frame / frames - delivered,
+            };
+            delivered += step;
             let Ok(step) = u64::try_from(step) else {
                 panic!("a frame longer than a u64 of nanoseconds");
             };
@@ -960,7 +982,7 @@ mod tests {
 
         let mut results = Vec::new();
         for rate in [50_u32, 60, 144, 240] {
-            let scene = walk_partition(&generator, world, rate, 20);
+            let scene = walk_partition(&generator, world, rate, 20, Remainder::Interleaved);
             assert_eq!(
                 scene.clock().dropped(),
                 0,
@@ -996,36 +1018,50 @@ mod tests {
     }
 
     #[test]
-    fn a_thirty_hertz_frame_sits_exactly_on_the_catch_up_cap() {
-        // A thirtieth of a second is `120 / 30 = 4` ticks, and
-        // `MAX_TICKS_PER_FRAME` is `4`. A frame is a whole number of
-        // nanoseconds, so an exact partition of twenty seconds into six hundred
-        // frames cannot give every frame exactly four ticks: the clock carries a
-        // remainder, and about one frame in twenty-five asks for five. The cap
-        // discards the fifth and counts it.
+    fn a_frame_at_the_catch_up_cap_can_lose_a_tick_to_the_remainder() {
+        // A thirtieth of a second is `120 / 30 = 4` ticks and
+        // `MAX_TICKS_PER_FRAME` is `4`, so thirty hertz sits exactly on the cap.
+        // What follows from that is not "thirty hertz drops ticks": it is that
+        // **two exact partitions of the same twenty seconds can disagree**,
+        // because the clock carries a sub-tick remainder and whether it ever
+        // reaches a fifth tick depends on how the spare nanoseconds fall.
         //
-        // The consequence is the one M6 chose deliberately — the simulation
-        // slows rather than teleporting — and this states it with a number
-        // instead of leaving it to be discovered in a playtest.
+        // `combat-probe partition` gives the spare nanoseconds to the first
+        // frames and measures zero capped frames at thirty hertz. Spreading the
+        // same nanoseconds through the run instead lets the remainder reach a
+        // whole extra tick, and the cap discards it. Both partitions deliver
+        // exactly twenty seconds.
+        //
+        // This is the failure M6 chose deliberately — the simulation slows
+        // rather than teleporting — stated with a number rather than left to be
+        // discovered in a playtest.
         let generator = TerrainGenerator::golden();
         let ground = TerrainGround::new(&generator);
         let veto = crate::traversal::TerrainWalkability::new(&generator);
         let world = WorldContact::terrain(&ground, &veto);
 
-        let thirty = walk_partition(&generator, world, 30, 20);
-        let dropped = thirty.clock().dropped();
-        let ran = thirty.ticks();
+        let front = walk_partition(&generator, world, 30, 20, Remainder::FrontLoaded);
+        assert_eq!(
+            front.clock().dropped(),
+            0,
+            "the probe's own partition now drops ticks at thirty hertz"
+        );
+        assert_eq!(front.ticks(), 2_400, "twenty seconds is 2,400 ticks");
+
+        let spread = walk_partition(&generator, world, 30, 20, Remainder::Interleaved);
+        let dropped = spread.clock().dropped();
+        let ran = spread.ticks();
         assert!(
             dropped > 0,
-            "thirty hertz no longer hits the cap; this test is stale"
+            "the interleaved partition no longer reaches the cap; this test is stale"
         );
         assert_eq!(
             ran + dropped,
             2_400,
-            "the ticks that ran plus the ticks the cap discarded must be the ticks the time was worth"
+            "the ticks that ran plus the ticks the cap discarded must be what the time was worth"
         );
 
-        // The ticks it *did* run are the same walk. A clean partition stopped
+        // And the ticks it did run are the same walk: a clean partition stopped
         // at the same tick count reaches the same authoritative state, so the
         // cap slows the simulation without changing it.
         let mut clean = traversal_scene(&generator);
@@ -1046,7 +1082,7 @@ mod tests {
         assert_eq!(clean.clock().dropped(), 0);
         assert_eq!(
             snapshot(&clean),
-            snapshot(&thirty),
+            snapshot(&spread),
             "the catch-up cap changed the walk rather than only slowing it"
         );
     }
