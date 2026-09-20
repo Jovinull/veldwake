@@ -54,11 +54,19 @@ Complete and merged through [PR #10](https://github.com/Jovinull/veldwake/pull/1
 
 Both of the things that were outstanding are closed: the owner has listened and played, and the encounter has been won in closed-loop play (KI-024 closed with two victories and nine defeats). KI-023 is closed too, and its premise was wrong rather than the dodge. The limitations that remain open are limitations rather than omissions: KI-022 (the hurt volume is the torso column, so limbs are outside it) and KI-025 (no camera occlusion solving), plus the long list of things the slice deliberately does not build. See [`M6_COMBAT_SLICE.md`](M6_COMBAT_SLICE.md) for the evidence, including the six defects that captures rejected and the two measurement tools that were themselves wrong.
 
+## M7 — Traversable Region
+
+One player-controlled body moving continuously through the real procedural region, with streaming anchored on the body, reaching an adversary placed in the world and dormant until proximity, fighting it, and continuing the session. Water blocks traversal. One deterministic named route, derived from a reachability audit, analysable headlessly and walkable in the client.
+
+**In progress on `feat/m7-traversable-region`.** Proposed after M6 from the state of the repository rather than from the order of the list below, and accepted by the owner, who named it: "Inhabited Region" was accepted conceptually and renamed, because no ecosystem or society inhabits the region yet. M7 is deliberately **not** persistence, **not** world simulation, and **not** content expansion.
+
+The owner decisions and the mandatory design corrections are recorded in [`M7_TRAVERSABLE_REGION.md`](M7_TRAVERSABLE_REGION.md), including the two that matter most to anything built later: a smoothed pelvis height is presentation and must never decide movement legality, and the reachability audit is a topological upper bound whose only proof of runtime traversal is a tick-by-tick simulation of the named route. A fresh owner playtest is an exit gate and the M6 one does not transfer.
+
 ## Later capability groups
 
 Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
 
-**This still holds after M6, and the list is not a queue.** No milestone has been chosen to follow the combat slice. The order above is the order it was written in, not a decision, and nothing in the repository implies which group comes next. A session that wants to build one proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
+**This still holds after M7, and the list is not a queue.** The order above is the order it was written in, not a decision. M7 was chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
 
 ## Milestone exit rule
 
