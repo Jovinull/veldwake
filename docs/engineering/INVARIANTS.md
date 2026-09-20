@@ -29,6 +29,12 @@ Every non-root part of a compiled character must contain its own joint origin an
 **CHAR-002 — Ground is what the viewer can see**
 A character's ground query returns the top face of the topmost solid voxel of a column, not a smoothed height field, and water is never ground. A contact model that disagrees with the blocks the renderer draws is wrong however elegant it is. Implemented and tested since M5.
 
+**TRAVERSE-001 — Water is what the viewer can see**
+A column is untraversable by water exactly when the generator writes at least one water voxel in it, which is `TerrainSample::has_water_voxel()`: `water_surface_y() > surface_y()`. The continuous relation `water_surface > height` — `is_submerged()` — is a different question and disagrees on a band of quantized columns where a viewer sees dry ground. A traversal predicate that follows the continuous relation blocks ground the player is standing on, and is wrong however elegant it is. This is CHAR-002 applied to traversal. Implemented and tested since M7.
+
+**MOVE-001 — Movement authority reads exact support surfaces**
+A step's legality is decided between the exact support surface under the body and the exact support surface at the destination, both from `GroundSampler::surface`. It is never decided against `CharacterState::base_height`, which is the **smoothed** height the pelvis follows and is presentation. Judging a step against the filter made the same step legal standing still and illegal while walking, because the lag is a function of how long the body had been climbing. One function, `movement::check_move`, is the only implementation of the rule, and it returns why a move was refused so that an audit can attribute a barrier without owning a second copy of the conditions. Implemented and tested in `veldwake-combat` since M7.
+
 **PERF-001 — No blocking frame I/O**  
 Blocking disk or network I/O must not occur on the render/game-frame hot path.
 

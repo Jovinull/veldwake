@@ -1,8 +1,14 @@
 # Current handoff
 
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 
 ## Current position
+
+**M7 — Traversable Region is implemented on `feat/m7-traversable-region` and is waiting on the owner.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.** The one thing outstanding is a fresh **OWNER PLAYTEST**; M6's does not transfer and no agent can close it.
+
+Everything else is done: 690 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
+
+Read [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) before touching anything M7 built. Its two durable corrections are **MOVE-001** (movement authority reads exact support surfaces, never the smoothed pelvis) and **TRAVERSE-001** (water is the voxel predicate, not the continuous field relation); both are in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
 
 **M1 through M6 are all merged into `main`.** M6 — Combat Slice landed through [PR #10](https://github.com/Jovinull/veldwake/pull/10) at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922`, whose parents are `5bebc4fa5195b427216a296fff810a294b7bbd7b` and `296621dcdff9d93e92c3ccca0b21d2c822e418aa`, after independent branch QA, a green pull-request CI run ([run 35416586910](https://github.com/Jovinull/veldwake/actions/runs/35416586910)), and a green post-merge CI run on the merge commit ([run 35417282890](https://github.com/Jovinull/veldwake/actions/runs/35417282890)). The remote branch `feat/m6-combat-slice` is preserved at `296621dcdff9d93e92c3ccca0b21d2c822e418aa`.
 
@@ -36,16 +42,17 @@ Read these before changing anything. They are the whole truth of the project; no
 16. [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) — the versioned, checkable constraints M5 was held to, and how they relate to the style bible
 17. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
 18. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
-19. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone that just closed: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
-20. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
-21. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
-22. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
-23. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
-24. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
-25. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
-26. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
-27. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
-28. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
+19. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone on the branch: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
+20. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
+21. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
+22. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
+23. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
+24. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
+25. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
+26. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
+27. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
+28. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
+29. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
 
 Then, as needed: [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md), the rest of the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
@@ -62,7 +69,53 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — propose the next milestone before building it
+## Continue here — M7 needs a person, then a pull request
+
+**Do not open a pull request and do not start another milestone.** M7's exit gate is the owner playing it, and the order the owner set is: review the implementation, play it, then a PR.
+
+To play it:
+
+```text
+VELDWAKE_ENCOUNTER=traverse cargo run --release -p veldwake-client
+```
+
+The world takes about a minute to settle. The body starts at the route start `(-69, 49)`; the adversary stands `162` steps away at `(14, 191)`, dormant until you come within `14` world units of it. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F4` detaches the camera. The named route is `217.09` world units and `63.9` seconds of walking.
+
+The questions that belong to a person and to nobody else:
+
+- Is walking through the world legible?
+- Does the terrain work at eye level? Every M4 and M5 visual claim was made from a flying camera at a scanned pose; this is the first time the region is judged from inside it.
+- Does the route read as traversal, or as a debug corridor?
+- Is there dead time? **Running was deliberately not added.** The design's ninety-second figure was never an approved threshold, the measured walk is `63.9` seconds, and whether that is a walk or a wait is a judgement about feel.
+- Is blocked water comprehensible, or an invisible wall? There is no wading, no splash and no cue — KI-028.
+- Does the camera let you navigate? KI-026 says what it does on ground that descends behind you.
+- Does walking up to the enemy and entering combat read as one coherent session?
+- Does continuing after the fight work?
+
+### What is proven and what is not
+
+| claim | evidence |
+|---|---|
+| the route is walkable | `the_route_is_walkable_in_a_real_encounter` drives a real encounter tick by tick over the real adapters; and three driven client sessions walked it |
+| water blocks, on the drawn waterline | a driven session walked into the river and stopped at `z = 24.8`, where `(-97, 24)` has no water voxel and `(-97, 23)` does |
+| the adversary sleeps, then wakes | 10,000 ticks at 200 units leave it bit-identical with no stream draw; a driven session woke it by walking up to it |
+| **player defeat** returns both bodies to their configured starts and the session continues | proven in the real client **twice**, in one session that then walked the whole route again |
+| **player victory** leaves the adversary down and the session going | proven **headlessly only**. Three driven sessions landed zero hits out of twenty-six swings, which is what a driver aiming from a five-second report line measures, not a property of the fight — M6 settled that question with `combat-probe aim`. **This is the one path the owner playtest should exercise deliberately.** |
+
+### What M7 leaves you to build on
+
+Facts, not suggestions:
+
+- **A smoothed presentation value must never decide an authoritative rule.** `base_height` is the filtered pelvis height and movement was comparing steps against it; at `tau = 0.12 s` a body climbing at gradient `g` carries about `0.42 g` of lag, and with `max_step_up` exactly one voxel *any* lag makes a legal step illegal. MOVE-001 exists so this cannot come back.
+- **`movement::check_move` is the only implementation of movement legality**, it returns `MoveBlockReason`, and the reachability audit calls it. Do not write a second copy to answer "why did that fail".
+- **`GroundSampler` is unchanged and must stay unchanged.** It answers where the visible solid surface is, including the river bed inside a river. Whether a body may walk there is `TraversalLegality`, a veto consulted about a move's destination only.
+- **The audit is a topological upper bound.** It evaluates every step from a settled stand. The only proof that a body driven by intent gets somewhere is simulating it.
+- **The region splits in two and the session starts in the smaller half** (KI-027): `307,144` standable columns reachable against a larger component of `314,861`. The highland *is* reachable, 22 steps from the start, and the prediction that it would not be was wrong. The barrier attribution — water `2,464`, step-up `44,495`, max-drop `1,273` — is where any milestone that wants the whole region navigable should start.
+- **A body held against a barrier slides; it does not block.** `slid_moves_*` exists because a log watching only `blocked_moves` reported zero while a body was pinned at a waterline for twenty-three units of shore.
+- **Streaming keeps up with a walking player with a third of the rail spare** — 25–42 loads a second against about 60 — with zero gaps, zero `ready_undrawn` and zero commit failures. KI-017 was measured, not fixed. A run mode roughly doubles that and needs the measurement again.
+- **No culling was added.** A body at eye level draws 291–294 chunk meshes and 471,874–475,660 quads against M4's settled 204 and 358,619, and it is still vsync-bound at 60 FPS. There was no bottleneck to fix.
+
+## Superseded — the pre-M7 continuation point
 
 **M6 is merged and there is no next milestone.** That is deliberate, and it is the first thing to understand before doing anything else.
 
@@ -136,6 +189,16 @@ None. Everything a session with no prior context needs is in the repository: the
 Nothing material about the project's real state exists only in a conversation. The decisions that outlive M6 are in [ADR-0005](../adr/0005-fixed-step-headless-combat-domain.md), [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) and [ADR-0007](../adr/0007-procedural-impact-audio-boundary.md); the ones that do not are in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) beside the capture or the measurement that produced them. The branch-QA findings, the closed-loop play, the owner gates and both re-locked signatures are all recorded there with their reasons.
 
 ## Immediate risks
+
+- **M7's exit gate is a person, and the failure mode is opening a pull request without it.** Review, play, then PR — that is the order the owner set.
+- **The player-victory path has never been seen in the real client.** It is proven headlessly and it is the first thing a playtest should try, because a driver that reads a position from a report line aims at where the body was.
+- **Do not re-lock `GOLDEN_ROUTE_SIGNATURE` to make a test pass.** It covers the world identity, the compiled movement spec, `TRAVERSAL_RULE_VERSION`, both endpoints, every waypoint and every checkpoint, so a changed `max_step_up` moves it even when the path does not. Every re-lock carries OLD/NEW/WHY beside the constant, exactly as M5 and M6 require.
+- **`ADVERSARY_COLUMN` is a cache of a derivation, not a hand-picked pair.** `the_derived_placement_is_the_locked_one` is `#[ignore]`d because the search costs about fourteen seconds; run it deliberately after anything that touches the terrain, the movement spec or the placement rules.
+- **The whole-region audit runs in the ordinary test set and the placement search does not.** That split came from measurement — `590` ms to sample plus `273` ms to audit, against about `14` seconds to search — and no test asserts a duration. Do not add one.
+- **A camera on ground that descends behind the body looks into the bank** (KI-026). A clamp was written, measured at `0.05` world units of correction, and reverted rather than kept as a fix that fixes nothing. Any real fix raises the camera until its sightline clears the near ground, which is an occlusion problem and belongs to a camera milestone.
+- **Whether an exact partition hits the catch-up cap depends on how the spare nanoseconds fall**, not only on the frame rate. `combat-probe partition` front-loads them and measures zero capped frames at thirty hertz; spreading them does not. Both deliver exactly twenty seconds. Do not quote one distribution as a property of the rate.
+- **`CombatCounters` is not part of the encounter trace.** That is why `slid_moves` could be added without moving `GOLDEN_ENCOUNTER_SIGNATURE`. Anything that goes into `run_script`'s per-tick bytes *does* move it.
+- **The traversal dodge gate must stay inside the tick loop.** A frame runs up to four ticks and the first can cross the aggro radius; hoisting the brain-state read would make a dodge depend on how the frames were cut, which is the one thing the integer clock exists to prevent.
 
 - **There is no next milestone, and inventing one is the failure mode.** `ROADMAP.md` lists later capability groups and says explicitly not to manufacture detailed milestones before the evidence exists. Propose, get acceptance, then build.
 - **The owner's judgement is recorded, not re-derivable.** OWNER LISTENING: PASS and OWNER PLAYTEST: PASS are a person's assessment of a specific build, kept beside the measurements rather than folded into them. A change to the synth, the action curves, the camera or the telegraph invalidates that judgement and needs a fresh one; no test will notice.

@@ -80,3 +80,16 @@ Two lines on the same five-second cadence the streaming and character reports us
 The counters that must stay zero are stated as such: `events_dropped`, `frame_events_dropped`, `vfx_dropped`, `audio_queue_dropped` and `audio_device_errors`. A non-zero value in any of them is a bound that was too small, and the number says by how much.
 
 With `VELDWAKE_ENCOUNTER=off` neither line is emitted at all, no encounter is built and no audio device is opened — the absence is the observation, and it is how the off contract is checked rather than by looking at a screenshot.
+
+
+## What the M7 traversal client reports today
+
+Three additions, all on the existing five-second cadence.
+
+**Which route this session is about to walk.** One `traversal route ready` line at startup in `traverse` mode: the traversal rule version, the start and goal columns, the column and waypoint counts, the length in world units, the walking duration at the compiled speed, the chunk boundaries crossed on each axis, the measured route signature **beside the locked one and whether they match**, the audited grid size, how many columns are reachable and standable, whether the highland is reachable, and the region's half-open bounds. One `traversal checkpoint` line per named place, with the claim its name makes. Deriving it costs one region sample and one breadth-first walk — under a second in release, once — and it is what ties a capture or a log to a route rather than to a hope.
+
+**Where the world is streaming around, and whether the enemy is awake.** `combat state` gains `traversal`, `streaming_anchor` (`body` or `camera`), `adversary_dormant`, `dodges_suppressed` and `outcome_settled`. A settled outcome means the defeat hold finished and the policy chose not to reset, which is how walking away from a won fight is read from a log rather than from a screen.
+
+**Where the camera is.** `camera_x`, `camera_y`, `camera_z` and `camera_detached`. A frame that does not contain the body is a question the log should be able to answer, and the first M7 shoreline captures forced exactly the reverse — reasoning backwards from a screenshot to a camera position. KI-026 was characterised from these three numbers in one run.
+
+**A body held against a barrier slides; it does not block.** `slid_moves_player` and `slid_moves_adversary` sit beside `blocked_moves_*`. `MoveResult::blocked` is only true when *no* axis of a proposal was legal, so a body pinned at a waterline that still travels along the shore reports zero blocked moves for as long as it is held. The first water run walked into the river, stopped dead in `z` and slid twenty-three world units west with `blocked_moves = 0` the whole way; with the counter it reports `slid = 195` on the tick it reaches the shore.

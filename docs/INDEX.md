@@ -77,6 +77,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](planning/M4_BEAUTIFUL_TERRAIN_SLICE.md)
 - [`planning/M5_PROCEDURAL_CHARACTER.md`](planning/M5_PROCEDURAL_CHARACTER.md)
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
+- [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)
