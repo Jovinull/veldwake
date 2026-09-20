@@ -23,14 +23,16 @@ use veldwake_character::{
 };
 
 use crate::combatant::{Action, Intent, SIDES, Side, SwingId};
-use crate::encounter::{CombatCounters, Encounter, EncounterError, EncounterSetup};
+use crate::encounter::{
+    CombatCounters, Encounter, EncounterError, EncounterSetup, PlayerVictoryPolicy, WorldContact,
+};
 use crate::hash::{fnv1a64, push_f32, push_u16, push_u32, push_u64};
 use crate::script::{
     EncounterScript, GOLDEN_SCRIPT, MomentKind, NAMED_MOMENTS, ScriptRunner, at_moment,
 };
 use crate::spec::{
-    AttackSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement, AuthoredTuning,
-    CombatSeed,
+    ArenaSpec, AttackSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement,
+    AuthoredTuning, CombatSeed,
 };
 use crate::tick::Ticks;
 use crate::weapon::{CompiledWeapon, WeaponDescriptor};
@@ -193,21 +195,19 @@ pub const ADVERSARY_OFFSET: Vec2 = Vec2::new(0.0, -START_SEPARATION * 0.5);
 /// the clearing, so the whole fight happens on ground a viewer can see.
 pub const ARENA_RADIUS: f32 = 5.5;
 
-/// The whole tuning, around an arena the caller places.
+/// The whole combat tuning.
 ///
-/// The centre is a parameter because the headless fixture stands at the origin
-/// while the client's arena is a scanned column of the golden region, and a
-/// signature that moved with the world would be useless.
+/// Numbers only. Where the fight happens is [`setup`]'s business, because an
+/// arena centre is a place in a world and this is a table of durations,
+/// distances and health.
 #[must_use]
-pub fn tuning(arena_centre: Vec2, arena_radius: f32) -> AuthoredTuning {
+pub fn tuning() -> AuthoredTuning {
     AuthoredTuning {
         player_attack: player_attack(),
         adversary_attack: adversary_attack(),
         dodge: dodge(),
         movement: movement(),
         adversary: adversary(),
-        arena_centre,
-        arena_radius,
         // Five of the adversary's hits, four of the player's: the player has room
         // to learn and the adversary is not a sponge.
         player_health: 96,
@@ -218,15 +218,35 @@ pub fn tuning(arena_centre: Vec2, arena_radius: f32) -> AuthoredTuning {
 }
 
 /// The reference setup, around an arena the caller places.
+///
+/// The centre is a parameter because the headless fixture stands at the origin
+/// while the client's arena is a scanned column of the golden region, and a
+/// signature that moved with the world would be useless.
+///
+/// # Panics
+///
+/// Never in practice: every radius passed here is a positive constant, and
+/// `ArenaSpec::new` rejects only a non-finite centre or a non-positive radius.
+/// A fixture that quietly produced a differently shaped arena would be worse
+/// than one that stops.
 #[must_use]
 pub fn setup(arena_centre: Vec2, arena_radius: f32) -> EncounterSetup {
+    let Ok(arena) = ArenaSpec::new(arena_centre, arena_radius) else {
+        panic!("the fixture arena radius {arena_radius} is not a positive finite number");
+    };
     EncounterSetup {
         player: player_descriptor(),
         adversary: adversary_descriptor(),
         weapon: weapon_descriptor(),
-        tuning: tuning(arena_centre, arena_radius),
-        player_offset: PLAYER_OFFSET,
-        adversary_offset: ADVERSARY_OFFSET,
+        tuning: tuning(),
+        starts: [
+            arena_centre + PLAYER_OFFSET,
+            arena_centre + ADVERSARY_OFFSET,
+        ],
+        arena: Some(arena),
+        // M6's behaviour, and the reason every M6 signature is unchanged: a
+        // defeated adversary ends a round rather than a session.
+        player_victory: PlayerVictoryPolicy::ResetEncounter,
         facing_offsets: [0.0; SIDES.len()],
     }
 }
@@ -247,8 +267,7 @@ pub fn golden_setup() -> EncounterSetup {
 #[must_use]
 pub fn sandbox_setup() -> EncounterSetup {
     let mut setup = golden_setup();
-    setup.player_offset = Vec2::new(0.0, 0.9);
-    setup.adversary_offset = Vec2::new(0.0, -0.9);
+    setup.starts = [Vec2::new(0.0, 0.9), Vec2::new(0.0, -0.9)];
     setup.tuning.adversary = AuthoredAdversary {
         aggro_radius: 0.30,
         strike_range: 0.20,
@@ -319,7 +338,7 @@ pub fn run_script(
 
     for _ in 0..ticks {
         let intent = runner.next_intent(&encounter);
-        let events = encounter.step(intent, ground);
+        let events = encounter.step(intent, WorldContact::from_ground(ground));
         let tick = encounter.tick_index();
 
         for (index, moment) in NAMED_MOMENTS.iter().enumerate() {
@@ -512,7 +531,10 @@ pub fn probe_dodge(
         } else {
             Vec2::ZERO
         };
-        let events = encounter.step(Intent::player(move_world, false, press), ground);
+        let events = encounter.step(
+            Intent::player(move_world, false, press),
+            WorldContact::from_ground(ground),
+        );
         if press && encounter.combatant(Side::Player).action().is_dodging() {
             started = true;
         }
@@ -683,7 +705,7 @@ mod tests {
         trace_signature, tuning, weapon_descriptor,
     };
     use crate::combatant::{SIDES, Side};
-    use crate::encounter::{Encounter, EncounterError};
+    use crate::encounter::{Encounter, EncounterError, WorldContact};
     use crate::script::{GOLDEN_SCRIPT, NAMED_MOMENTS};
     use crate::weapon::WeaponCompiler;
     use glam::Vec2;
@@ -1079,7 +1101,10 @@ mod tests {
         };
         encounter.arm();
         for _ in 0..2_000 {
-            let _ = encounter.step(crate::combatant::Intent::idle(), Some(&ground));
+            let _ = encounter.step(
+                crate::combatant::Intent::idle(),
+                WorldContact::ground_only(&ground),
+            );
         }
         assert_eq!(
             encounter.counters().swings[Side::Adversary.index()],
@@ -1094,7 +1119,7 @@ mod tests {
 
     #[test]
     fn the_whole_tuning_compiles_and_the_telegraph_is_the_longer_one() {
-        let compiled = match tuning(Vec2::ZERO, ARENA_RADIUS).compile() {
+        let compiled = match tuning().compile() {
             Ok(tuning) => tuning,
             Err(error) => panic!("{error}"),
         };
@@ -1109,7 +1134,12 @@ mod tests {
             "there is no window to punish a telegraph in"
         );
         assert!(compiled.defeat_hold() > compiled.player_attack().total());
-        assert_eq!(compiled.arena().radius(), ARENA_RADIUS);
+        // The arena is placement, not tuning, and lives on the setup now.
+        let Some(arena) = golden_setup().arena else {
+            panic!("the golden fixture has an arena");
+        };
+        assert_eq!(arena.radius(), ARENA_RADIUS);
+        assert_eq!(arena.centre(), Vec2::ZERO);
         // Health is a whole number of hits, which is what makes a fight countable.
         let hits_to_fall = compiled.adversary_health() / compiled.player_attack().damage();
         assert!(

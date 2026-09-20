@@ -509,6 +509,13 @@ impl CombatSeed {
 }
 
 /// Everything one encounter is tuned by, as a person authors it.
+///
+/// Combat numbers only. **Where in a world an encounter happens is not tuning**,
+/// so the two bodies' initial positions and the optional arena live on
+/// [`EncounterSetup`](crate::encounter::EncounterSetup) instead. Tuning that
+/// carried an arena centre made one value mean the arena's middle, the enemy's
+/// site, the player's respawn and the reset point at once, which stopped being
+/// readable the moment the two bodies started a walk apart rather than a duel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuthoredTuning {
     pub player_attack: AuthoredAttack,
@@ -516,8 +523,6 @@ pub struct AuthoredTuning {
     pub dodge: AuthoredDodge,
     pub movement: AuthoredMovement,
     pub adversary: AuthoredAdversary,
-    pub arena_centre: Vec2,
-    pub arena_radius: f32,
     pub player_health: u16,
     pub adversary_health: u16,
     pub defeat_hold_seconds: f64,
@@ -535,7 +540,6 @@ impl AuthoredTuning {
             dodge: self.dodge.compile()?,
             movement: self.movement.compile()?,
             adversary: self.adversary.compile()?,
-            arena: ArenaSpec::new(self.arena_centre, self.arena_radius)?,
             player_health: self.player_health,
             adversary_health: self.adversary_health,
             defeat_hold: duration("defeat_hold", self.defeat_hold_seconds)?,
@@ -552,7 +556,6 @@ pub struct EncounterTuning {
     dodge: DodgeSpec,
     movement: MovementSpec,
     adversary: AdversarySpec,
-    arena: ArenaSpec,
     player_health: u16,
     adversary_health: u16,
     defeat_hold: Ticks,
@@ -583,11 +586,6 @@ impl EncounterTuning {
     #[must_use]
     pub const fn adversary(&self) -> &AdversarySpec {
         &self.adversary
-    }
-
-    #[must_use]
-    pub const fn arena(&self) -> &ArenaSpec {
-        &self.arena
     }
 
     #[must_use]

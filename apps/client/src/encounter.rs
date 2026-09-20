@@ -29,8 +29,8 @@ use tracing::{info, warn};
 use veldwake_character::GroundSampler;
 use veldwake_combat::{
     CombatClock, CombatEvent, Encounter, EncounterError, Intent, MAX_EVENTS_PER_TICK,
-    MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks, at_moment, fixture,
-    script::GOLDEN_SCRIPT,
+    MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks, WorldContact,
+    at_moment, fixture, script::GOLDEN_SCRIPT,
 };
 use veldwake_procedural::TerrainGenerator;
 
@@ -256,7 +256,7 @@ impl EncounterScene {
         let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(encounter));
         for _ in 0..MOMENT_SEARCH_TICKS {
             let intent = runner.next_intent(encounter);
-            let events = encounter.step(intent, ground);
+            let events = encounter.step(intent, WorldContact::from_ground(ground));
             if at_moment(kind, encounter, &events) {
                 return Some(encounter.tick_index());
             }
@@ -325,7 +325,9 @@ impl EncounterScene {
                 if let Some(tick) = found {
                     for _ in 0..tick.saturating_sub(1) {
                         let intent = runner.next_intent(&scene.encounter);
-                        let _ = scene.encounter.step(intent, ground);
+                        let _ = scene
+                            .encounter
+                            .step(intent, WorldContact::from_ground(ground));
                         scene.ticks += 1;
                         if runner.finished() {
                             runner.restart();
@@ -443,7 +445,9 @@ impl EncounterScene {
                     }
                     None => Intent::player(glam::Vec2::ZERO, false, false),
                 };
-                let events = self.encounter.step(intent, ground);
+                let events = self
+                    .encounter
+                    .step(intent, WorldContact::from_ground(ground));
                 self.ticks += 1;
                 for event in events.iter() {
                     self.events.push(event);
@@ -504,7 +508,9 @@ impl EncounterScene {
                     intent
                 }
             };
-            let events = self.encounter.step(intent, ground);
+            let events = self
+                .encounter
+                .step(intent, WorldContact::from_ground(ground));
             self.ticks += 1;
             for event in events.iter() {
                 self.events.push(event);
