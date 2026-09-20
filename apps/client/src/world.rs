@@ -16,6 +16,68 @@ use veldwake_streaming::{ChunkSource, DiagnosticChunkSource, TerrainChunkSource}
 
 use crate::camera::Camera;
 
+/// The continuous horizontal extent of a generated region, in world units.
+///
+/// **One interpretation of the region's edge, shared by everything that needs
+/// it.** A finite region is a whole number of chunks, so its edge is a
+/// half-open rectangle: the last column of the last chunk is inside, and the
+/// coordinate one past it is not. Writing that arithmetic twice is how two
+/// answers to "is this inside the world" start disagreeing at a fractional
+/// coordinate nobody tested.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionBounds {
+    min_x: f64,
+    max_x_exclusive: f64,
+    min_z: f64,
+    max_z_exclusive: f64,
+}
+
+impl RegionBounds {
+    /// The horizontal extent of everything a generator will produce.
+    #[must_use]
+    pub fn of(generator: &TerrainGenerator) -> Self {
+        let extent = generator.identity().config.extent;
+        let edge = f64::from(u32::try_from(veldwake_voxel::CHUNK_EDGE).unwrap_or(u32::MAX));
+        Self {
+            min_x: f64::from(extent.min_chunk_x) * edge,
+            max_x_exclusive: (f64::from(extent.max_chunk_x) + 1.0) * edge,
+            min_z: f64::from(extent.min_chunk_z) * edge,
+            max_z_exclusive: (f64::from(extent.max_chunk_z) + 1.0) * edge,
+        }
+    }
+
+    /// Whether a horizontal position lies inside the region.
+    ///
+    /// Non-finite input is outside, never a panic and never a silent zero.
+    #[must_use]
+    pub fn contains(&self, x: f64, z: f64) -> bool {
+        x.is_finite()
+            && z.is_finite()
+            && (self.min_x..self.max_x_exclusive).contains(&x)
+            && (self.min_z..self.max_z_exclusive).contains(&z)
+    }
+
+    #[must_use]
+    pub const fn min_x(&self) -> f64 {
+        self.min_x
+    }
+
+    #[must_use]
+    pub const fn max_x_exclusive(&self) -> f64 {
+        self.max_x_exclusive
+    }
+
+    #[must_use]
+    pub const fn min_z(&self) -> f64 {
+        self.min_z
+    }
+
+    #[must_use]
+    pub const fn max_z_exclusive(&self) -> f64 {
+        self.max_z_exclusive
+    }
+}
+
 /// Environment variable naming the world.
 const WORLD_VARIABLE: &str = "VELDWAKE_WORLD";
 /// Environment variable naming the starting camera pose.
