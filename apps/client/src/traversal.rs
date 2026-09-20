@@ -212,14 +212,12 @@ impl SurfaceGrid {
         self.support.len()
     }
 
+    /// Clippy asks for this beside [`Self::len`]; nothing needs it, because a
+    /// region with no columns is not a region.
+    #[expect(dead_code, reason = "required beside `len`, and never called")]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.support.is_empty()
-    }
-
-    #[must_use]
-    pub const fn bounds(&self) -> RegionBounds {
-        self.bounds
     }
 
     /// Linear index of a column, or `None` outside the grid.
@@ -684,6 +682,13 @@ pub const ROUTE_START_Z: i64 = 49;
 /// The radii are M6's, for M6's reason: the client's arena predicate found that
 /// the golden region offers no column clear of vegetation out to eleven units,
 /// so seven is what the world actually has.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "evidence machinery; the binary reads ADVERSARY_COLUMN instead"
+    )
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlacementRules {
     /// The ground must be exactly level out to here, in columns.
@@ -726,6 +731,13 @@ impl Default for PlacementRules {
 pub const ADVERSARY_COLUMN: (i64, i64) = (14, 191);
 
 /// Where the adversary stands, and the evidence that it may.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "evidence machinery; the binary reads ADVERSARY_COLUMN instead"
+    )
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Placement {
     pub column: (i64, i64),
@@ -743,6 +755,13 @@ pub struct Placement {
 /// the target, then by `(z, x)`, which is a total order, and the first that
 /// satisfies every rule wins. Nothing here is a spawn system — one adversary,
 /// one placement, no table and no respawn.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the placement search is run deliberately by its own test; the binary reads the locked result"
+    )
+)]
 #[must_use]
 pub fn place_adversary(
     generator: &TerrainGenerator,
@@ -802,6 +821,13 @@ pub fn place_adversary(
 }
 
 /// Whether the ground is exactly level over a disc of columns.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a placement predicate; only the search and its tests ask it"
+    )
+)]
 #[must_use]
 pub fn is_level(grid: &SurfaceGrid, x: i64, z: i64, radius: i64) -> bool {
     let Some(height) = grid.support_at(x, z) else {
@@ -825,6 +851,13 @@ pub fn is_level(grid: &SurfaceGrid, x: i64, z: i64, radius: i64) -> bool {
 ///
 /// There is no vegetation collision, so a fight that could reach a shrub would
 /// be a fight inside one.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a placement predicate; only the search and its tests ask it"
+    )
+)]
 #[must_use]
 pub fn is_clear_of_vegetation(
     field: &TerrainField,
@@ -1046,6 +1079,33 @@ fn name_checkpoints(
         });
     }
     checkpoints
+}
+
+/// The encounter a traversal session is played in.
+///
+/// The same two combatants, the same weapon and the same tuning M6 fights with.
+/// What differs is placement and bounds: the player starts at the route start,
+/// the adversary at the derived column a route away, there is no arena disc, and
+/// beating the adversary leaves it where it fell instead of starting the round
+/// again.
+///
+/// # Panics
+///
+/// Never in practice. `ArenaSpec` is the only fallible part of a setup and this
+/// one has none; the starts are locked columns of the golden region.
+#[must_use]
+pub fn traversal_setup() -> veldwake_combat::EncounterSetup {
+    let mut setup = veldwake_combat::fixture::golden_setup();
+    setup.starts = [
+        column_centre(ROUTE_START_X, ROUTE_START_Z),
+        column_centre(ADVERSARY_COLUMN.0, ADVERSARY_COLUMN.1),
+    ];
+    // The region and the water veto are the bounds. A disc around one of the
+    // two bodies would be a fence across a valley.
+    setup.arena = None;
+    // The session continues past the fight, which is the whole milestone.
+    setup.player_victory = veldwake_combat::PlayerVictoryPolicy::Remain;
+    setup
 }
 
 // ---------------------------------------------------------------------------

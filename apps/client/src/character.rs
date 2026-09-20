@@ -59,12 +59,6 @@ impl<'a> TerrainGround<'a> {
         }
     }
 
-    /// The region this adapter answers inside.
-    #[must_use]
-    pub const fn bounds(&self) -> RegionBounds {
-        self.bounds
-    }
-
     /// The terrain sample under a position, for tests and diagnostics.
     #[must_use]
     pub fn sample(&self, x: f64, z: f64) -> TerrainSample {
