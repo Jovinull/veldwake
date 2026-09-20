@@ -737,6 +737,8 @@ impl App {
                 let (attack_latched, dodge_latched) = self.input.combat_latches();
                 report_combat(
                     scene,
+                    &self.camera,
+                    self.camera_detached,
                     &self.frame_stats,
                     PresentationReport {
                         shake: &self.shake,
@@ -944,6 +946,8 @@ struct PresentationReport<'a> {
 /// streaming and character reports use, so one capture aligns with one interval.
 fn report_combat(
     scene: &EncounterScene,
+    camera: &Camera,
+    camera_detached: bool,
     stats: &FrameStats,
     presentation: PresentationReport<'_>,
     latches: (bool, bool),
@@ -1007,6 +1011,14 @@ fn report_combat(
         },
         adversary_dormant = scene.adversary_is_dormant(),
         dodges_suppressed = scene.dodges_suppressed(),
+        // Where the camera actually is. A frame that does not contain the body
+        // is a question the log should be able to answer without anyone
+        // reasoning backwards from a screenshot, which is exactly what the
+        // first shoreline captures forced.
+        camera_x = camera.position().x,
+        camera_y = camera.position().y,
+        camera_z = camera.position().z,
+        camera_detached,
         "combat state"
     );
     info!(
