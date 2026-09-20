@@ -263,8 +263,18 @@ pub struct CombatCounters {
     pub aim_assists: [u32; SIDES.len()],
     pub defeats: [u32; SIDES.len()],
     pub resets: u32,
-    /// Moves the rules refused outright.
+    /// Moves the rules refused outright: no axis of the proposal was legal.
     pub blocked_moves: [u32; SIDES.len()],
+    /// Moves resolved one axis at a time, because the whole proposal was not
+    /// legal but part of it was.
+    ///
+    /// **A body held against a barrier slides; it does not block.** The first
+    /// M7 water run walked due south into the river, stopped dead in `z` at the
+    /// waterline and travelled twenty-three world units west along the shore —
+    /// and reported `blocked_moves = 0` the whole way, because the `x`
+    /// component of every refused move was accepted. Without this counter a log
+    /// cannot tell a free walk from a body pinned against water.
+    pub slid_moves: [u32; SIDES.len()],
     /// Ticks on which the two bodies had to be pushed apart.
     pub separations: u32,
     pub hit_queries: u64,
@@ -743,6 +753,9 @@ impl Encounter {
         if result.blocked {
             self.counters.blocked_moves[index] =
                 self.counters.blocked_moves[index].saturating_add(1);
+        }
+        if result.slid {
+            self.counters.slid_moves[index] = self.counters.slid_moves[index].saturating_add(1);
         }
 
         // The gait's phase advances with the distance actually travelled, not
@@ -2306,6 +2319,19 @@ mod tests {
         assert!(
             encounter.combatant(Side::Player).position().x > 1.0,
             "a body stopped by a veto must still slide along it"
+        );
+        // And the slide is *counted*, because it is what a barrier looks like
+        // from a log: the first M7 water run walked into the river, was held at
+        // the waterline, slid twenty-three units along the shore, and reported
+        // `blocked_moves = 0` for every one of them.
+        assert!(
+            encounter.counters().slid_moves[Side::Player.index()] > 0,
+            "a body held against a barrier reported no slide"
+        );
+        assert_eq!(
+            encounter.counters().blocked_moves[Side::Player.index()],
+            0,
+            "this body was never refused outright, only redirected"
         );
     }
 

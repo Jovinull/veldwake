@@ -1853,6 +1853,11 @@ mod tests {
                 checkpoint.name, checkpoint.column, checkpoint.steps, checkpoint.intent
             );
         }
+        print!("waypoints:");
+        for waypoint in &route.waypoints {
+            print!(" {:.1},{:.1}", waypoint.x, waypoint.y);
+        }
+        println!();
         println!(
             "GOLDEN_ROUTE_SIGNATURE measured: {:#018x}",
             route_signature(&derived.generator, &movement(), route)

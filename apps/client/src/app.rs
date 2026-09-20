@@ -276,8 +276,21 @@ impl App {
             let adversary = scene.encounter().combatant(Side::Adversary);
             info!(
                 mode = encounter_mode.name(),
-                arena = ?arena::centre().to_array(),
-                arena_radius = arena::ARENA_RADIUS,
+                // A traversal session has no arena: the region and the water
+                // veto are its bounds, and printing a disc it does not have
+                // would be a line that reads plausibly and is false.
+                arena = ?if encounter_mode.is_traversal() {
+                    None
+                } else {
+                    Some(arena::centre().to_array())
+                },
+                arena_radius = ?if encounter_mode.is_traversal() {
+                    None
+                } else {
+                    Some(arena::ARENA_RADIUS)
+                },
+                player_start = ?player.position().to_array(),
+                adversary_start = ?adversary.position().to_array(),
                 tick_hz = veldwake_combat::COMBAT_TICK_HZ,
                 max_ticks_per_frame = veldwake_combat::MAX_TICKS_PER_FRAME,
                 weapon = format_args!("{:#018x}", scene.encounter().weapon().fingerprint()),
@@ -1025,6 +1038,10 @@ fn report_combat(
         separations = counters.separations,
         blocked_moves_player = counters.blocked_moves[0],
         blocked_moves_adversary = counters.blocked_moves[1],
+        // A body held against water or a step slides along it rather than
+        // stopping, so a slide is what a barrier actually looks like in a log.
+        slid_moves_player = counters.slid_moves[0],
+        slid_moves_adversary = counters.slid_moves[1],
         hit_queries = counters.hit_queries,
         sweep_substeps_max = counters.sweep_substeps_max,
         multi_hit_suppressed = counters.multi_hit_suppressed,
