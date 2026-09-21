@@ -1,6 +1,6 @@
 # Reusable learnings
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 
 - On the audited Windows host, PowerShell did not initially expose Cargo because Rust was absent; rustup was installed with `--no-modify-path`. New shells may need `%USERPROFILE%\.cargo\bin` added explicitly for the session or user environment.
 - Intel Iris Xe reports only 128 MiB dedicated video memory but about 8 GiB shared graphics memory. Do not treat WMI's `AdapterRAM` value as reliable VRAM capacity for an integrated GPU.
@@ -114,3 +114,5 @@ Last updated: 2026-09-20
 - A blind driver aims no better than it walks, and a driver reading a five-second report line aims at where the body *was*. Eleven swings and zero hits from a scripted fight loop is a statement about the harness, and M6 had already settled the underlying question by standing a passive body at a bearing and swinging. Say which of the two a miss rate is measuring before concluding anything about the fight.
 - The shortest legal route around an obstacle is evidence about the obstacle. The derived route never comes within six columns of the river, so the `water-edge` checkpoint it defines is never emitted — the rules route around water without being told to, and the absence of the checkpoint is what says so.
 - Predictions written down before a measurement are worth keeping even when they are wrong, and especially then. M7's design predicted the valley wall's `1.73` rise-over-run might make the highland unreachable to a body limited to one-voxel steps. It is reachable, from 22 steps away, and 243,333 highland columns are in the reachable set. What the audit *did* find was different and would not have been guessed: the region splits into two large components and the session starts in the smaller one.
+- A playtest can pass its gate and still not reach the content behind it. The M7 owner walked the region, judged the traversal a pass, and never found the single adversary standing in it — so exploration-to-combat, a victory and the continuation past one stayed technical evidence. Traversability and discoverability are separate properties, and a milestone that proves the first proves nothing about the second. Say which one a session actually exercised.
+- An owner observation is not a work item. "Locomotion feels somewhat stiff and raw, but is acceptable" is worth exactly as much as it says: it is recorded, nothing was tuned in response, and it becomes evidence for whatever milestone takes movement feel as its subject. Acting on it inside the branch that heard it would have turned a judgement into an unreviewed change.

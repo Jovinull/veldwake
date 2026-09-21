@@ -1,10 +1,14 @@
 # Current handoff
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 
 ## Current position
 
-**M7 — Traversable Region is implemented on `feat/m7-traversable-region` and is waiting on the owner.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.** The one thing outstanding is a fresh **OWNER PLAYTEST**; M6's does not transfer and no agent can close it.
+**M7 — Traversable Region is complete on `feat/m7-traversable-region` and is waiting on independent branch QA.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.**
+
+**OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS**, 2026-09-21. The owner judged walking the world to work, the terrain sufficiently legible at eye level, the experience enjoyable within the current scope, the walking duration not to justify running in this milestone, and locomotion somewhat stiff and raw but acceptable for this slice. Water and the camera did not prevent enjoying the traversal. Small imperfections were noticed and none was judged a blocker.
+
+**The owner did not find the adversary.** So the traversal gate is closed and nothing else is: exploration → wake → combat, player victory and post-victory continuation are technical and QA evidence, never owner judgement. KI-029 records why one entity in an 800 x 800 region with no discovery affordance can be missed.
 
 Everything else is done: 690 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
 
@@ -69,9 +73,11 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M7 needs a person, then a pull request
+## Continue here — M7 needs independent branch QA, then a pull request
 
-**Do not open a pull request and do not start another milestone.** M7's exit gate is the owner playing it, and the order the owner set is: review the implementation, play it, then a PR.
+**Do not open a pull request and do not start another milestone.** The owner traversal gate is closed; what comes next is independent branch QA, and the pull request follows that.
+
+QA should start from the three things this branch already knows are unproven or uncomfortable, rather than rediscovering them: the player-victory path has never been seen in the real client, the owner never reached the encounter at all, and the locomotion note below was deliberately not acted on.
 
 To play it:
 
@@ -81,16 +87,15 @@ VELDWAKE_ENCOUNTER=traverse cargo run --release -p veldwake-client
 
 The world takes about a minute to settle. The body starts at the route start `(-69, 49)`; the adversary stands `162` steps away at `(14, 191)`, dormant until you come within `14` world units of it. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F4` detaches the camera. The named route is `217.09` world units and `63.9` seconds of walking.
 
-The questions that belong to a person and to nobody else:
+**The owner's own words, recorded because they are a judgement and not a measurement:**
 
-- Is walking through the world legible?
-- Does the terrain work at eye level? Every M4 and M5 visual claim was made from a flying camera at a scanned pose; this is the first time the region is judged from inside it.
-- Does the route read as traversal, or as a debug corridor?
-- Is there dead time? **Running was deliberately not added.** The design's ninety-second figure was never an approved threshold, the measured walk is `63.9` seconds, and whether that is a walk or a wait is a judgement about feel.
-- Is blocked water comprehensible, or an invisible wall? There is no wading, no splash and no cue — KI-028.
-- Does the camera let you navigate? KI-026 says what it does on ground that descends behind you.
-- Does walking up to the enemy and entering combat read as one coherent session?
-- Does continuing after the fight work?
+- traversal and walking the world: **PASS**;
+- terrain at eye level: **PASS**, sufficient for M7;
+- enjoyable within the current scope;
+- the walking duration does not justify running in this milestone — accepted for now;
+- **locomotion currently feels somewhat stiff and raw, but is acceptable for the M7 traversal slice.**
+
+That last line is an observation and **not a work item**. Nothing about walk speed, turn rate, gait, acceleration, animation or the camera was changed in response to it, and nothing should be on this branch. It is evidence for whatever milestone takes movement feel as its subject.
 
 ### What is proven and what is not
 
@@ -190,8 +195,10 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M7's exit gate is a person, and the failure mode is opening a pull request without it.** Review, play, then PR — that is the order the owner set.
-- **The player-victory path has never been seen in the real client.** It is proven headlessly and it is the first thing a playtest should try, because a driver that reads a position from a report line aims at where the body was.
+- **The owner traversal gate is closed; independent branch QA is not.** Do not open a pull request before it.
+- **The player-victory path has never been seen in the real client, and the owner did not reach the encounter either.** It is proven headlessly only. A driver that reads a position from a five-second report line aims at where the body was, which is what three driven sessions measured; QA should exercise this path deliberately rather than assume it.
+- **One adversary in an 800 x 800 region can simply be missed** (KI-029). The owner's session is the demonstration. Nothing was added to point at it, and nothing should be without a milestone that asks for discovery.
+- **The owner's locomotion note is not a defect to fix on this branch.** "Somewhat stiff and raw, but acceptable" was recorded and deliberately not acted on; tuning movement here would turn a judgement into an unreviewed gameplay change.
 - **Do not re-lock `GOLDEN_ROUTE_SIGNATURE` to make a test pass.** It covers the world identity, the compiled movement spec, `TRAVERSAL_RULE_VERSION`, both endpoints, every waypoint and every checkpoint, so a changed `max_step_up` moves it even when the path does not. Every re-lock carries OLD/NEW/WHY beside the constant, exactly as M5 and M6 require.
 - **`ADVERSARY_COLUMN` is a cache of a derivation, not a hand-picked pair.** `the_derived_placement_is_the_locked_one` is `#[ignore]`d because the search costs about fourteen seconds; run it deliberately after anything that touches the terrain, the movement spec or the placement rules.
 - **The whole-region audit runs in the ordinary test set and the placement search does not.** That split came from measurement — `590` ms to sample plus `273` ms to audit, against about `14` seconds to search — and no test asserts a duration. Do not add one.

@@ -1,6 +1,6 @@
 # M7 — Traversable Region
 
-Status: **implementation complete on `feat/m7-traversable-region`; awaiting OWNER PLAYTEST**
+Status: **complete on `feat/m7-traversable-region`; OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS; awaiting independent branch QA**
 Base: `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, which is `main` at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` plus two documentation commits.
 
 M4 proved the region can look like something. M5 proved a person can stand in it. M6 proved a person can fight in it — inside a disc of `5.5` world units, at one scanned clearing. M7 has to prove that the person can *leave that disc*: exist and move continuously through the real procedural region, with streaming anchored on the body, reach an encounter placed in the world, fight, and continue the session.
@@ -30,7 +30,7 @@ The accepted scope has six items:
 | M7B | canonical voxel-water predicate, `TerrainWalkability`, TRAVERSE-001, reachability audit, named route, route signature, runtime route proof, enemy placement | complete |
 | M7C | playable traversal client: `VELDWAKE_ENCOUNTER=traverse`, body-anchored streaming, dormancy reporting, outcome policies | complete |
 | M7D | measurement and visual/motion QA on the audited host | complete |
-| M7E | documentation and exit evidence | complete except the owner playtest |
+| M7E | documentation and exit evidence | complete |
 
 ## Owner decisions
 
@@ -39,7 +39,7 @@ Recorded verbatim in substance, because they are the constraints the milestone a
 | decision | ruling |
 |---|---|
 | milestone name | **M7 — Traversable Region**. "Inhabited Region" was accepted conceptually but rejected as a name: no ecosystem or society inhabits the region yet |
-| owner playtest | **required as an exit gate.** The M6 owner playtest does **not** transfer. No agent can close this gate |
+| owner playtest | **required as an exit gate.** The M6 owner playtest does **not** transfer. No agent can close this gate. **Closed 2026-09-21: OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS**, with the scope of what was and was not observed recorded under *The owner gate* |
 | water | **water blocks traversal.** No swimming, wading, water movement, stamina or boats |
 | `GroundSampler` | **semantics must not change.** It answers "what is the visible solid support surface"; in a water column it returns the bed. That stays correct for feet, IK, pelvis, pose and exact support height |
 | reachability vs route | **two separate things.** The audit measures connectivity and may legitimately discover unreachable regions — that is evidence, not automatically a bug. Separately, one named route must be genuinely completable under the accepted rules |
@@ -330,18 +330,39 @@ Captures opened and inspected, not inferred from counters.
 
 Nothing about terrain art was changed. The captures came first and the assessment is the artefact.
 
-### What the owner still has to judge
+### The owner gate
 
-No agent can close this. The questions, in the owner's words:
+**OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS**, 2026-09-21, by the repository owner.
 
-- Is walking through the world legible?
-- Does the terrain work at eye level?
-- Does the route feel like traversal rather than a debug corridor?
-- Is there dead time? The named route is `63.9` seconds of walking at `3.40` u/s, and **running was deliberately not added** — the design's ninety-second figure was never an approved threshold and the decision is a judgement about feel, not a number.
-- Is the blocked water comprehensible?
-- Does the camera let you navigate? KI-026 says what it does on a descending bank.
-- Does walking up to the enemy and entering combat read as one coherent session?
-- Does continuing after the fight work?
+What the owner judged, and it is the judgement rather than a measurement:
+
+- **Traversal, walking the world: PASS.**
+- **Terrain at eye level: PASS**, sufficient for M7.
+- The experience is enjoyable within the current scope.
+- **The walking duration does not justify running in this milestone.** The named route is `63.9` seconds at `3.40` u/s; the owner did not consider a second speed necessary here. Accepted for now.
+- **Locomotion currently feels somewhat stiff and raw, but is acceptable for the M7 traversal slice.** Recorded as an observation, not a defect, and deliberately not acted on: nothing about walk speed, turn rate, gait, acceleration, animation or the camera was adjusted in response to it. It is evidence for a future traversal or movement refinement.
+- Small imperfections were noticed. The owner did not consider any of them a blocker for this milestone, and they are not described here because the owner did not describe them.
+- Water and the camera did not prevent the owner from enjoying the traversal.
+
+**What the owner did not observe.** The owner explored the region and **did not find the adversary**. The single encounter was therefore never reached, so the owner did not personally see the exploration-to-combat transition, a player victory, or the session continuing past a victory.
+
+Those three remain **technical and QA evidence only**, and this document is careful not to say otherwise:
+
+| claim | strongest evidence | what it is not |
+|---|---|---|
+| exploration → wake → combat | three driven client sessions walked up to the adversary and woke it; `an_adversary_wakes_when_the_player_comes_inside_its_aggro_radius` | not owner-observed |
+| player defeat, then the session continues | two defeats and two resets in one driven client session, which then walked the whole route again | not owner-observed |
+| player victory, then the session continues | `a_defeated_adversary_remains_and_the_session_continues`, headless | not proven in the real client at all, and not owner-observed |
+
+The gate that is closed is the traversal experience. Nothing else was closed by a person.
+
+### Enemy discoverability
+
+The owner explored the region and did not find the only adversary in it.
+
+That is the factual outcome, and the consequence is worth stating exactly once: **one entity placed in an 800 x 800 region, with no affordance of any kind pointing at it, can go unnoticed during free exploration.** M7 proves traversability and deliberately builds no encounter-discovery system — no minimap, compass, quest marker, waypoint, landmark or navigation aid — so this is the expected shape of the slice rather than a defect in it. It is recorded as **KI-029** because nothing else in the documentation says it.
+
+It is not KI-027. That entry is about the region splitting into two components under the movement rules; this is about a single placed entity being hard to come across, and the two have no bearing on each other.
 
 ## Regressions at this HEAD
 
@@ -361,4 +382,4 @@ The workspace has **690 tests**, three of them `#[ignore]`d and run deliberately
 
 ## Accepted limitations
 
-New in M7: **KI-026**, the follow camera on a descending bank. Everything M6 and M5 left open is unchanged, including KI-025 and KI-006/KI-021 — one host, one adapter, no automated image comparison.
+New in M7: **KI-026**, the follow camera on a descending bank; **KI-027**, the region splitting into two components with the session starting in the smaller one; **KI-028**, blocked water with no cue; and **KI-029**, one adversary in an 800 x 800 region with no discovery affordance, which the owner's playtest demonstrated by not finding it. Everything M6 and M5 left open is unchanged, including KI-025 and KI-006/KI-021 — one host, one adapter, no automated image comparison.
