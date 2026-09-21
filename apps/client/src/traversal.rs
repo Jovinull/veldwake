@@ -1632,6 +1632,78 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_indexes_exactly_the_region_its_bounds_describe() {
+        // The region's extent is interpreted twice: `RegionBounds::of` turns it
+        // into a continuous half-open rectangle for the veto, and
+        // `SurfaceGrid::sample` turns the same extent into integer column
+        // indices. They agree by construction and nothing said so, which is the
+        // shape a second, silently drifting notion of "the region" would take.
+        //
+        // Asserted at the corners of both, in both directions: the first and
+        // last column the grid will index must be inside the bounds, and the
+        // column just outside the grid must be outside them.
+        let generator = generator();
+        let grid = SurfaceGrid::sample(&generator);
+        // The grid keeps its own copy of the bounds; a test in this module can
+        // read it directly, which is the point - no accessor exists and none
+        // should, because nothing outside needs it.
+        let bounds = grid.bounds;
+
+        let Some((min_x, min_z)) = grid.column_of(0) else {
+            panic!("a region with no columns is not a region");
+        };
+        let Some((max_x, max_z)) = grid.column_of(grid.len() - 1) else {
+            panic!("the grid cannot address its own last column");
+        };
+        assert_eq!(
+            (
+                grid.columns_x(),
+                grid.columns_z(),
+                grid.columns_x() * grid.columns_z()
+            ),
+            (
+                usize::try_from(max_x - min_x + 1).unwrap_or_default(),
+                usize::try_from(max_z - min_z + 1).unwrap_or_default(),
+                grid.len()
+            ),
+            "the grid's shape and its addressable columns disagree"
+        );
+
+        let inside = |x: i64, z: i64| {
+            let centre = column_centre(x, z);
+            bounds.contains(f64::from(centre.x), f64::from(centre.y))
+        };
+        assert!(
+            inside(min_x, min_z),
+            "the grid's first column is outside the bounds"
+        );
+        assert!(
+            inside(max_x, max_z),
+            "the grid's last column is outside the bounds"
+        );
+        assert!(
+            !inside(min_x - 1, min_z),
+            "the bounds reach a column the grid does not"
+        );
+        assert!(
+            !inside(max_x + 1, max_z),
+            "the bounds reach a column the grid does not"
+        );
+        assert!(
+            !inside(min_x, min_z - 1),
+            "the bounds reach a column the grid does not"
+        );
+        assert!(
+            !inside(max_x, max_z + 1),
+            "the bounds reach a column the grid does not"
+        );
+        assert!(grid.index_of(min_x - 1, min_z).is_none());
+        assert!(grid.index_of(max_x + 1, max_z).is_none());
+        assert!(grid.index_of(min_x, min_z - 1).is_none());
+        assert!(grid.index_of(max_x, max_z + 1).is_none());
+    }
+
+    #[test]
     fn traversal_stops_at_the_region_edge_as_a_half_open_rectangle() {
         let generator = generator();
         let veto = TerrainWalkability::new(&generator);
