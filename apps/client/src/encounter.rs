@@ -373,9 +373,17 @@ impl EncounterScene {
                 scene.runner = Some(runner);
                 scene.frozen = true;
                 match scene.moment_found {
+                    // `tick` is where the moment happened; `frozen_at` is where
+                    // this run actually stops, which is a different number
+                    // whenever an offset is asked for. Reporting only the first
+                    // is how a milestone document came to record that
+                    // `confirmed-hit` and `confirmed-hit+6` both freeze at tick
+                    // 499, which they do not.
                     Some(tick) => info!(
                         moment = moment.name,
                         tick,
+                        offset,
+                        frozen_at = tick.saturating_add(u64::from(offset)),
                         intent = moment.intent,
                         "encounter frozen at a named moment"
                     ),
