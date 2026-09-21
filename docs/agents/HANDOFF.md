@@ -10,7 +10,7 @@ Last updated: 2026-09-21
 
 **The owner did not find the adversary.** So the traversal gate is closed and nothing else is: exploration → wake → combat, player victory and post-victory continuation are technical and QA evidence, never owner judgement. KI-029 records why one entity in an 800 x 800 region with no discovery affordance can be missed.
 
-Everything else is done: 698 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
+Everything else is done: 699 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
 
 Read [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) before touching anything M7 built. Its two durable corrections are **MOVE-001** (movement authority reads exact support surfaces, never the smoothed pelvis) and **TRAVERSE-001** (water is the voxel predicate, not the continuous field relation); both are in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
 
@@ -79,7 +79,7 @@ The shapes worth holding while reading: the domain is authoritative and headless
 
 The pull request follows the convention in [`../../CLAUDE.md`](../../CLAUDE.md) and matches PRs [#1](https://github.com/Jovinull/veldwake/pull/1), [#2](https://github.com/Jovinull/veldwake/pull/2) and [#3](https://github.com/Jovinull/veldwake/pull/3): title `feat: complete M7 traversable region`, and a body of `## Summary`, `## Validation` and `## Explicit non-goals`. The branch is based on `docs/post-m6-handoff` deliberately, so the two post-M6 documentation commits travel into the same pull request.
 
-**What branch QA changed, so a reviewer is not surprised by it:** eight regression tests (three voxel oracles for ground and water, two route properties, an independent placement oracle, two adversarial `MoveBlockReason` cases), one observability fix — `encounter frozen at a named moment` now reports `tick`, `offset` and `frozen_at` instead of the moment's tick alone — and two new entries, KI-030 and KI-031. No feature was added, nothing was tuned, and no accepted limitation was removed.
+**What branch QA changed, so a reviewer is not surprised by it:** nine regression tests (three voxel oracles for ground and water, two route properties, an independent placement oracle, one agreement test between the grid's indices and the region's bounds, two adversarial `MoveBlockReason` cases), one observability fix — `encounter frozen at a named moment` now reports `tick`, `offset` and `frozen_at` instead of the moment's tick alone — and two new entries, KI-030 and KI-031. No feature was added, nothing was tuned, and no accepted limitation was removed.
 
 To play it:
 

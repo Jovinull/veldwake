@@ -93,7 +93,7 @@ The aim assist that followed is bounded by tests rather than by intent: at swing
 
 ## Traversal
 
-The workspace has **698 tests**, three of them `#[ignore]`d and run deliberately: M6's offline listening fixture, M7's whole-region reachability report, and M7's adversary placement re-derivation.
+The workspace has **699 tests**, three of them `#[ignore]`d and run deliberately: M6's offline listening fixture, M7's whole-region reachability report, and M7's adversary placement re-derivation.
 
 M7's tests are organised around the three things that could silently be wrong.
 
@@ -115,4 +115,5 @@ Eight tests, from four questions a reviewer asked that the branch had not.
 - **Is the water veto column-shaped?** It is not, and the test that assumed so failed within seconds. `the_water_veto_disagrees_inside_a_column_only_along_the_waterline` says the true thing instead: `TerrainWalkability` samples continuously, so a column near the drawn waterline disagrees with itself, and every column that does has a neighbour of the opposite verdict. Never inland.
 - **Can the route be walked by something that is not the audit?** `no_step_of_the_route_cuts_a_corner_between_two_blocked_columns` rules out the classic eight-connected squeeze, with a guard against becoming vacuous if the route loses its diagonals. `the_runtime_accepts_every_step_of_the_route_it_walks_continuously` walks every leg in walk-speed increments and puts each one to `check_move` with the production adapters — thousands of continuous samples, none refused.
 - **Is the adversary's clearing verified by anything that did not choose it?** `the_adversary_stands_where_the_drawn_voxels_allow_a_fight` re-derives level, dry and clear from the generated voxels without touching `SurfaceGrid` or the placement predicates, and bounds the walk with a Chebyshev lower bound that needs no graph.
+- **Is "the region" one idea or two?** The extent becomes a continuous half-open rectangle for the veto and integer column indices for the grid, by the same arithmetic done twice. `the_grid_indexes_exactly_the_region_its_bounds_describe` checks both corners in both directions, so the two cannot drift apart unnoticed.
 - **What does `check_move` do with a number that cannot be ordered?** `a_move_is_refused_for_every_shape_of_unorderable_number` covers infinities as well as `NaN`, at both ends of the move and from the ground sampler itself. `the_arena_bounds_the_destination_and_never_the_body_already_outside_it` pins the rule that reads like an oversight, including the half QA guessed wrong: a step that stays outside is refused however much closer it gets.
