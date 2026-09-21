@@ -1,6 +1,6 @@
 # M7 — Traversable Region
 
-Status: **complete on `feat/m7-traversable-region`; OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS; awaiting independent branch QA**
+Status: **complete on `feat/m7-traversable-region`; OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS; independent branch QA complete; ready for a pull request**
 Base: `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, which is `main` at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` plus two documentation commits.
 
 M4 proved the region can look like something. M5 proved a person can stand in it. M6 proved a person can fight in it — inside a disc of `5.5` world units, at one scanned clearing. M7 has to prove that the person can *leave that disc*: exist and move continuously through the real procedural region, with streaming anchored on the body, reach an encounter placed in the world, fight, and continue the session.
@@ -303,6 +303,8 @@ Three driven sessions on the audited host through the rebuilt harness, one clien
 
 That is the harness, not the fight, and M6 already measured why: a driver that reads a position from a five-second report line and swings at where the body **was** aims no better than one that presses keys blind. M6's `combat-probe aim` settled the underlying question by standing a passive body at a bearing and swinging — a swing aimed at the body connects at every range the attack reaches. **The player-victory path is proven headlessly by `a_defeated_adversary_remains_and_the_session_continues`, and is not proven in the real client.** It is named here rather than implied, and it is one of the things the owner playtest will settle.
 
+**This paragraph is history, and branch QA overtook it.** Standing still and striking on the swing's own rhythm, rather than steering from a stale report line, produced `13` swings, `4` hits and a defeated adversary in the real client. See *Independent branch QA* below.
+
 **Session 3 — the water.** Walked due south from the route start, straight at the river the `terrain-probe` locates at `z ~ 16`. The body stopped dead in `z` at `24.8` and travelled west along the shore. The waterline at that `x` is exactly there: `(-97, 24)` has no water voxel and `(-97, 23)` does. **The barrier lands on the drawn waterline, which is TRAVERSE-001 shown rather than asserted.**
 
 ### A finding the run produced: a body held against a barrier slides, it does not block
@@ -364,6 +366,63 @@ That is the factual outcome, and the consequence is worth stating exactly once: 
 
 It is not KI-027. That entry is about the region splitting into two components under the movement rules; this is about a single placed entity being hard to come across, and the two have no bearing on each other.
 
+## Independent branch QA
+
+A separate pass over `main...HEAD`, run as a reviewer rather than as the author: reproduce the numbers instead of trusting them, try to break the claims, and close the one gap the branch knew it had.
+
+### What it closed: player victory and player defeat, in the real client
+
+The branch reached the owner gate with the player-victory path proven only headlessly. It is now proven in a played session, in a closed observe-decide-input-observe loop against the running client, with no `ScriptRunner` anywhere in it.
+
+**Victory.** Settled, walked the route's corners with `adversary_dormant = true` throughout, woke the adversary at `distance = 1.85`–`2.04` with `brain = "recover"`, and fought it standing: `player_swings = 13`, `player_hits = 4`, `player_health = 42`, `adversary_health = 0`, `outcome = "adversary"`, `outcome_settled = true`. Then the part that is the policy rather than the fight: **`resets` was `0` before the defeat hold and `0` after it**, the body stayed at bit-identical `(21.48093032836914, 185.24948120117188)` with `health = 0`, and the player walked `24.8` units away and kept playing. That is `PlayerVictoryPolicy::Remain`, observed.
+
+Eight captures were taken and every one was opened: the route start, the dormant adversary at a distance with a full pip row, the wake at contact range, an active swing with the adversary's pips down, the outcome, the defeated body during the hold, the player alone `24.8` units away, and the body still lying there when the player turns back to look at it.
+
+**Defeat.** A second session walked the same route, woke the adversary and then simply stood there — no swing, no dodge. `defeats_player = 1`, `resets` `0 → 1`, and after the hold the player was **`0.000`** from its configured route start `(-68.5, 49.5)` and the adversary **`0.000`** from the route goal `(14.5, 191.5)`, at full health, `brain = "idle"`, `adversary_dormant = true`, `distance = 164.478`. The session continued: the player walked `9.2` units under its own input afterwards.
+
+The defeat needed a second attempt for a reason worth keeping. The client reports `combat state` every five seconds, and the killing blow, the `2.5` s hold and the reset all fit inside one interval — a loop polling four times a second watched `player_health` go from `6` to `96` and never saw a zero. The second attempt photographed the window continuously instead and read the frames afterwards: `beat-050` at `09:48:58.46` shows the player slumped with an empty pip row and the adversary standing over it, and `beat-052`, two frames later, shows the forest at the route start.
+
+### What it found
+
+**The reset is a streaming discontinuity — KI-030.** The reset moves the anchor `164.5` units in one tick. One captured frame at the reset shows the camera inside the terrain; the frames after it show the route start with a grey horizon where the sky belongs. Measured: `1.4` s after the reset, `load_queued = 1,450` and `mesh_waiting = 859`; the backlog reached zero **`30.2` s** later, with `render` constant at `2,197` throughout. Nothing already drawn was lost and the simulation was correct from the first tick; what recovers slowly is the far field.
+
+**Every column-shaped claim is exact only at column centres — KI-031.** An oracle built from the generated voxels, sharing no code with `SurfaceGrid` or the adapters, found the ground query equal to the top face of the drawn ground in **`5,120` of `5,120`** column centres, exactly — and differing away from the centre on about a fifth of sampled points, by up to **`2` voxels**. The water veto does the same: `TerrainWalkability` samples the field continuously, so a column is not uniformly wet or uniformly dry, and QA's first attempt to assert that it was failed at `(31, 3)` within seconds. The surviving statement is better: the veto disagrees with itself **only in a one-column band along the drawn waterline**, never inland.
+
+This is why the audit is an upper bound, and it is now asserted rather than described. The route is separately re-proved against the production adapters at walk-speed resolution — every one of `7,000`-odd continuous steps put to `check_move`, none refused.
+
+**A log line that reported its input — fixed.** `encounter frozen at a named moment` printed the moment's tick and nothing else, so `moment:confirmed-hit` and `moment:confirmed-hit+6` both reported `tick=499`, and this document recorded that both freeze at `499`. They do not: the second freezes at `505`. The line now reports `tick`, `offset` and `frozen_at`, and the table below is corrected.
+
+### What it tried to break and could not
+
+| attempt | result |
+|---|---|
+| MOVE-001 across every authoritative path | `state.x` and `state.z` are written in exactly two places, both inside `try_move`; every other `state_mut()` in the encounter touches `time` or `facing` or hands the state to `try_move`/`separate`. `base_height` appears nowhere in `movement.rs`. Holds. |
+| `MoveBlockReason` under adversarial input | Infinity and negative infinity are refused on either end of a move, as is a `GroundSampler` answering `NaN` or an infinity at the source or the destination — so no comparison is ever made against a number that cannot be ordered. Two new tests. |
+| the arena rule, read as an oversight | `check_move` bounds the destination and never the source, deliberately; QA's guess that a body outside could therefore walk *towards* the arena was wrong, and the test now records what is true: only a step that reaches inside is accepted. No path in the crate produces a body outside an arena. |
+| corner-cutting on the eight-connected graph | No diagonal step of the route passes between two columns a body may not occupy. Asserted, with a guard against the test becoming vacuous if the route ever loses its diagonals. |
+| the cached grid as a second world | `the_cached_grid_agrees_with_the_runtime_adapters` still holds over six chunks at every column centre, which is exactly the resolution at which KI-031 says agreement is available. |
+| the adversary's placement, judged without shared code | The disc around `(14, 191)` re-derived from generated voxels: dry, exactly level over `149` columns, no trunk, foliage or shrub within `7` columns up to `16` above the floor, and at least `142` eight-connected steps from the route start by a Chebyshev lower bound that needs no graph at all. |
+| the audit's numbers, re-derived without forcing the old ones | Identical: `640,000` columns, `622,023` standable, forward `307,162`, reverse `307,445`, bidirectional `307,144`, one-way `18`, components `[314861, 307144, 16, 2]`, barriers water `2,464` / step-up `44,495` / drop `1,273`, highland reachable `243,333` with the nearest `22` steps away, route `163` columns and `217.09` units, signature `0x08c10aea5280b90f`. |
+| the documented water barrier, reproduced from scratch | Walked due south from the route start into the river. The body came to rest at `z = 24.81836700439453` — the milestone's `24.8` — drifted west along the shore as documented, and reported `slid_moves_player` `0 → 2,607` over a twenty-second push with `blocked_moves_player` staying at `0`. Same behaviour, a different duration, a different number; the number is not the claim. |
+
+### Visual and motion QA
+
+A seventeen-capture tour of the region on one client, one window, foreground asserted, no Alt-Tab, every image opened.
+
+- **The shore, seen along the waterline.** The river is a broad teal channel between grey banks with forest above, and the body stands at the top of the near bank pressed against the drawn edge. TRAVERSE-001 shown rather than asserted.
+- **The route's legs.** Forest at the start, then a long grey stone terrace climbing toward the highland, then a vista out over forest and a lake from high on the climb. The region reads as places rather than as ground.
+- **The adversary from `14.5` units.** Visible, small, and low-contrast against the meadow — legible once you are looking at it, which is KI-029 seen rather than argued.
+- **Motion.** Six frames at about four per second while walking away from the camera show an alternating gait and the camera trailing the body. Locomotion reads as walking; the owner's "stiff and raw but acceptable" is consistent with it and nothing was tuned.
+- **KI-026, measured.** In three of the seventeen captures the body is out of frame, all on ground that falls away behind it. On the meadow the camera sits at `y = 22.574`; with the body held at the waterline it sits at `y = 19.550` while its own `z` is still over the higher meadow. The camera is inside the bank.
+
+### Session hygiene
+
+Across the three driven sessions and the eight regression runs: `0` `ERROR` lines, `0` validation or device-lost messages, `0` panics, and `events_dropped`, `frame_events_dropped`, `vfx_dropped`, `audio_queue_dropped` all `0`. `ticks_dropped` was `1`–`3` per session, which is the catch-up cap behaving as `a_frame_at_the_catch_up_cap_can_lose_a_tick_to_the_remainder` describes. One QA run lost the foreground and was discarded rather than reported, per `EVIDENCE_HARNESS.md`.
+
+### What branch QA did not do
+
+No feature was added, no accepted limitation was removed, and nothing was tuned by taste. The camera was not touched, locomotion was not touched, no discovery affordance was added, and the continuous-versus-column sampling was not "fixed" — doing so would move the M5 and M6 locked signatures and is a decision for a milestone, not for a review.
+
 ## Regressions at this HEAD
 
 | regression | result |
@@ -373,13 +432,13 @@ It is not KI-027. That entry is about the region splitting into two components u
 | M5 character (`CHARACTER=course`) | exit 0, clean; identity `0xb21b87d0a3ce9078`, geometry `0x3ebe8c822f549151`, 16 parts, 1,814 quads, 16 world and 16 shadow draws, 1,280 dynamic bytes — the M5 figures unchanged |
 | M6 `off` | 0 `combat state` lines, 0 `encounter ready`, **0 audio devices opened** |
 | M6 `script` | exit 0, reports, audio open |
-| M6 `moment:confirmed-hit` and `+6` | both freeze at tick `499` |
+| M6 `moment:confirmed-hit` and `+6` | freeze at tick `499` and tick `505`; the notice now reports `tick`, `offset` and `frozen_at` |
 | M6 `armed` | exit 0, reports, audio open |
 
 **Locked signatures.** `combat-probe signature` reports all three M6 values byte-identical: weapon geometry `0x8a6b18edd4a2b879`, weapon identity `0x084bf386500bb0e4`, golden encounter `0x64157522d2535658`. Every M5 signature is unchanged, and the character suite proves it on every run. M6's `OWNER LISTENING: PASS` and `OWNER PLAYTEST: PASS` remain valid: the synth, the action curves, the telegraph, the camera response and the combat rules are untouched.
 
-The workspace has **690 tests**, three of them `#[ignore]`d and run deliberately: the M6 listening fixture, the whole-region reachability report, and the adversary placement re-derivation.
+The workspace has **698 tests**, three of them `#[ignore]`d and run deliberately — all three were run and all three pass: the M6 listening fixture, the whole-region reachability report, and the adversary placement re-derivation. Branch QA added eight: three ground-and-water oracles against generated voxels, two route properties, an independent placement oracle, and two adversarial `MoveBlockReason` cases.
 
 ## Accepted limitations
 
-New in M7: **KI-026**, the follow camera on a descending bank; **KI-027**, the region splitting into two components with the session starting in the smaller one; **KI-028**, blocked water with no cue; and **KI-029**, one adversary in an 800 x 800 region with no discovery affordance, which the owner's playtest demonstrated by not finding it. Everything M6 and M5 left open is unchanged, including KI-025 and KI-006/KI-021 — one host, one adapter, no automated image comparison.
+New in M7: **KI-026**, the follow camera on a descending bank, now measured; **KI-030**, the streaming discontinuity an encounter reset creates; **KI-031**, column-shaped claims being exact only at column centres; **KI-027**, the region splitting into two components with the session starting in the smaller one; **KI-028**, blocked water with no cue; and **KI-029**, one adversary in an 800 x 800 region with no discovery affordance, which the owner's playtest demonstrated by not finding it. Everything M6 and M5 left open is unchanged, including KI-025 and KI-006/KI-021 — one host, one adapter, no automated image comparison.

@@ -233,3 +233,25 @@ M4's settled `depth-stack` pose recorded 204 meshes, 358,619 quads and 65,992,42
 ### The domain running for a whole session
 
 Unchanged from M6: `5.463` µs per tick, `0.656` ms of one core per simulated second, about `10.9` µs per 60 Hz frame. Over the seventy-second walk the clock reported one capped frame and one dropped tick in total.
+
+### Branch QA, re-measured on the same host
+
+Independent runs, 2026-09-21, release, `m4-golden`, golden seed, `1920 x 991` client area. Observations on one host, never targets, and deliberately not forced to match the figures above.
+
+**The audit, again.** `800 x 800 = 640,000` columns sampled in `390` ms and audited in `160` ms, against the `590` ms and `273` ms recorded above. Same machine, same build profile, a different run: the durations move and the *answers* do not. Every reachability number, the route, and `GOLDEN_ROUTE_SIGNATURE = 0x08c10aea5280b90f` came back identical. This is why no test asserts a duration.
+
+**Startup coverage.** `M3C streaming reached idle coverage time_to_idle_ms = 63,032` with `507` frames presented. The seventy-five-second settle every driven session uses is sized from this and has about twelve seconds of margin.
+
+**A whole tour, vsync-bound.** Sixty-three five-second frame reports across a session that walked to the river, was held at the waterline, walked back, climbed the route and approached the adversary: mean frame interval `16.668` ms, minimum `16.658`, median `16.666`, maximum `16.778`, i.e. `60.00` FPS throughout with no report mean straying more than `0.11` ms. At the end of it: `297` GPU-resident chunk meshes, `477,338` quads, `87,839,696` bytes of chunk geometry, `2,197` LOD0 chunks desired and `0` LOD1.
+
+**The discontinuity the rail is not sized for.** An encounter reset moves the streaming anchor `164.5` units in one tick.
+
+| after the reset | `load_queued` | `loading` | `mesh_waiting` | `known_absent` | `render` |
+|---|---|---|---|---|---|
+| `+1.4` s | 1,450 | 1 | 859 | 1,356 | 2,197 |
+| `+10.2` s | 971 | 1 | 427 | 1,703 | 2,197 |
+| `+20.1` s | 429 | 1 | 96 | 2,171 | 2,197 |
+| `+25.7` s | 141 | 1 | 24 | 2,437 | 2,197 |
+| `+30.1` s | 0 | 0 | 0 | 2,579 | 2,197 |
+
+Drained in `30.2` s, sampled at 1 Hz against a report published every five, so the true figure is somewhere in `(25.7, 30.1]` s. `render` never moved: the resident set was not lost, the far field was missing. KI-030. **Nothing was changed in response** — the rail's answer to KI-017 for a *walking* body, measured above, is unaffected by this, and prefetching around a teleport is a milestone's decision.

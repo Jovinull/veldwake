@@ -4,13 +4,13 @@ Last updated: 2026-09-21
 
 ## Current position
 
-**M7 — Traversable Region is complete on `feat/m7-traversable-region` and is waiting on independent branch QA.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.**
+**M7 — Traversable Region is complete on `feat/m7-traversable-region`, independent branch QA has run, and the branch is ready for a pull request.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.**
 
 **OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS**, 2026-09-21. The owner judged walking the world to work, the terrain sufficiently legible at eye level, the experience enjoyable within the current scope, the walking duration not to justify running in this milestone, and locomotion somewhat stiff and raw but acceptable for this slice. Water and the camera did not prevent enjoying the traversal. Small imperfections were noticed and none was judged a blocker.
 
 **The owner did not find the adversary.** So the traversal gate is closed and nothing else is: exploration → wake → combat, player victory and post-victory continuation are technical and QA evidence, never owner judgement. KI-029 records why one entity in an 800 x 800 region with no discovery affordance can be missed.
 
-Everything else is done: 690 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
+Everything else is done: 698 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
 
 Read [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) before touching anything M7 built. Its two durable corrections are **MOVE-001** (movement authority reads exact support surfaces, never the smoothed pelvis) and **TRAVERSE-001** (water is the voxel predicate, not the continuous field relation); both are in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
 
@@ -73,11 +73,13 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M7 needs independent branch QA, then a pull request
+## Continue here — M7 is ready for its pull request
 
-**Do not open a pull request and do not start another milestone.** The owner traversal gate is closed; what comes next is independent branch QA, and the pull request follows that.
+**Do not start another milestone.** The owner traversal gate is closed and independent branch QA is complete. The only thing left on this branch is opening the pull request, which the owner asked to keep as a separate step.
 
-QA should start from the three things this branch already knows are unproven or uncomfortable, rather than rediscovering them: the player-victory path has never been seen in the real client, the owner never reached the encounter at all, and the locomotion note below was deliberately not acted on.
+The pull request follows the convention in [`../../CLAUDE.md`](../../CLAUDE.md) and matches PRs [#1](https://github.com/Jovinull/veldwake/pull/1), [#2](https://github.com/Jovinull/veldwake/pull/2) and [#3](https://github.com/Jovinull/veldwake/pull/3): title `feat: complete M7 traversable region`, and a body of `## Summary`, `## Validation` and `## Explicit non-goals`. The branch is based on `docs/post-m6-handoff` deliberately, so the two post-M6 documentation commits travel into the same pull request.
+
+**What branch QA changed, so a reviewer is not surprised by it:** eight regression tests (three voxel oracles for ground and water, two route properties, an independent placement oracle, two adversarial `MoveBlockReason` cases), one observability fix — `encounter frozen at a named moment` now reports `tick`, `offset` and `frozen_at` instead of the moment's tick alone — and two new entries, KI-030 and KI-031. No feature was added, nothing was tuned, and no accepted limitation was removed.
 
 To play it:
 
@@ -105,7 +107,7 @@ That last line is an observation and **not a work item**. Nothing about walk spe
 | water blocks, on the drawn waterline | a driven session walked into the river and stopped at `z = 24.8`, where `(-97, 24)` has no water voxel and `(-97, 23)` does |
 | the adversary sleeps, then wakes | 10,000 ticks at 200 units leave it bit-identical with no stream draw; a driven session woke it by walking up to it |
 | **player defeat** returns both bodies to their configured starts and the session continues | proven in the real client **twice**, in one session that then walked the whole route again |
-| **player victory** leaves the adversary down and the session going | proven **headlessly only**. Three driven sessions landed zero hits out of twenty-six swings, which is what a driver aiming from a five-second report line measures, not a property of the fight — M6 settled that question with `combat-probe aim`. **This is the one path the owner playtest should exercise deliberately.** |
+| **player victory** leaves the adversary down and the session going | proven **in the real client** by branch QA: `adversary_health = 0`, `outcome = "adversary"`, `outcome_settled = true`, `resets` `0` before and `0` after the defeat hold, the body left at bit-identical coordinates, and the player walking `24.8` units away and continuing. Eight captures opened. Earlier note, kept because it explains the shape of the harness: Three driven sessions landed zero hits out of twenty-six swings, which is what a driver aiming from a five-second report line measures, not a property of the fight — M6 settled that question with `combat-probe aim`. **This is the one path the owner playtest should exercise deliberately.** |
 
 ### What M7 leaves you to build on
 
@@ -195,8 +197,11 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **The owner traversal gate is closed; independent branch QA is not.** Do not open a pull request before it.
-- **The player-victory path has never been seen in the real client, and the owner did not reach the encounter either.** It is proven headlessly only. A driver that reads a position from a five-second report line aims at where the body was, which is what three driven sessions measured; QA should exercise this path deliberately rather than assume it.
+- **Open the pull request; do not start another milestone.** The owner traversal gate is closed and independent branch QA is complete. The owner asked for the pull request to be a separate, deliberate step.
+- **Player victory and player defeat are QA evidence, not owner evidence.** Both are now proven in the real client, in a closed observe-decide-input-observe loop, with captures opened. The owner never reached the encounter. Do not write that the owner validated exploration to combat, a victory, or the session continuing past one.
+- **Evidence about anything shorter than five seconds cannot come from the log.** `combat state` is published on a five-second cadence, so a defeat, its `2.5` s hold and the encounter reset all fit between two reports; a QA loop polling four times a second never saw the health reach zero. Capture continuously and read the frames. The cadence was left alone deliberately.
+- **An encounter reset is a streaming discontinuity** (KI-030). It moves the anchor `164.5` units in one tick, and the far field takes about `30` s to come back — measured at `1,450` queued loads and `859` waiting meshes `1.4` s after the reset, zero by `+30.1` s, with `render` never moving. The simulation is correct from the first tick; only presentation lags. Anything that adds fast travel or a second encounter elsewhere inherits this.
+- **Column-shaped claims about the region are exact only at column centres** (KI-031). `TerrainGround` and `TerrainWalkability` both sample the terrain field continuously; `SurfaceGrid`, the audit and the route are columns. Exact at centres, up to `2` voxels apart away from them, and the water veto disagrees with itself in a one-column band along the waterline. Three tests pin all of it. Do not make either adapter column-quantised to tidy this up — it would move the M5 and M6 locked signatures.
 - **One adversary in an 800 x 800 region can simply be missed** (KI-029). The owner's session is the demonstration. Nothing was added to point at it, and nothing should be without a milestone that asks for discovery.
 - **The owner's locomotion note is not a defect to fix on this branch.** "Somewhat stiff and raw, but acceptable" was recorded and deliberately not acted on; tuning movement here would turn a judgement into an unreviewed gameplay change.
 - **Do not re-lock `GOLDEN_ROUTE_SIGNATURE` to make a test pass.** It covers the world identity, the compiled movement spec, `TRAVERSAL_RULE_VERSION`, both endpoints, every waypoint and every checkpoint, so a changed `max_step_up` moves it even when the path does not. Every re-lock carries OLD/NEW/WHY beside the constant, exactly as M5 and M6 require.
