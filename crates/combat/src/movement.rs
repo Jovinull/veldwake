@@ -978,6 +978,119 @@ mod tests {
         );
     }
 
+    /// A sampler that answers with a number no comparison can order.
+    ///
+    /// Not a hypothetical: a ground adapter reading a field that has gone
+    /// non-finite would hand `check_move` a height whose `>` and `<` are both
+    /// false, and a rule written as "refuse when the rise is too large" would
+    /// then silently accept every step. The guard is there; this is what asks
+    /// whether it still is.
+    struct NonFiniteGround {
+        at_x: f32,
+        value: f64,
+    }
+
+    impl GroundSampler for NonFiniteGround {
+        fn surface(&self, x: f64, _z: f64) -> Option<f64> {
+            if x >= f64::from(self.at_x) {
+                Some(self.value)
+            } else {
+                Some(0.0)
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_is_refused_for_every_shape_of_unorderable_number() {
+        let movement = movement();
+        let flat = FlatGround::at(0.0);
+
+        // Infinity is as non-finite as NaN, on either end of the move.
+        let rules = MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&flat),
+            legality: None,
+        };
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                check_move(&rules, Vec2::ZERO, Vec2::new(bad, 0.0)),
+                Err(MoveBlockReason::NonFinite),
+                "a destination of {bad} was not refused"
+            );
+            assert_eq!(
+                check_move(&rules, Vec2::new(0.0, bad), Vec2::ZERO),
+                Err(MoveBlockReason::NonFinite),
+                "a source of {bad} was not refused"
+            );
+        }
+
+        // And a ground that answers with one, at the destination or under the
+        // body. Either way the answer is a refusal, never an accepted step
+        // over a comparison that cannot be made.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = NonFiniteGround { at_x: 1.0, value };
+            let rules = MoveRules {
+                movement: &movement,
+                arena: None,
+                ground: Some(&broken),
+                legality: None,
+            };
+            assert_eq!(
+                check_move(&rules, Vec2::ZERO, Vec2::new(1.5, 0.0)),
+                Err(MoveBlockReason::NonFinite),
+                "a destination height of {value} was not refused"
+            );
+            assert_eq!(
+                check_move(&rules, Vec2::new(1.5, 0.0), Vec2::ZERO),
+                Err(MoveBlockReason::NonFinite),
+                "a source height of {value} was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arena_bounds_the_destination_and_never_the_body_already_outside_it() {
+        // Deliberate, and worth pinning because it reads like an oversight.
+        // `check_move` asks whether the place a body is going is inside the
+        // arena; it never asks where the body is now. A body that starts or is
+        // knocked outside must be able to walk back in, and a rule that tested
+        // the source would freeze it there for ever.
+        let movement = movement();
+        let arena = arena(2.0);
+        let flat = FlatGround::at(0.0);
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&flat),
+            legality: None,
+        };
+        let outside = Vec2::new(2.4, 0.0);
+        assert!(!arena.contains(outside), "the fixture must start outside");
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(1.9, 0.0)),
+            Ok(()),
+            "a body outside the arena may step back into it"
+        );
+        // The other half of the same rule, and the part that is a real
+        // constraint rather than a kindness: only the destination counts, so a
+        // step that merely moves closer while staying outside is refused just
+        // like a step further out. A body outside an arena is pinned until one
+        // step reaches inside. No path in this crate produces such a body -
+        // `try_move`, `separate` and knockback all go through these rules - so
+        // this is the shape of the rule, written down, not a live hazard.
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(2.3, 0.0)),
+            Err(MoveBlockReason::Arena),
+            "a destination still outside is refused however much closer it is"
+        );
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(2.5, 0.0)),
+            Err(MoveBlockReason::Arena),
+            "and so is one further out"
+        );
+    }
+
     #[test]
     fn every_block_reason_is_reachable_and_the_first_that_applies_is_reported() {
         let movement = movement();

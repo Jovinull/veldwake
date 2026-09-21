@@ -1204,6 +1204,7 @@ mod tests {
     use crate::character::TerrainGround;
     use crate::traversal::TerrainWalkability;
     use glam::Vec2;
+    use std::collections::{HashMap, HashSet};
     use std::time::Instant;
     use veldwake_character::GroundSampler;
     use veldwake_combat::{
@@ -1230,6 +1231,13 @@ mod tests {
     /// channel, both banks, negative coordinates and a chunk seam across the
     /// water.
     const WATER_CHUNKS: [(i32, i32); 6] = [(0, 0), (0, 1), (-1, 0), (3, 0), (-5, -1), (2, 2)];
+
+    /// Chunks the ground-agreement tests walk exhaustively.
+    ///
+    /// Deliberately not [`WATER_CHUNKS`], so the ground oracle is not asking
+    /// the same question about the same terrain twice: meadow, the climb
+    /// towards the highland, and chunks on either side of the origin.
+    const GROUND_CHUNKS: [(i32, i32); 5] = [(0, 0), (-3, 1), (2, -4), (3, 4), (-6, -2)];
 
     #[test]
     fn fnv1a_matches_the_published_vectors() {
@@ -1274,6 +1282,261 @@ mod tests {
             }
         }
         assert!(checked > 6_000, "only {checked} columns were compared");
+    }
+
+    /// The topmost generated ground voxel of every column, for the chunks the
+    /// ground-agreement tests walk.
+    ///
+    /// Built from the voxels themselves rather than from any adapter this
+    /// module already trusts, which is the whole point: it is an oracle, not a
+    /// second opinion. Water is not ground and neither is a tree - the M5
+    /// contract is that `TerrainGround` reads the terrain field and knows
+    /// nothing about vegetation - so only the terrain materials count.
+    fn generated_ground_tops(generator: &TerrainGenerator, chunk_x: i32, chunk_z: i32) -> Vec<i64> {
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+        let mut top = vec![i64::MIN; CHUNK_EDGE * CHUNK_EDGE];
+        // The region is three chunks tall, so a column's ground can be in any
+        // of them.
+        for chunk_y in 0..3_i32 {
+            let Some(chunk) = generator.generate(ChunkCoord::new(chunk_x, chunk_y, chunk_z)) else {
+                continue;
+            };
+            for local_z in 0..CHUNK_EDGE {
+                for local_x in 0..CHUNK_EDGE {
+                    for local_y in 0..CHUNK_EDGE {
+                        let Ok(local) = veldwake_voxel::LocalCoord::new(local_x, local_y, local_z)
+                        else {
+                            continue;
+                        };
+                        let is_ground = matches!(
+                            TerrainMaterial::from_voxel_id(chunk.read_local(local)),
+                            Some(
+                                TerrainMaterial::MeadowGrass
+                                    | TerrainMaterial::HighlandGrass
+                                    | TerrainMaterial::Soil
+                                    | TerrainMaterial::Rock
+                                    | TerrainMaterial::DeepRock
+                                    | TerrainMaterial::Sediment
+                            )
+                        );
+                        if !is_ground {
+                            continue;
+                        }
+                        let world_y =
+                            i64::from(chunk_y) * edge + i64::try_from(local_y).unwrap_or(i64::MAX);
+                        let slot = local_z * CHUNK_EDGE + local_x;
+                        if world_y > top[slot] {
+                            top[slot] = world_y;
+                        }
+                    }
+                }
+            }
+        }
+        top
+    }
+
+    #[test]
+    fn the_ground_query_matches_the_generated_voxels_at_every_column_centre() {
+        // The counterpart to `traversal_water_agrees_with_the_voxels_the_generator_writes`,
+        // for the other half of a column: its floor.
+        //
+        // Everything in this module reasons about columns. `SurfaceGrid` stores
+        // one height per column, the audit walks column centres, and the route
+        // is a list of columns. `TerrainGround`, though, answers a continuous
+        // question: it samples the terrain field wherever it is asked. The two
+        // agree at a column's centre, exactly, and this is the oracle that says
+        // so from the drawn cells rather than from an adapter.
+        let generator = generator();
+        let ground = TerrainGround::new(&generator);
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+        let mut checked = 0_u64;
+        let mut differing = Vec::new();
+
+        for (chunk_x, chunk_z) in GROUND_CHUNKS {
+            let top = generated_ground_tops(&generator, chunk_x, chunk_z);
+            for local_z in 0..CHUNK_EDGE {
+                for local_x in 0..CHUNK_EDGE {
+                    let slot = local_z * CHUNK_EDGE + local_x;
+                    if top[slot] == i64::MIN {
+                        continue;
+                    }
+                    #[expect(clippy::cast_precision_loss, reason = "small world coordinates")]
+                    let face = (top[slot] + 1) as f64;
+                    let x = i64::from(chunk_x) * edge + i64::try_from(local_x).unwrap_or(i64::MAX);
+                    let z = i64::from(chunk_z) * edge + i64::try_from(local_z).unwrap_or(i64::MAX);
+                    let centre = column_centre(x, z);
+                    let Some(height) = ground.surface(f64::from(centre.x), f64::from(centre.y))
+                    else {
+                        continue;
+                    };
+                    checked += 1;
+                    if (height - face).abs() > 1.0e-9 && differing.len() < 8 {
+                        differing.push((x, z, face, height));
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 4_000,
+            "only {checked} column centres were compared"
+        );
+        assert!(
+            differing.is_empty(),
+            "the ground query disagrees with the drawn voxels at a column centre: {differing:?}"
+        );
+    }
+
+    #[test]
+    fn away_from_a_column_centre_the_ground_query_may_differ_but_only_within_two_voxels() {
+        // The honest limit of every column-shaped claim in this module.
+        //
+        // The generator decides a whole column from its centre; `TerrainGround`
+        // samples the field at whatever point it is handed. Away from the
+        // centre they genuinely disagree - on a slope the continuous field has
+        // already moved on while the column has not - and a body walks through
+        // those points, not through centres. That is precisely why the
+        // reachability audit is an upper bound on a column graph and why the
+        // route is then re-proved against the runtime adapters by
+        // `the_runtime_accepts_every_step_of_the_route_it_walks_continuously`.
+        //
+        // Two things are asserted, and the first matters as much as the second:
+        // the disagreement is real, so nobody may simplify it away; and it is
+        // bounded, so a column height is never further from what a body
+        // standing anywhere in that column finds than the step-up and drop
+        // rules already tolerate.
+        let generator = generator();
+        let ground = TerrainGround::new(&generator);
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+        let mut checked = 0_u64;
+        let mut differing = 0_u64;
+        let mut worst = 0.0_f64;
+        let mut worst_at = (0_i64, 0_i64);
+
+        for (chunk_x, chunk_z) in GROUND_CHUNKS {
+            let top = generated_ground_tops(&generator, chunk_x, chunk_z);
+            for local_z in 0..CHUNK_EDGE {
+                for local_x in 0..CHUNK_EDGE {
+                    let slot = local_z * CHUNK_EDGE + local_x;
+                    if top[slot] == i64::MIN {
+                        continue;
+                    }
+                    #[expect(clippy::cast_precision_loss, reason = "small world coordinates")]
+                    let face = (top[slot] + 1) as f64;
+                    let x = i64::from(chunk_x) * edge + i64::try_from(local_x).unwrap_or(i64::MAX);
+                    let z = i64::from(chunk_z) * edge + i64::try_from(local_z).unwrap_or(i64::MAX);
+                    #[expect(clippy::cast_precision_loss, reason = "small world coordinates")]
+                    let (fx, fz) = (x as f64, z as f64);
+                    for (offset_x, offset_z) in
+                        [(0.05, 0.05), (0.95, 0.05), (0.05, 0.95), (0.95, 0.95)]
+                    {
+                        let Some(height) = ground.surface(fx + offset_x, fz + offset_z) else {
+                            continue;
+                        };
+                        checked += 1;
+                        let delta = (height - face).abs();
+                        if delta > 1.0e-9 {
+                            differing += 1;
+                            if delta > worst {
+                                worst = delta;
+                                worst_at = (x, z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 16_000,
+            "only {checked} offset points were compared"
+        );
+        assert!(
+            differing > 0,
+            "the column and the field never disagreed, which would make the audit exact; \
+             if that is now true it is a change worth recording, not a silent one"
+        );
+        assert!(
+            worst <= 2.0,
+            "the ground query is {worst} voxels from its column at {worst_at:?}, \
+             which is further than the step-up and drop rules tolerate"
+        );
+    }
+
+    #[test]
+    fn the_water_veto_disagrees_inside_a_column_only_along_the_waterline() {
+        // The water half of the same honest limit as
+        // `away_from_a_column_centre_the_ground_query_may_differ_but_only_within_two_voxels`.
+        //
+        // `TerrainWalkability` samples the field continuously, exactly as
+        // `TerrainGround` does; it is `SurfaceGrid`, the audit and the route
+        // that are column-shaped. So a column is not uniformly wet or
+        // uniformly dry: near the drawn waterline the quantised predicate
+        // flips inside a single column, and a body crossing that column can be
+        // refused at a point the audit accepted at the centre.
+        //
+        // What this pins is where that is allowed to happen. Every column that
+        // disagrees with itself must be a shore column - one with a neighbour
+        // whose verdict differs - so the fuzziness is a one-column band along
+        // the waterline and never a hole in the middle of the meadow.
+        let generator = generator();
+        let veto = TerrainWalkability::new(&generator);
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+        let centre_verdict = |x: i64, z: i64| {
+            let centre = column_centre(x, z);
+            veto.walkable(f64::from(centre.x), f64::from(centre.y))
+        };
+
+        let mut columns = 0_u64;
+        let mut inconsistent = 0_u64;
+        let mut inland = Vec::new();
+        for (chunk_x, chunk_z) in WATER_CHUNKS {
+            for local_z in 0..edge {
+                for local_x in 0..edge {
+                    let x = i64::from(chunk_x) * edge + local_x;
+                    let z = i64::from(chunk_z) * edge + local_z;
+                    let expected = centre_verdict(x, z);
+                    columns += 1;
+                    #[expect(clippy::cast_precision_loss, reason = "small world coordinates")]
+                    let (fx, fz) = (x as f64, z as f64);
+                    let mut differs = false;
+                    for offset_x in [0.01_f64, 0.25, 0.5, 0.75, 0.99] {
+                        for offset_z in [0.01_f64, 0.25, 0.5, 0.75, 0.99] {
+                            if veto.walkable(fx + offset_x, fz + offset_z) != expected {
+                                differs = true;
+                            }
+                        }
+                    }
+                    if !differs {
+                        continue;
+                    }
+                    inconsistent += 1;
+                    let on_the_shore = [
+                        (1_i64, 0_i64),
+                        (-1, 0),
+                        (0, 1),
+                        (0, -1),
+                        (1, 1),
+                        (1, -1),
+                        (-1, 1),
+                        (-1, -1),
+                    ]
+                    .into_iter()
+                    .any(|(step_x, step_z)| centre_verdict(x + step_x, z + step_z) != expected);
+                    if !on_the_shore && inland.len() < 8 {
+                        inland.push((x, z, expected));
+                    }
+                }
+            }
+        }
+        assert!(columns > 5_000, "only {columns} columns were compared");
+        assert!(
+            inconsistent > 0,
+            "no column disagreed with itself, which would mean the veto had become \
+             column-quantised; that is a change worth recording, not a silent one"
+        );
+        assert!(
+            inland.is_empty(),
+            "a column disagrees with itself away from any waterline: {inland:?}"
+        );
     }
 
     #[test]
@@ -1593,6 +1856,147 @@ mod tests {
     }
 
     #[test]
+    fn the_adversary_stands_where_the_drawn_voxels_allow_a_fight() {
+        // `the_adversary_stands_somewhere_the_region_allows_a_fight` asks the
+        // placement predicates whether they still like their own answer, over
+        // the `SurfaceGrid` the search itself walked. This asks the voxels.
+        //
+        // Nothing here reads `SurfaceGrid`, `is_level`, `is_clear_of_vegetation`
+        // or the reachability report: the chunks are generated, the topmost
+        // ground cell of every column in the disc is read out of them, and the
+        // three placement rules are re-derived from what a viewer would see. If
+        // the grid or a predicate ever drifted, this is the test that would not
+        // drift with it.
+        let generator = generator();
+        let rules = PlacementRules::default();
+        let (centre_x, centre_z) = ADVERSARY_COLUMN;
+        let radius = rules.level_radius.max(rules.clear_radius);
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+
+        let mut top: HashMap<(i64, i64), i64> = HashMap::new();
+        let mut wet: HashSet<(i64, i64)> = HashSet::new();
+        let mut plants: Vec<(i64, i64, i64)> = Vec::new();
+
+        for chunk_z in (centre_z - radius).div_euclid(edge)..=(centre_z + radius).div_euclid(edge) {
+            for chunk_x in
+                (centre_x - radius).div_euclid(edge)..=(centre_x + radius).div_euclid(edge)
+            {
+                // The region is three chunks tall, canopy included.
+                for chunk_y in 0..3_i64 {
+                    let coord = ChunkCoord::new(
+                        i32::try_from(chunk_x).unwrap_or(i32::MAX),
+                        i32::try_from(chunk_y).unwrap_or(i32::MAX),
+                        i32::try_from(chunk_z).unwrap_or(i32::MAX),
+                    );
+                    let Some(chunk) = generator.generate(coord) else {
+                        continue;
+                    };
+                    for local_z in 0..CHUNK_EDGE {
+                        for local_x in 0..CHUNK_EDGE {
+                            for local_y in 0..CHUNK_EDGE {
+                                let Ok(local) =
+                                    veldwake_voxel::LocalCoord::new(local_x, local_y, local_z)
+                                else {
+                                    continue;
+                                };
+                                let Some(material) =
+                                    TerrainMaterial::from_voxel_id(chunk.read_local(local))
+                                else {
+                                    continue;
+                                };
+                                let x = chunk_x * edge + i64::try_from(local_x).unwrap_or(i64::MAX);
+                                let z = chunk_z * edge + i64::try_from(local_z).unwrap_or(i64::MAX);
+                                let y = chunk_y * edge + i64::try_from(local_y).unwrap_or(i64::MAX);
+                                match material {
+                                    TerrainMaterial::MeadowGrass
+                                    | TerrainMaterial::HighlandGrass
+                                    | TerrainMaterial::Soil
+                                    | TerrainMaterial::Rock
+                                    | TerrainMaterial::DeepRock
+                                    | TerrainMaterial::Sediment => {
+                                        let slot = top.entry((x, z)).or_insert(i64::MIN);
+                                        *slot = (*slot).max(y);
+                                    }
+                                    TerrainMaterial::Water => {
+                                        wet.insert((x, z));
+                                    }
+                                    TerrainMaterial::Trunk
+                                    | TerrainMaterial::Foliage
+                                    | TerrainMaterial::FoliageHighlight
+                                    | TerrainMaterial::Shrub => plants.push((x, z, y)),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(&floor) = top.get(&(centre_x, centre_z)) else {
+            panic!("the adversary's own column has no ground voxel at all");
+        };
+        assert!(
+            !wet.contains(&(centre_x, centre_z)),
+            "the adversary stands in water"
+        );
+
+        // Exactly level, out to the level radius, with no water in the disc.
+        let mut uneven = Vec::new();
+        let mut flooded = Vec::new();
+        let mut disc = 0_u32;
+        for step_z in -rules.level_radius..=rules.level_radius {
+            for step_x in -rules.level_radius..=rules.level_radius {
+                if step_x * step_x + step_z * step_z > rules.level_radius * rules.level_radius {
+                    continue;
+                }
+                let column = (centre_x + step_x, centre_z + step_z);
+                disc += 1;
+                if wet.contains(&column) {
+                    flooded.push(column);
+                }
+                match top.get(&column) {
+                    Some(&height) if height == floor => {}
+                    other => uneven.push((column, other.copied())),
+                }
+            }
+        }
+        assert!(disc > 100, "the level disc is only {disc} columns");
+        assert!(uneven.is_empty(), "the fight is on a terrace: {uneven:?}");
+        assert!(
+            flooded.is_empty(),
+            "the fight disc holds water: {flooded:?}"
+        );
+
+        // Nothing growing in the clear disc, from the floor up.
+        let mut growing = Vec::new();
+        for (x, z, y) in plants {
+            let (step_x, step_z) = (x - centre_x, z - centre_z);
+            if step_x * step_x + step_z * step_z > rules.clear_radius * rules.clear_radius {
+                continue;
+            }
+            if y > floor && y <= floor + rules.clear_height && growing.len() < 8 {
+                growing.push((x, z, y));
+            }
+        }
+        assert!(
+            growing.is_empty(),
+            "the adversary stands in vegetation: {growing:?}"
+        );
+
+        // And it is a walk. Chebyshev distance is a lower bound on the number
+        // of eight-connected steps between two columns whatever the terrain
+        // does, so this needs no graph, no audit and no route.
+        let reach = (centre_x - ROUTE_START_X)
+            .abs()
+            .max((centre_z - ROUTE_START_Z).abs());
+        let floor_steps = u32::try_from(reach).unwrap_or(u32::MAX);
+        assert!(
+            floor_steps >= rules.min_steps,
+            "the adversary is at most {floor_steps} steps away, which is not a walk"
+        );
+    }
+
+    #[test]
     fn the_adversary_stands_somewhere_the_region_allows_a_fight() {
         let derived = derive();
         let (x, z) = ADVERSARY_COLUMN;
@@ -1687,6 +2091,101 @@ mod tests {
         assert_eq!(
             measured, GOLDEN_ROUTE_SIGNATURE,
             "the route moved; re-lock deliberately with an OLD/NEW/WHY paragraph"
+        );
+    }
+
+    #[test]
+    fn no_step_of_the_route_cuts_a_corner_between_two_blocked_columns() {
+        // The classic eight-connected grid bug: a diagonal step accepted
+        // between two columns a body may not stand in, so the route squeezes
+        // through the corner of a rock or across the point of a river bend and
+        // the runtime, which moves through the space rather than over the
+        // lattice, cannot follow it.
+        //
+        // `check_move` already tests the whole diagonal as one intent, which is
+        // why this holds; the test exists because "already holds" is exactly
+        // what nobody notices stopping to hold.
+        let derived = derive();
+        let grid = &derived.grid;
+        let mut diagonals = 0_u32;
+        let mut cut = Vec::new();
+        for pair in derived.route.columns.windows(2) {
+            let [(from_x, from_z), (to_x, to_z)] = [pair[0], pair[1]];
+            let (step_x, step_z) = (to_x - from_x, to_z - from_z);
+            if step_x == 0 || step_z == 0 {
+                continue;
+            }
+            diagonals += 1;
+            let side_x = grid.standable(from_x + step_x, from_z);
+            let side_z = grid.standable(from_x, from_z + step_z);
+            if !side_x || !side_z {
+                cut.push(((from_x, from_z), (to_x, to_z), side_x, side_z));
+            }
+        }
+        assert!(
+            diagonals > 0,
+            "a route with no diagonal step would make this test vacuous"
+        );
+        assert!(
+            cut.is_empty(),
+            "the route cuts a corner between columns a body may not occupy: {cut:?}"
+        );
+    }
+
+    #[test]
+    fn the_runtime_accepts_every_step_of_the_route_it_walks_continuously() {
+        // The audit is a column graph and the route is a list of columns, but a
+        // body walks through the points in between, where the ground query and
+        // the column genuinely disagree
+        // (`away_from_a_column_centre_the_ground_query_may_differ_but_only_within_two_voxels`).
+        // So the audit is an upper bound, and this is the test that says the
+        // bound is not loose on the one path the game actually ships: walk each
+        // leg in walk-speed increments and put every single one to
+        // `check_move` with the production adapters, not the cached grid.
+        let derived = derive();
+        let generator = &derived.generator;
+        let ground = TerrainGround::new(generator);
+        let veto = TerrainWalkability::new(generator);
+        let movement = movement();
+        let rules = veldwake_combat::MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&ground),
+            legality: Some(&veto),
+        };
+        let per_tick = movement.speed() / 120.0;
+        let mut samples = 0_u64;
+        let mut refused = Vec::new();
+        for pair in derived.route.waypoints.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let span = (to - from).length();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a leg is a few tens of units at a few hundredths per tick"
+            )]
+            let steps = ((span / per_tick).ceil() as u32).max(1);
+            let mut previous = from;
+            for step in 1..=steps {
+                #[expect(clippy::cast_precision_loss, reason = "step counts are small")]
+                let along = step as f32 / steps as f32;
+                let point = from + (to - from) * along;
+                samples += 1;
+                if let Err(reason) = veldwake_combat::check_move(&rules, previous, point)
+                    && refused.len() < 12
+                {
+                    refused.push((previous, point, reason.name()));
+                }
+                previous = point;
+            }
+        }
+        assert!(
+            samples > 1_000,
+            "only {samples} continuous steps were put to the rules"
+        );
+        assert!(
+            refused.is_empty(),
+            "the runtime refuses a step of the route the audit accepted: {refused:?}"
         );
     }
 
