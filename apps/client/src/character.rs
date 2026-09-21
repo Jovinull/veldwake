@@ -32,6 +32,7 @@ use veldwake_character::{
 use veldwake_procedural::{TerrainField, TerrainGenerator, terrain::TerrainSample};
 
 use crate::camera::Camera;
+use crate::world::RegionBounds;
 
 /// Environment variable selecting what the character does.
 const CHARACTER_VARIABLE: &str = "VELDWAKE_CHARACTER";
@@ -45,24 +46,16 @@ pub struct TerrainGround<'a> {
     field: &'a TerrainField,
     /// Half-open continuous world bounds of the region, so absence stays
     /// absence without discarding the fractional half of an edge voxel.
-    min_x: f64,
-    max_x_exclusive: f64,
-    min_z: f64,
-    max_z_exclusive: f64,
+    bounds: RegionBounds,
 }
 
 impl<'a> TerrainGround<'a> {
     /// Borrows the walkable surface of a generator's region.
     #[must_use]
     pub fn new(generator: &'a TerrainGenerator) -> Self {
-        let extent = generator.identity().config.extent;
-        let edge = f64::from(veldwake_voxel::CHUNK_EDGE as u32);
         Self {
             field: generator.field(),
-            min_x: f64::from(extent.min_chunk_x) * edge,
-            max_x_exclusive: (f64::from(extent.max_chunk_x) + 1.0) * edge,
-            min_z: f64::from(extent.min_chunk_z) * edge,
-            max_z_exclusive: (f64::from(extent.max_chunk_z) + 1.0) * edge,
+            bounds: RegionBounds::of(generator),
         }
     }
 
@@ -74,8 +67,7 @@ impl<'a> TerrainGround<'a> {
 
     #[must_use]
     fn inside(&self, x: f64, z: f64) -> bool {
-        (self.min_x..self.max_x_exclusive).contains(&x)
-            && (self.min_z..self.max_z_exclusive).contains(&z)
+        self.bounds.contains(x, z)
     }
 }
 

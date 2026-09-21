@@ -60,7 +60,8 @@ client ----------------------> commands/intents to authority
 | `1..=63` | M2/M3 diagnostic fixture and corridor | `veldwake-voxel`, `veldwake-streaming` |
 | `64..=127` | terrain (`64..=74` used today) | `procedural::material::FIRST_TERRAIN_ID` |
 | `128..=191` | characters (`128..=137` used today) | `character::material::CHARACTER_ID_FIRST` |
-| `192..=65535` | unallocated | — |
+| `192..=223` | weapons (`192..=197` used today) | `combat::material::FIRST_WEAPON_ID` |
+| `224..=65535` | unallocated | — |
 
 `veldwake-character` proves its own range is disjoint from terrain's, `veldwake-combat` proves the weapon range `192..224` is disjoint from both, and `apps/client` — the one place all four lookups are visible at once — proves the renderer's ordered lookup cannot be ambiguous. A new domain takes the next free range and adds its own round-trip and disjointness tests; it never extends somebody else's enum.
 
@@ -77,6 +78,16 @@ client ----------------------> commands/intents to authority
 The character reaches the screen through one adapter and one shared shader. `apps/client/src/character.rs` is the whole boundary between `veldwake-character` and the world: `TerrainGround` answers `GroundSampler` from a `TerrainField`, `CharacterScene` owns the compiled character and what drives it, and the two diagnostic courses and the portrait stand live there because a headless character crate has no business knowing where a character stands. `apps/client/src/shading.wgsl` holds the scene bindings, the sun term, the shadow lookup and `shade_surface`, and both `world.wgsl` and `character.wgsl` call it. That is a deliberate structural choice rather than a convenience: terrain and character sharing one lighting function is the only way the two cannot drift apart, and a character lit by its own copy of the sun is exactly what makes a figure look pasted onto a scene. Character geometry is static and uploaded once; per frame the client writes one eighty-byte uniform per part and issues one world draw and one shadow draw per part.
 
 The renderer owns only disposable GPU/window state and the diagnostic voxel presentation. Voxel IDs become colors and integer chunk origins become `f32` translations only in the client adapter; CPU mesh vertices stay chunk-local. The voxel and streaming crates contain no `wgpu`, `winit`, `bytemuck`, or client types, and the renderer never sees streaming stamps or generations. The renderer does not own world, simulation, or gameplay authority. M2/M3A justify the voxel boundary; M3B justifies streaming as a second domain crate through real residency, concurrency, headless-test ownership, and a client bridge that is itself tested against an in-memory presentation double. `ChunkPresentation` is a testability seam with two implementors, not a render abstraction. The large conceptual tree remains direction, not a scaffold instruction.
+
+## The traversal boundaries
+
+Three seams M7 added or sharpened, each one deliberate:
+
+- **`GroundSampler` answers where the ground is; `TraversalLegality` answers whether a body may go there.** The first is `veldwake-character`'s and is unchanged, including the part that makes it right: inside a river it reports the bed, which is what feet, IK and the pelvis need. The second is a new two-line trait in `veldwake-combat`, consulted only by `movement::check_move` and only about a move's **destination**, so a body that somehow stands somewhere forbidden can still walk out. Merging them would have turned a contact model into a rules model.
+- **Movement legality is one function with one typed outcome.** `check_move` returns `Result<(), MoveBlockReason>`; `accepts` wraps it; `try_move` and the offline reachability audit both call it. An audit that recomputed "why did that fail" would be a second implementation of the rule, and the first thing to drift.
+- **Where a body starts is placement, not tuning.** `EncounterSetup` carries absolute `starts`, an `Option<ArenaSpec>` and the player-victory policy; `AuthoredTuning` is durations, distances and health. A fight in a disc can be written either way; a walk from one end of a route to the other cannot, because a centre plus two large opposite offsets names a point that is neither body and neither the arena.
+
+`apps/client/src/traversal.rs` is where the world side of all three lives: the water veto over a `TerrainField`, one sampled copy of the region's walkable surface, the reachability audit that walks it with the game's own rule, the derived route and its locked signature, and the adversary's derived placement. It lives in the client for the same reason `arena.rs` does — the combat crate has no business knowing where in a world a fight happens, and the audit is evidence machinery with one consumer. A second consumer, such as a headless server or a generation step that needs reachability, is the trigger to extract it, and doing so would be a move rather than a rewrite.
 
 ## The combat slice's boundaries
 

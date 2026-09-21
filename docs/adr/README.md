@@ -25,3 +25,4 @@ Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence
 | [0005](0005-fixed-step-headless-combat-domain.md) | Fixed-step headless combat domain | Accepted | 2026-09-18 |
 | [0006](0006-action-pose-layer-beside-analytical-locomotion.md) | Action pose layer beside analytical locomotion | Accepted | 2026-09-18 |
 | [0007](0007-procedural-impact-audio-boundary.md) | Procedural impact audio and its device boundary | Accepted | 2026-09-18 |
+| [0008](0008-traversal-legality-separate-from-ground-contact.md) | Traversal legality separate from ground contact | Accepted | 2026-09-20 |

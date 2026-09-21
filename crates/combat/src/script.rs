@@ -525,7 +525,7 @@ mod tests {
         ScriptRunner, ScriptTrigger, at_moment, moment,
     };
     use crate::combatant::{Action, Side};
-    use crate::encounter::Encounter;
+    use crate::encounter::{Encounter, WorldContact};
     use crate::event::{CombatEvent, StepEvents};
     use crate::fixture;
     use glam::Vec2;
@@ -567,7 +567,7 @@ mod tests {
         let mut found = None;
         for _ in 0..fixture::GOLDEN_RUN_TICKS {
             let intent = runner.next_intent(&encounter);
-            let events = encounter.step(intent, Some(&ground));
+            let events = encounter.step(intent, WorldContact::ground_only(&ground));
             if runner.finished() {
                 runner.restart();
             }
@@ -794,7 +794,7 @@ mod tests {
             let mut seen = Vec::new();
             for _ in 0..900 {
                 let intent = runner.next_intent(&encounter);
-                let _ = encounter.step(intent, Some(&ground));
+                let _ = encounter.step(intent, WorldContact::ground_only(&ground));
                 seen.push((
                     runner.leg_name(),
                     runner.leg_tick(),
@@ -817,7 +817,7 @@ mod tests {
         let mut seen: Vec<BTreeSet<MomentKind>> = Vec::new();
         for _ in 0..1_500 {
             let intent = runner.next_intent(&fight);
-            let events = fight.step(intent, Some(&ground));
+            let events = fight.step(intent, WorldContact::ground_only(&ground));
             let mut matching = BTreeSet::new();
             for named in NAMED_MOMENTS {
                 if at_moment(named.kind, &fight, &events) {

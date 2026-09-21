@@ -28,15 +28,16 @@ use tracing::{info, warn};
 
 use veldwake_character::GroundSampler;
 use veldwake_combat::{
-    CombatClock, CombatEvent, Encounter, EncounterError, Intent, MAX_EVENTS_PER_TICK,
-    MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks, at_moment, fixture,
-    script::GOLDEN_SCRIPT,
+    AdversaryState, CombatClock, CombatEvent, Encounter, EncounterError, Intent,
+    MAX_EVENTS_PER_TICK, MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks,
+    WorldContact, at_moment, fixture, script::GOLDEN_SCRIPT,
 };
 use veldwake_procedural::TerrainGenerator;
 
 use crate::arena;
 use crate::camera::Camera;
 use crate::input::InputState;
+use crate::traversal;
 
 /// Environment variable selecting what the encounter does.
 const ENCOUNTER_VARIABLE: &str = "VELDWAKE_ENCOUNTER";
@@ -70,6 +71,10 @@ pub enum EncounterMode {
     Armed,
     /// Driven by the reference script, looping, for motion evidence.
     Script,
+    /// **The M7 traversal session.** The player starts at the named route's
+    /// start, the adversary stands dormant at its far end, there is no arena
+    /// disc, water blocks, and the session continues past the fight.
+    Traverse,
     /// Driven by the reference script and then **frozen** at a named moment.
     ///
     /// The only way to capture a hit window: it is a tenth of a second long, so
@@ -111,6 +116,7 @@ impl EncounterMode {
             "" | "off" | "none" => Some(Self::Off),
             "armed" | "play" | "playable" => Some(Self::Armed),
             "script" | "scripted" => Some(Self::Script),
+            "traverse" | "traversal" | "walk" => Some(Self::Traverse),
             other => {
                 let tail = other
                     .strip_prefix("moment:")
@@ -134,6 +140,7 @@ impl EncounterMode {
             Self::Off => "off".to_owned(),
             Self::Armed => "armed".to_owned(),
             Self::Script => "script".to_owned(),
+            Self::Traverse => "traverse".to_owned(),
             Self::Moment(moment, 0) => format!("moment:{}", moment.name),
             Self::Moment(moment, offset) => format!("moment:{}+{offset}", moment.name),
         }
@@ -153,7 +160,18 @@ impl EncounterMode {
     /// Whether the player drives the fight.
     #[must_use]
     pub const fn is_played(self) -> bool {
-        matches!(self, Self::Armed)
+        matches!(self, Self::Armed | Self::Traverse)
+    }
+
+    /// Whether this mode is a walk across the region rather than a duel in a
+    /// clearing.
+    ///
+    /// Two things follow from it and nothing else does: the streaming demand is
+    /// anchored on the body, and a dodge is refused while the adversary is
+    /// dormant.
+    #[must_use]
+    pub const fn is_traversal(self) -> bool {
+        matches!(self, Self::Traverse)
     }
 }
 
@@ -241,6 +259,14 @@ pub struct EncounterScene {
     held: (bool, bool),
     events: FrameEvents,
     ticks: u64,
+    /// Dodge requests refused because the adversary was still dormant.
+    ///
+    /// A dodge outside combat is an explicit M7 non-goal, so the request is
+    /// gated at the intent rather than by a new rule in the domain — the client
+    /// may choose what to ask for and may never write the encounter. Counted
+    /// because a gate that fires on every press, or on none, is a defect either
+    /// way and only the number says which.
+    dodges_suppressed: u32,
 }
 
 impl EncounterScene {
@@ -256,7 +282,7 @@ impl EncounterScene {
         let mut runner = ScriptRunner::new(GOLDEN_SCRIPT, fixture::reach_of(encounter));
         for _ in 0..MOMENT_SEARCH_TICKS {
             let intent = runner.next_intent(encounter);
-            let events = encounter.step(intent, ground);
+            let events = encounter.step(intent, WorldContact::from_ground(ground));
             if at_moment(kind, encounter, &events) {
                 return Some(encounter.tick_index());
             }
@@ -276,7 +302,13 @@ impl EncounterScene {
         generator: &TerrainGenerator,
         ground: Option<&dyn GroundSampler>,
     ) -> Result<Self, EncounterError> {
-        let setup = fixture::setup(arena::centre(), arena::ARENA_RADIUS);
+        // Where the fight is, and under what bounds, is the one thing the mode
+        // changes about the setup.
+        let setup = if mode.is_traversal() {
+            traversal::traversal_setup()
+        } else {
+            fixture::setup(arena::centre(), arena::ARENA_RADIUS)
+        };
         let encounter = Encounter::new(&setup, ground)?;
         let _ = generator;
         let mut scene = Self {
@@ -290,9 +322,10 @@ impl EncounterScene {
             moment_found: None,
             events: FrameEvents::new(),
             ticks: 0,
+            dodges_suppressed: 0,
         };
         match mode {
-            EncounterMode::Off | EncounterMode::Armed => {}
+            EncounterMode::Off | EncounterMode::Armed | EncounterMode::Traverse => {}
             EncounterMode::Script => {
                 scene.encounter.arm();
                 scene.runner = Some(ScriptRunner::new(
@@ -325,7 +358,9 @@ impl EncounterScene {
                 if let Some(tick) = found {
                     for _ in 0..tick.saturating_sub(1) {
                         let intent = runner.next_intent(&scene.encounter);
-                        let _ = scene.encounter.step(intent, ground);
+                        let _ = scene
+                            .encounter
+                            .step(intent, WorldContact::from_ground(ground));
                         scene.ticks += 1;
                         if runner.finished() {
                             runner.restart();
@@ -338,9 +373,17 @@ impl EncounterScene {
                 scene.runner = Some(runner);
                 scene.frozen = true;
                 match scene.moment_found {
+                    // `tick` is where the moment happened; `frozen_at` is where
+                    // this run actually stops, which is a different number
+                    // whenever an offset is asked for. Reporting only the first
+                    // is how a milestone document came to record that
+                    // `confirmed-hit` and `confirmed-hit+6` both freeze at tick
+                    // 499, which they do not.
                     Some(tick) => info!(
                         moment = moment.name,
                         tick,
+                        offset,
+                        frozen_at = tick.saturating_add(u64::from(offset)),
                         intent = moment.intent,
                         "encounter frozen at a named moment"
                     ),
@@ -412,10 +455,31 @@ impl EncounterScene {
         &self.clock
     }
 
+    /// Where the player's body is standing.
+    ///
+    /// One source for everything that follows the body: the third-person
+    /// camera, and in a traversal session the streaming demand anchor.
+    #[must_use]
+    pub fn player_stand_point(&self) -> Vec3 {
+        self.encounter.combatant(Side::Player).stand_point()
+    }
+
     /// The point the camera should follow: the player's stand point.
     #[must_use]
     pub fn camera_target(&self) -> Vec3 {
-        self.encounter.combatant(Side::Player).stand_point()
+        self.player_stand_point()
+    }
+
+    /// Dodge requests refused because the adversary was dormant.
+    #[must_use]
+    pub const fn dodges_suppressed(&self) -> u32 {
+        self.dodges_suppressed
+    }
+
+    /// Whether the adversary is dormant right now.
+    #[must_use]
+    pub fn adversary_is_dormant(&self) -> bool {
+        self.encounter.brain().state() == AdversaryState::Idle
     }
 
     /// Advances the fight by however many whole ticks this frame is worth.
@@ -424,7 +488,7 @@ impl EncounterScene {
         elapsed: Duration,
         input: &mut InputState,
         camera: &Camera,
-        ground: Option<&dyn GroundSampler>,
+        world: WorldContact<'_>,
     ) -> FrameOutcome {
         self.events.clear();
         if self.frozen && self.pending > 0 {
@@ -443,7 +507,7 @@ impl EncounterScene {
                     }
                     None => Intent::player(glam::Vec2::ZERO, false, false),
                 };
-                let events = self.encounter.step(intent, ground);
+                let events = self.encounter.step(intent, world);
                 self.ticks += 1;
                 for event in events.iter() {
                     self.events.push(event);
@@ -491,7 +555,24 @@ impl EncounterScene {
                     let axes = input.movement_axes();
                     let planar =
                         camera.planar_forward() * axes.forward + camera.planar_right() * axes.right;
-                    let intent = Intent::player(planar, latches.0, latches.1);
+                    // **Read inside the loop, never above it.** A frame can run
+                    // four ticks, and the first of them can be the one that
+                    // crosses the aggro radius; the three after it have to see
+                    // the adversary awake. Hoisting this would make a dodge
+                    // depend on how the frames happened to be cut, which is the
+                    // one thing the integer clock exists to prevent.
+                    let dodge = if self.mode.is_traversal() && self.adversary_is_dormant() {
+                        if latches.1 {
+                            // Consumed, not held: a press kept here would fire
+                            // the instant the adversary woke, which is the stuck
+                            // latch the first played M6 run produced.
+                            self.dodges_suppressed = self.dodges_suppressed.saturating_add(1);
+                        }
+                        false
+                    } else {
+                        latches.1
+                    };
+                    let intent = Intent::player(planar, latches.0, dodge);
                     latches = (false, false);
                     // A playable encounter arms itself the moment the player does
                     // something, so the settle is not a fight nobody watched.
@@ -504,7 +585,7 @@ impl EncounterScene {
                     intent
                 }
             };
-            let events = self.encounter.step(intent, ground);
+            let events = self.encounter.step(intent, world);
             self.ticks += 1;
             for event in events.iter() {
                 self.events.push(event);
@@ -528,12 +609,491 @@ impl EncounterScene {
 mod tests {
     use super::{EncounterMode, EncounterScene, FrameEvents, MAX_FRAME_EVENTS};
     use crate::camera::Camera;
-    use crate::input::{CombatAction, InputState};
+    use crate::character::TerrainGround;
+    use crate::input::{CameraAction, CombatAction, InputState};
     use std::time::Duration;
     use veldwake_character::ground::FlatGround;
     use veldwake_combat::MAX_TICKS_PER_FRAME;
-    use veldwake_combat::{CombatEvent, MomentKind, Side};
+    use veldwake_combat::{CombatEvent, MomentKind, Side, WorldContact};
     use veldwake_procedural::TerrainGenerator;
+
+    // -----------------------------------------------------------------------
+    // M7 traversal
+    // -----------------------------------------------------------------------
+
+    /// A camera whose forward axis points along a planar direction, so a test
+    /// can walk a body somewhere specific through the ordinary intent path
+    /// rather than by writing a position.
+    fn camera_facing(direction: glam::Vec2) -> Camera {
+        let yaw = direction.x.atan2(-direction.y);
+        Camera::at(glam::Vec3::ZERO, yaw.to_degrees(), 0.0)
+    }
+
+    /// A traversal scene on the golden region, ready to be driven.
+    fn traversal_scene(generator: &TerrainGenerator) -> EncounterScene {
+        let ground = TerrainGround::new(generator);
+        match EncounterScene::new(EncounterMode::Traverse, generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("the traversal encounter did not build: {error}"),
+        }
+    }
+
+    #[test]
+    fn the_traversal_mode_parses_and_names_itself() {
+        for spelling in ["traverse", "traversal", "walk", " TRAVERSE "] {
+            assert_eq!(
+                EncounterMode::parse(spelling),
+                Some(EncounterMode::Traverse),
+                "{spelling} did not select traversal"
+            );
+        }
+        assert_eq!(EncounterMode::Traverse.name(), "traverse");
+        assert!(EncounterMode::Traverse.is_traversal());
+        assert!(EncounterMode::Traverse.is_played());
+        assert!(EncounterMode::Traverse.follows_the_player());
+        assert!(!EncounterMode::Traverse.is_off());
+        // And no other mode claims to be one.
+        for mode in [
+            EncounterMode::Off,
+            EncounterMode::Armed,
+            EncounterMode::Script,
+        ] {
+            assert!(!mode.is_traversal(), "{} claimed traversal", mode.name());
+        }
+    }
+
+    #[test]
+    fn a_traversal_session_starts_a_route_apart_with_no_arena() {
+        let setup = crate::traversal::traversal_setup();
+        assert!(
+            setup.arena.is_none(),
+            "a walk across a valley must not be fenced by a disc"
+        );
+        assert_eq!(
+            setup.player_victory,
+            veldwake_combat::PlayerVictoryPolicy::Remain,
+            "a session that resets on victory is not a session"
+        );
+        let separation = (setup.starts[0] - setup.starts[1]).length();
+        assert!(
+            separation > 100.0,
+            "the two bodies start {separation} apart, which is not a traversal"
+        );
+        // And the armed fixture is untouched: M6 keeps its disc and its reset.
+        let armed = veldwake_combat::fixture::golden_setup();
+        assert!(armed.arena.is_some());
+        assert_eq!(
+            armed.player_victory,
+            veldwake_combat::PlayerVictoryPolicy::ResetEncounter
+        );
+    }
+
+    #[test]
+    fn a_traversal_session_places_the_bodies_where_the_route_says() {
+        let generator = TerrainGenerator::golden();
+        let scene = traversal_scene(&generator);
+        let encounter = scene.encounter();
+        let player = encounter.combatant(Side::Player).position();
+        let adversary = encounter.combatant(Side::Adversary).position();
+        let expected_player = crate::traversal::column_centre(
+            crate::traversal::ROUTE_START_X,
+            crate::traversal::ROUTE_START_Z,
+        );
+        let expected_adversary = crate::traversal::column_centre(
+            crate::traversal::ADVERSARY_COLUMN.0,
+            crate::traversal::ADVERSARY_COLUMN.1,
+        );
+        assert!((player - expected_player).length() < 1.0e-3);
+        assert!((adversary - expected_adversary).length() < 1.0e-3);
+        // Far apart means dormant, which is the point of placing them so.
+        assert!(scene.adversary_is_dormant());
+        assert_eq!(scene.dodges_suppressed(), 0);
+    }
+
+    #[test]
+    fn a_dodge_is_refused_while_the_adversary_sleeps_and_allowed_once_it_wakes() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let world = WorldContact::terrain(&ground, &veto);
+        let mut scene = traversal_scene(&generator);
+        let mut input = InputState::default();
+        let camera = Camera::default();
+
+        // Dormant: the press is consumed and refused, not held for later.
+        input.set_combat_action(CombatAction::Dodge, true);
+        input.set_combat_action(CombatAction::Dodge, false);
+        let outcome = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert!(outcome.ticks > 0);
+        assert_eq!(scene.dodges_suppressed(), 1, "the dodge was not refused");
+        assert_eq!(
+            scene.held_input(),
+            (false, false),
+            "a refused press must be consumed, or it fires the moment the enemy wakes"
+        );
+        assert!(
+            !scene
+                .encounter()
+                .combatant(Side::Player)
+                .action()
+                .is_dodging(),
+            "a dodge happened outside combat"
+        );
+
+        // The armed arena mode never gates: the adversary is always awake there
+        // and M6's behaviour is unchanged.
+        let mut armed = match EncounterScene::new(EncounterMode::Armed, &generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let mut input = InputState::default();
+        input.set_combat_action(CombatAction::Dodge, true);
+        input.set_combat_action(CombatAction::Dodge, false);
+        let _ = armed.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert_eq!(
+            armed.dodges_suppressed(),
+            0,
+            "the arena mode must not gate anything"
+        );
+        assert!(
+            armed
+                .encounter()
+                .combatant(Side::Player)
+                .action()
+                .is_dodging(),
+            "the arena dodge stopped working"
+        );
+    }
+
+    #[test]
+    fn the_dodge_gate_is_read_inside_the_tick_loop_not_above_it() {
+        // The defect this test exists to prevent: hoisting `brain.state()` out
+        // of the loop would make a frame that runs four ticks judge all four
+        // against the state before the first. A frame can cross the aggro
+        // radius on its first tick, and the other three have to see the
+        // adversary awake — otherwise a dodge depends on how the frames
+        // happened to be cut, which is exactly what the integer clock exists to
+        // prevent.
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let world = WorldContact::terrain(&ground, &veto);
+        let mut scene = traversal_scene(&generator);
+        let mut input = InputState::default();
+
+        // Walk the player up to the adversary **along the derived route**, in
+        // frames of one tick. A straight line at it does not work and the
+        // reason is the milestone's own: the river is in the way, and water
+        // blocks. The route is the path the rules say exists.
+        let grid = crate::traversal::SurfaceGrid::sample(&generator);
+        let movement = *scene.encounter().tuning().movement();
+        let report = crate::traversal::audit(
+            &grid,
+            &movement,
+            (
+                crate::traversal::ROUTE_START_X,
+                crate::traversal::ROUTE_START_Z,
+            ),
+        );
+        let Some(route) =
+            crate::traversal::derive_route(&grid, &report, crate::traversal::ADVERSARY_COLUMN)
+        else {
+            panic!("the locked adversary column is not reachable");
+        };
+
+        let aggro = veldwake_combat::fixture::adversary().aggro_radius;
+        let goal = scene.encounter().combatant(Side::Adversary).position();
+        let mut waypoint = 1_usize;
+        let mut crossed_in_a_multi_tick_frame = false;
+        let mut suppressed_before = 0;
+        for _ in 0..200_000_u32 {
+            let player = scene.encounter().combatant(Side::Player).position();
+            let distance = (goal - player).length();
+            // The brain decides *before* movement inside a tick, so a frame
+            // that only closes the last hair of the gap wakes nothing: the
+            // decision it makes is the one from before the step. Standing
+            // within about two ticks of the boundary means the wake lands on
+            // the second or third tick of the frame, with the first still
+            // dormant — which is the arrangement this test needs.
+            if distance <= aggro + 0.06 && distance > aggro {
+                // The frame that will cross: four ticks at once, with a dodge
+                // pressed. The first tick is still dormant, so the press is
+                // refused exactly once; the ticks after it must not be able to
+                // refuse anything, because by then the adversary is awake.
+                suppressed_before = scene.dodges_suppressed();
+                input.set_combat_action(CombatAction::Dodge, true);
+                input.set_combat_action(CombatAction::Dodge, false);
+                let camera = camera_facing((goal - player).normalize_or_zero());
+                let outcome =
+                    scene.update(Duration::from_micros(33_400), &mut input, &camera, world);
+                assert_eq!(
+                    outcome.ticks,
+                    veldwake_combat::MAX_TICKS_PER_FRAME,
+                    "the crossing frame did not run the whole catch-up cap"
+                );
+                crossed_in_a_multi_tick_frame = true;
+                break;
+            }
+            let target = match route.waypoints.get(waypoint) {
+                Some(target) => *target,
+                // Past the last waypoint, head straight at the body.
+                None => goal,
+            };
+            if (target - player).length() < 0.35 && waypoint < route.waypoints.len() {
+                waypoint += 1;
+                continue;
+            }
+            let camera = camera_facing((target - player).normalize_or_zero());
+            input.set_action(CameraAction::Forward, true);
+            let _ = scene.update(Duration::from_micros(8_400), &mut input, &camera, world);
+        }
+        assert!(
+            crossed_in_a_multi_tick_frame,
+            "the player never reached the aggro boundary"
+        );
+        assert!(
+            !scene.adversary_is_dormant(),
+            "the four-tick frame did not wake the adversary"
+        );
+        assert_eq!(
+            scene.dodges_suppressed(),
+            suppressed_before + 1,
+            "the press was judged more than once, or judged against a stale brain state"
+        );
+    }
+
+    /// Everything a traversal tick decides, compared bit for bit.
+    ///
+    /// Streaming, the camera and the renderer are deliberately absent: the
+    /// anchor is sampled once per rendered frame, so its sequence is a function
+    /// of the partition and is not authoritative. `DETERMINISM.md` says so.
+    #[derive(Debug, Eq, PartialEq)]
+    struct AuthoritativeState {
+        scene_ticks: u64,
+        tick_index: u64,
+        domain_ticks: u64,
+        player_x: u32,
+        player_z: u32,
+        player_facing: u32,
+        player_phase: u32,
+        player_base_height: u32,
+        player_health: u16,
+        player_action: &'static str,
+        adversary_x: u32,
+        adversary_z: u32,
+        adversary_health: u16,
+        brain: &'static str,
+        decisions: u32,
+    }
+
+    fn snapshot(scene: &EncounterScene) -> AuthoritativeState {
+        let encounter = scene.encounter();
+        let player = encounter.combatant(Side::Player);
+        let adversary = encounter.combatant(Side::Adversary);
+        // Bit patterns, not tolerances: the claim is that two runs are the same
+        // run, and a tolerance would be admitting they are not.
+        AuthoritativeState {
+            scene_ticks: scene.ticks(),
+            tick_index: encounter.tick_index(),
+            domain_ticks: encounter.counters().ticks,
+            player_x: player.position().x.to_bits(),
+            player_z: player.position().y.to_bits(),
+            player_facing: player.state().facing.to_bits(),
+            player_phase: player.state().phase.to_bits(),
+            player_base_height: player.state().base_height.to_bits(),
+            player_health: player.health().current(),
+            player_action: player.action().label(encounter.attack_spec(Side::Player)),
+            adversary_x: adversary.position().x.to_bits(),
+            adversary_z: adversary.position().y.to_bits(),
+            adversary_health: adversary.health().current(),
+            brain: encounter.brain().state().name(),
+            decisions: encounter.brain().decisions(),
+        }
+    }
+
+    /// How an exact partition spreads the nanoseconds that do not divide
+    /// evenly among its frames.
+    ///
+    /// Both are exact — every nanosecond of the interval is delivered — and at
+    /// most frame rates the choice is invisible. At exactly the catch-up cap it
+    /// is not, which is what `a_frame_at_the_catch_up_cap_can_lose_a_tick_to_the_remainder`
+    /// measures.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Remainder {
+        /// The extra nanoseconds go to the first frames, which is what
+        /// `combat-probe partition` does.
+        FrontLoaded,
+        /// Frame `n` ends at `total * n / frames`, so the extra nanoseconds are
+        /// spread through the run.
+        Interleaved,
+    }
+
+    /// Walks a traversal session for an exact total, cut into `rate` frames a
+    /// second, delivering every nanosecond of it.
+    ///
+    /// The remainder is distributed across the frames rather than truncated,
+    /// so the run really is the stated duration. M6's partition probe truncated
+    /// and reported `19.99` seconds as twenty; this does not repeat that.
+    fn walk_partition(
+        generator: &TerrainGenerator,
+        world: WorldContact<'_>,
+        rate: u32,
+        seconds: u64,
+        remainder: Remainder,
+    ) -> EncounterScene {
+        let mut scene = traversal_scene(generator);
+        let mut input = InputState::default();
+        let goal = scene.encounter().combatant(Side::Adversary).position();
+        let player = scene.encounter().combatant(Side::Player).position();
+        let camera = camera_facing((goal - player).normalize_or_zero());
+        input.set_action(CameraAction::Forward, true);
+
+        let total = Duration::from_secs(seconds).as_nanos();
+        let frames = u128::from(rate) * u128::from(seconds);
+        let base = total / frames;
+        let spare = total % frames;
+        let mut delivered = 0_u128;
+        for frame in 1..=frames {
+            let step = match remainder {
+                Remainder::FrontLoaded => base + u128::from(frame <= spare),
+                Remainder::Interleaved => total * frame / frames - delivered,
+            };
+            delivered += step;
+            let Ok(step) = u64::try_from(step) else {
+                panic!("a frame longer than a u64 of nanoseconds");
+            };
+            let _ = scene.update(Duration::from_nanos(step), &mut input, &camera, world);
+        }
+        assert_eq!(
+            delivered, total,
+            "partition {rate} did not deliver {seconds} s"
+        );
+        scene
+    }
+
+    #[test]
+    fn traversal_is_the_same_walk_at_every_rate_the_catch_up_cap_allows() {
+        // "It uses the M6 clock" is an argument. This is the evidence: the same
+        // exact elapsed time and the same input trace, cut into four different
+        // frame partitions, must leave the authoritative state identical.
+        //
+        // Thirty hertz is not in this list and its absence is deliberate: a
+        // thirtieth of a second is exactly `MAX_TICKS_PER_FRAME` ticks, so the
+        // clock's remainder carry periodically asks for a fifth and the cap
+        // discards it. That is a real property of the cap rather than of
+        // traversal, and `a_thirty_hertz_frame_sits_exactly_on_the_catch_up_cap`
+        // is where it is stated.
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let world = WorldContact::terrain(&ground, &veto);
+
+        let mut results = Vec::new();
+        for rate in [50_u32, 60, 144, 240] {
+            let scene = walk_partition(&generator, world, rate, 20, Remainder::Interleaved);
+            assert_eq!(
+                scene.clock().dropped(),
+                0,
+                "partition {rate} hit the catch-up cap, so it is not a clean comparison"
+            );
+            results.push((rate, snapshot(&scene)));
+        }
+        let Some((_, reference)) = results.first() else {
+            panic!("no partitions ran");
+        };
+        assert_eq!(
+            reference.scene_ticks, 2_400,
+            "twenty seconds is 2,400 ticks at 120 Hz"
+        );
+        for (rate, state) in &results {
+            assert_eq!(
+                state, reference,
+                "partition {rate} reached a different authoritative state"
+            );
+        }
+        // And the walk actually happened, so the comparison is not of two
+        // bodies standing still.
+        let start = crate::traversal::column_centre(
+            crate::traversal::ROUTE_START_X,
+            crate::traversal::ROUTE_START_Z,
+        );
+        let walked = (f32::from_bits(reference.player_x) - start.x).abs()
+            + (f32::from_bits(reference.player_z) - start.y).abs();
+        assert!(
+            walked > 30.0,
+            "the partition test compared a body that only moved {walked}"
+        );
+    }
+
+    #[test]
+    fn a_frame_at_the_catch_up_cap_can_lose_a_tick_to_the_remainder() {
+        // A thirtieth of a second is `120 / 30 = 4` ticks and
+        // `MAX_TICKS_PER_FRAME` is `4`, so thirty hertz sits exactly on the cap.
+        // What follows from that is not "thirty hertz drops ticks": it is that
+        // **two exact partitions of the same twenty seconds can disagree**,
+        // because the clock carries a sub-tick remainder and whether it ever
+        // reaches a fifth tick depends on how the spare nanoseconds fall.
+        //
+        // `combat-probe partition` gives the spare nanoseconds to the first
+        // frames and measures zero capped frames at thirty hertz. Spreading the
+        // same nanoseconds through the run instead lets the remainder reach a
+        // whole extra tick, and the cap discards it. Both partitions deliver
+        // exactly twenty seconds.
+        //
+        // This is the failure M6 chose deliberately — the simulation slows
+        // rather than teleporting — stated with a number rather than left to be
+        // discovered in a playtest.
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let world = WorldContact::terrain(&ground, &veto);
+
+        let front = walk_partition(&generator, world, 30, 20, Remainder::FrontLoaded);
+        assert_eq!(
+            front.clock().dropped(),
+            0,
+            "the probe's own partition now drops ticks at thirty hertz"
+        );
+        assert_eq!(front.ticks(), 2_400, "twenty seconds is 2,400 ticks");
+
+        let spread = walk_partition(&generator, world, 30, 20, Remainder::Interleaved);
+        let dropped = spread.clock().dropped();
+        let ran = spread.ticks();
+        assert!(
+            dropped > 0,
+            "the interleaved partition no longer reaches the cap; this test is stale"
+        );
+        assert_eq!(
+            ran + dropped,
+            2_400,
+            "the ticks that ran plus the ticks the cap discarded must be what the time was worth"
+        );
+
+        // And the ticks it did run are the same walk: a clean partition stopped
+        // at the same tick count reaches the same authoritative state, so the
+        // cap slows the simulation without changing it.
+        let mut clean = traversal_scene(&generator);
+        let mut input = InputState::default();
+        let goal = clean.encounter().combatant(Side::Adversary).position();
+        let player = clean.encounter().combatant(Side::Player).position();
+        let camera = camera_facing((goal - player).normalize_or_zero());
+        input.set_action(CameraAction::Forward, true);
+        while clean.ticks() < ran {
+            let _ = clean.update(
+                Duration::from_nanos(1_000_000_000 / 240),
+                &mut input,
+                &camera,
+                world,
+            );
+        }
+        assert_eq!(clean.ticks(), ran, "the clean partition overshot");
+        assert_eq!(clean.clock().dropped(), 0);
+        assert_eq!(
+            snapshot(&clean),
+            snapshot(&spread),
+            "the catch-up cap changed the walk rather than only slowing it"
+        );
+    }
 
     #[test]
     fn a_press_between_two_ticks_is_not_lost() {
@@ -556,7 +1116,7 @@ mod tests {
             Duration::from_micros(100),
             &mut input,
             &camera,
-            Some(&ground),
+            WorldContact::ground_only(&ground),
         );
         assert_eq!(outcome.ticks, 0, "a tenth of a millisecond produced a tick");
         assert_eq!(
@@ -571,7 +1131,7 @@ mod tests {
                 Duration::from_micros(100),
                 &mut input,
                 &camera,
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             assert_eq!(outcome.ticks, 0);
         }
@@ -583,7 +1143,7 @@ mod tests {
             Duration::from_millis(40),
             &mut input,
             &camera,
-            Some(&ground),
+            WorldContact::ground_only(&ground),
         );
         assert!(outcome.ticks > 0, "forty milliseconds produced no tick");
         assert_eq!(
@@ -626,7 +1186,7 @@ mod tests {
             Duration::from_millis(250),
             &mut input,
             &camera,
-            Some(&ground),
+            WorldContact::ground_only(&ground),
         );
         assert_eq!(
             outcome.ticks, MAX_TICKS_PER_FRAME,

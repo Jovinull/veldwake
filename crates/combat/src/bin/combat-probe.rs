@@ -15,7 +15,7 @@ use veldwake_character::descriptor::BodyMetrics;
 use veldwake_character::ground::FlatGround;
 use veldwake_character::skeleton::BoneId;
 use veldwake_combat::combatant::{Intent, SIDES, Side};
-use veldwake_combat::encounter::{Encounter, EncounterSetup};
+use veldwake_combat::encounter::{Encounter, EncounterSetup, WorldContact};
 use veldwake_combat::fixture;
 use veldwake_combat::hit::{Capsule, Segment, Sweep, closest_points, sweep_capsule};
 use veldwake_combat::hurt::narrowing;
@@ -198,7 +198,7 @@ fn bodies() -> Result<(), String> {
     let mut worst_bone = [BoneId::Root; 2];
     for _ in 0..fixture::GOLDEN_RUN_TICKS {
         let intent = runner.next_intent(&fight);
-        let _ = fight.step(intent, Some(&ground));
+        let _ = fight.step(intent, WorldContact::ground_only(&ground));
         if runner.finished() {
             runner.restart();
         }
@@ -237,7 +237,8 @@ fn bodies() -> Result<(), String> {
 }
 
 fn spec() -> Result<(), String> {
-    let tuning = fixture::tuning(Vec2::ZERO, fixture::ARENA_RADIUS)
+    let setup = fixture::golden_setup();
+    let tuning = fixture::tuning()
         .compile()
         .map_err(|error| format!("tuning: {error}"))?;
     println!(
@@ -309,13 +310,26 @@ fn spec() -> Result<(), String> {
         adversary.recover(),
         adversary.reposition()
     );
+    match setup.arena {
+        Some(arena) => println!(
+            "arena centre {:?} radius {:.2}  health player {} adversary {}  defeat hold {} ticks",
+            arena.centre().to_array(),
+            arena.radius(),
+            tuning.player_health(),
+            tuning.adversary_health(),
+            tuning.defeat_hold()
+        ),
+        None => println!(
+            "arena none (bounded by the region)  health player {} adversary {}  defeat hold {} ticks",
+            tuning.player_health(),
+            tuning.adversary_health(),
+            tuning.defeat_hold()
+        ),
+    }
     println!(
-        "arena centre {:?} radius {:.2}  health player {} adversary {}  defeat hold {} ticks",
-        tuning.arena().centre().to_array(),
-        tuning.arena().radius(),
-        tuning.player_health(),
-        tuning.adversary_health(),
-        tuning.defeat_hold()
+        "starts player {:?}  adversary {:?}",
+        setup.starts[Side::Player.index()].to_array(),
+        setup.starts[Side::Adversary.index()].to_array()
     );
     Ok(())
 }
@@ -349,7 +363,10 @@ fn reach() -> Result<(), String> {
     let mut active_reach_high = f32::NEG_INFINITY;
     while tick <= spec.total() {
         let attack = tick == 0;
-        let _ = encounter.step(Intent::player(Vec2::ZERO, attack, false), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, attack, false),
+            WorldContact::ground_only(&ground),
+        );
         let centre = encounter.combatant(Side::Player).position();
         let blade = encounter.blade_world(Side::Player);
         let tip_reach = (Vec2::new(blade.tip.x, blade.tip.z) - centre).length();
@@ -564,8 +581,7 @@ fn swing_at(
     // The two bodies on the `z` axis, and the attacker's start facing turned off
     // the line between them by `error`. Turning it by walking would not do: a
     // body that walks to change where it looks has also changed the range.
-    setup.player_offset = Vec2::new(0.0, range * 0.5);
-    setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+    setup.starts = [Vec2::new(0.0, range * 0.5), Vec2::new(0.0, -range * 0.5)];
     setup.facing_offsets[Side::Player.index()] = error_degrees.to_radians();
     let mut encounter =
         Encounter::new(&setup, Some(ground)).map_err(|error| format!("setup: {error}"))?;
@@ -574,7 +590,10 @@ fn swing_at(
     let mut landed = false;
     // Standing still throughout, so the only thing under test is the arc.
     for tick in 0..spec.total() + 2 {
-        let events = encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(ground));
+        let events = encounter.step(
+            Intent::player(Vec2::ZERO, tick == 0, false),
+            WorldContact::ground_only(ground),
+        );
         landed |= events.iter().any(|event| event.name() == "hit");
     }
     Ok(landed)
@@ -624,7 +643,7 @@ fn contact(side: Option<&str>, arena: Option<&str>) -> Result<(), String> {
             runner.next_intent(&encounter)
         };
         let previous = encounter.blade_world(attacker);
-        let events = encounter.step(intent, Some(&ground));
+        let events = encounter.step(intent, WorldContact::ground_only(&ground));
         let action = encounter.combatant(attacker).action();
         if !action.is_attacking() {
             continue;
@@ -815,7 +834,7 @@ fn partition() -> Result<(), String> {
             let due = clock.advance(frame);
             for _ in 0..due {
                 let intent = runner.next_intent(&encounter);
-                let events = encounter.step(intent, Some(&ground));
+                let events = encounter.step(intent, WorldContact::ground_only(&ground));
                 ticks += 1;
                 bytes.extend_from_slice(&encounter.tick_index().to_le_bytes());
                 for side in SIDES {
@@ -907,7 +926,7 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
     // process start rather than of a combat tick.
     for _ in 0..240 {
         let intent = runner.next_intent(&encounter);
-        let _ = encounter.step(intent, Some(&ground));
+        let _ = encounter.step(intent, WorldContact::ground_only(&ground));
         if runner.finished() {
             runner.restart();
         }
@@ -918,7 +937,7 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
     for _ in 0..ticks {
         let intent = runner.next_intent(&encounter);
         let tick_started = Instant::now();
-        let _ = encounter.step(intent, Some(&ground));
+        let _ = encounter.step(intent, WorldContact::ground_only(&ground));
         worst = worst.max(tick_started.elapsed());
         if runner.finished() {
             runner.restart();
@@ -945,7 +964,7 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
     let sample = 1_200_u64;
     for _ in 0..sample {
         let intent = runner.next_intent(&encounter);
-        let _ = encounter.step(intent, Some(&counting));
+        let _ = encounter.step(intent, WorldContact::ground_only(&counting));
         if runner.finished() {
             runner.restart();
         }
@@ -1029,7 +1048,7 @@ fn trace(every: Option<&str>) -> Result<(), String> {
     let mut previous_brain = encounter.brain().state().name();
     for _ in 0..fixture::GOLDEN_RUN_TICKS {
         let intent = runner.next_intent(&encounter);
-        let events = encounter.step(intent, Some(&ground));
+        let events = encounter.step(intent, WorldContact::ground_only(&ground));
         let brain = encounter.brain().state().name();
         let interesting = !events.is_empty() || brain != previous_brain;
         if interesting || encounter.tick_index() % stride == 0 {

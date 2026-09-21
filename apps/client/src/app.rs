@@ -18,7 +18,7 @@ use winit::{
 };
 
 use veldwake_character::GroundSampler;
-use veldwake_combat::{CombatEvent, SIDES, Side};
+use veldwake_combat::{CombatEvent, SIDES, Side, TraversalLegality, WorldContact};
 
 use crate::{
     arena,
@@ -33,6 +33,7 @@ use crate::{
     renderer::{RenderOutcome, Renderer, VfxFrameWork},
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
     synth::{VoiceKind, VoiceParams},
+    traversal::{self, TerrainWalkability},
     vfx::{MAX_VFX_INSTANCES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
@@ -275,8 +276,21 @@ impl App {
             let adversary = scene.encounter().combatant(Side::Adversary);
             info!(
                 mode = encounter_mode.name(),
-                arena = ?arena::centre().to_array(),
-                arena_radius = arena::ARENA_RADIUS,
+                // A traversal session has no arena: the region and the water
+                // veto are its bounds, and printing a disc it does not have
+                // would be a line that reads plausibly and is false.
+                arena = ?if encounter_mode.is_traversal() {
+                    None
+                } else {
+                    Some(arena::centre().to_array())
+                },
+                arena_radius = ?if encounter_mode.is_traversal() {
+                    None
+                } else {
+                    Some(arena::ARENA_RADIUS)
+                },
+                player_start = ?player.position().to_array(),
+                adversary_start = ?adversary.position().to_array(),
                 tick_hz = veldwake_combat::COMBAT_TICK_HZ,
                 max_ticks_per_frame = veldwake_combat::MAX_TICKS_PER_FRAME,
                 weapon = format_args!("{:#018x}", scene.encounter().weapon().fingerprint()),
@@ -302,6 +316,74 @@ impl App {
                 clearing_open_rise = arena::OPEN_RISE,
                 "encounter ready"
             );
+            // A traversal session says which route it is about to walk, and
+            // proves it is the locked one. Deriving it costs one sample of the
+            // region and one breadth-first walk — under a second in release,
+            // once, against a settle measured in a minute — and it is what ties
+            // a capture or a log to a route rather than to a hope.
+            if encounter_mode.is_traversal() {
+                let grid = traversal::SurfaceGrid::sample(generator);
+                let movement = *scene.encounter().tuning().movement();
+                let report = traversal::audit(
+                    &grid,
+                    &movement,
+                    (traversal::ROUTE_START_X, traversal::ROUTE_START_Z),
+                );
+                match traversal::derive_route(&grid, &report, traversal::ADVERSARY_COLUMN) {
+                    Some(route) => {
+                        let signature = traversal::route_signature(generator, &movement, &route);
+                        let (x_crossings, z_crossings) = route.chunk_crossings();
+                        let veto = TerrainWalkability::new(generator);
+                        let bounds = veto.bounds();
+                        info!(
+                            rule_version = traversal::TRAVERSAL_RULE_VERSION,
+                            start = ?route.start,
+                            goal = ?route.goal,
+                            columns = route.columns.len(),
+                            waypoints = route.waypoints.len(),
+                            length_units = route.length,
+                            walk_seconds = route.duration_at(movement.speed()),
+                            walk_speed = movement.speed(),
+                            chunk_crossings_x = x_crossings,
+                            chunk_crossings_z = z_crossings,
+                            signature = %format_args!("{signature:#018x}"),
+                            locked = %format_args!(
+                                "{:#018x}",
+                                traversal::GOLDEN_ROUTE_SIGNATURE
+                            ),
+                            matches_locked = signature == traversal::GOLDEN_ROUTE_SIGNATURE,
+                            audit_columns_x = grid.columns_x(),
+                            audit_columns_z = grid.columns_z(),
+                            reachable_columns = report.forward,
+                            standable_columns = report.columns_standable,
+                            highland_reachable = report.highland_is_reachable(),
+                            region_x = %format_args!(
+                                "[{}, {})",
+                                bounds.min_x(),
+                                bounds.max_x_exclusive()
+                            ),
+                            region_z = %format_args!(
+                                "[{}, {})",
+                                bounds.min_z(),
+                                bounds.max_z_exclusive()
+                            ),
+                            "traversal route ready"
+                        );
+                        for checkpoint in &route.checkpoints {
+                            info!(
+                                name = checkpoint.name,
+                                column = ?checkpoint.column,
+                                steps = checkpoint.steps,
+                                intent = checkpoint.intent,
+                                "traversal checkpoint"
+                            );
+                        }
+                    }
+                    None => warn!(
+                        "the locked adversary column is not reachable from the route start;                          the session will still run, and that disagreement is the finding"
+                    ),
+                }
+            }
             // A frozen moment with a named pose gets that pose placed against
             // the two bodies, because the fight is wherever it drifted to by the
             // tick the moment happens on. The `defeat` capture is why: aimed at
@@ -511,10 +593,25 @@ impl App {
         else {
             return;
         };
+        // **What the world streams around.** A free-fly session streams around
+        // the camera because the camera is the only thing in it. A traversal
+        // session streams around the body, because that is where the gameplay
+        // is and because `F4` detaching the camera to look about must not make
+        // the world follow the look instead of the player.
+        //
+        // The body's position is the one this frame started with â€” the same
+        // value the camera above was aimed at â€” because the encounter has not
+        // stepped yet. At the walk speed that is `0.057` world units of lag
+        // against a chunk edge of `32`, and the demand centre only moves when a
+        // chunk boundary is crossed.
+        let anchor = match self.encounter.as_ref() {
+            Some(scene) if scene.mode().is_traversal() => scene.player_stand_point(),
+            _ => self.camera.position(),
+        };
         // A rejected anchor keeps the previous demand center; the bridge logs
         // the transition and counts every rejected frame, so no outcome needs
         // handling here.
-        streaming.track_camera(self.camera.position());
+        streaming.track_anchor(anchor);
         let report = match streaming.update(renderer) {
             Ok(report) => report,
             Err(error) => {
@@ -526,8 +623,18 @@ impl App {
         // geometry is never re-uploaded; a frame writes transforms only.
         let ground = self.terrain.as_ref().map(TerrainGround::new);
         let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
+        let walkability = self.terrain.as_ref().map(TerrainWalkability::new);
+        let world = match (
+            sampler,
+            walkability
+                .as_ref()
+                .map(|veto| veto as &dyn TraversalLegality),
+        ) {
+            (Some(ground), Some(legality)) => WorldContact::terrain(ground, legality),
+            (ground, _) => WorldContact::from_ground(ground),
+        };
         if let Some(scene) = self.encounter.as_mut() {
-            let outcome = scene.update(elapsed, &mut self.input, &self.camera, sampler);
+            let outcome = scene.update(elapsed, &mut self.input, &self.camera, world);
             for side in SIDES {
                 let combatant = scene.encounter().combatant(side);
                 renderer.set_actor_pose(
@@ -630,6 +737,8 @@ impl App {
                 let (attack_latched, dodge_latched) = self.input.combat_latches();
                 report_combat(
                     scene,
+                    &self.camera,
+                    self.camera_detached,
                     &self.frame_stats,
                     PresentationReport {
                         shake: &self.shake,
@@ -837,6 +946,8 @@ struct PresentationReport<'a> {
 /// streaming and character reports use, so one capture aligns with one interval.
 fn report_combat(
     scene: &EncounterScene,
+    camera: &Camera,
+    camera_detached: bool,
     stats: &FrameStats,
     presentation: PresentationReport<'_>,
     latches: (bool, bool),
@@ -886,6 +997,28 @@ fn report_combat(
         brain = encounter.brain().state().name(),
         brain_timer = encounter.brain().timer(),
         outcome = encounter.outcome().map(Side::name),
+        // Settled means the hold finished and the policy chose not to reset:
+        // the adversary stays down and the session goes on. It is how a walk
+        // away from a won fight is read from a log rather than from a screen.
+        outcome_settled = encounter.outcome_settled(),
+        // Traversal: where the world is streaming around, whether the enemy is
+        // still asleep, and how many dodges the dormancy gate refused.
+        traversal = scene.mode().is_traversal(),
+        streaming_anchor = if scene.mode().is_traversal() {
+            "body"
+        } else {
+            "camera"
+        },
+        adversary_dormant = scene.adversary_is_dormant(),
+        dodges_suppressed = scene.dodges_suppressed(),
+        // Where the camera actually is. A frame that does not contain the body
+        // is a question the log should be able to answer without anyone
+        // reasoning backwards from a screenshot, which is exactly what the
+        // first shoreline captures forced.
+        camera_x = camera.position().x,
+        camera_y = camera.position().y,
+        camera_z = camera.position().z,
+        camera_detached,
         "combat state"
     );
     info!(
@@ -917,6 +1050,10 @@ fn report_combat(
         separations = counters.separations,
         blocked_moves_player = counters.blocked_moves[0],
         blocked_moves_adversary = counters.blocked_moves[1],
+        // A body held against water or a step slides along it rather than
+        // stopping, so a slide is what a barrier actually looks like in a log.
+        slid_moves_player = counters.slid_moves[0],
+        slid_moves_adversary = counters.slid_moves[1],
         hit_queries = counters.hit_queries,
         sweep_substeps_max = counters.sweep_substeps_max,
         multi_hit_suppressed = counters.multi_hit_suppressed,

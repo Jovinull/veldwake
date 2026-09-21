@@ -1,12 +1,26 @@
 # Current handoff
 
-Last updated: 2026-09-18
+Last updated: 2026-09-21
 
 ## Current position
 
+**M7 — Traversable Region is complete on `feat/m7-traversable-region`, independent branch QA has run, and the branch is ready for a pull request.** The branch is based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, deliberately, so the two post-M6 documentation commits travel into the same pull request. **No pull request has been opened.**
+
+**OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS**, 2026-09-21. The owner judged walking the world to work, the terrain sufficiently legible at eye level, the experience enjoyable within the current scope, the walking duration not to justify running in this milestone, and locomotion somewhat stiff and raw but acceptable for this slice. Water and the camera did not prevent enjoying the traversal. Small imperfections were noticed and none was judged a blocker.
+
+**The owner did not find the adversary.** So the traversal gate is closed and nothing else is: exploration → wake → combat, player victory and post-victory continuation are technical and QA evidence, never owner judgement. KI-029 records why one entity in an 800 x 800 region with no discovery affordance can be missed.
+
+Everything else is done: 699 tests pass, every gate is green, the M3/M4/M5/M6 regressions are clean, and every M5 and M6 locked signature is byte-identical — `combat-probe signature` reports all three M6 values unchanged.
+
+Read [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) before touching anything M7 built. Its two durable corrections are **MOVE-001** (movement authority reads exact support surfaces, never the smoothed pelvis) and **TRAVERSE-001** (water is the voxel predicate, not the continuous field relation); both are in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
+
+**M1 through M6 are all merged into `main`.** M6 — Combat Slice landed through [PR #10](https://github.com/Jovinull/veldwake/pull/10) at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922`, whose parents are `5bebc4fa5195b427216a296fff810a294b7bbd7b` and `296621dcdff9d93e92c3ccca0b21d2c822e418aa`, after independent branch QA, a green pull-request CI run ([run 35416586910](https://github.com/Jovinull/veldwake/actions/runs/35416586910)), and a green post-merge CI run on the merge commit ([run 35417282890](https://github.com/Jovinull/veldwake/actions/runs/35417282890)). The remote branch `feat/m6-combat-slice` is preserved at `296621dcdff9d93e92c3ccca0b21d2c822e418aa`.
+
 **M1, M2, M3, M4, and M5 are all merged into `main`.** M4 — Beautiful Terrain Vertical Slice landed through [PR #8](https://github.com/Jovinull/veldwake/pull/8) at merge commit `abadadff6ad1251e4f291d272577da6121d37540`, after independent branch QA, a green pull-request CI run, and a green post-merge CI run on the merge commit ([run 35281261587](https://github.com/Jovinull/veldwake/actions/runs/35281261587)). M3D landed through PR #7 at `bfc9db1eec085390f9148efbb2a14d61d1fa0d6e`; M3C through PR #6 at `c669929b00427c2f438529b572931400a24b6d3d`.
 
-The repository now renders one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, banded cliffs, forest pockets, and low vegetation — streamed around a free-fly camera and lit by a directional sun with a filtered shadow map, a procedural sky, height-aware fog, and two weather states. It is still an engineering proof: there is no persistence, no character, no collision, and no gameplay.
+The repository renders one deterministic 800 x 96 x 800 voxel region — a verdant highland valley with a meandering river, a pond, banded cliffs, forest pockets, and low vegetation — streamed around the camera and lit by a directional sun with a filtered shadow map, a procedural sky, height-aware fog, and two weather states. Since M5 a generated humanoid stands and walks in it, and since M6 a person can fight in it: a player-controlled combatant and one adversary, a procedurally generated weapon, kinematic movement against the ground rules, hit and hurt queries that decide a swing, damage, stagger, knockback, a third-person follow camera, voxel-chip effects, a diegetic health readout and synthesised impact audio. The free-fly camera is still there and is still the default; the encounter is opt-in behind `VELDWAKE_ENCOUNTER`.
+
+It remains an engineering proof and a vertical slice rather than a game. What does not exist: persistence of any kind, progression, a world beyond this one region, a second enemy, weapon or archetype, inventory, quests or economy, networking, a mod runtime, menus or a UI framework, and any generalized collision or physics simulation — combat collision is two specific queries, not a physics world.
 
 **M5 — Procedural Character is complete and merged.** It landed through [PR #9](https://github.com/Jovinull/veldwake/pull/9) at merge commit `5bebc4fa5195b427216a296fff810a294b7bbd7b`, parents `abadadff6ad1251e4f291d272577da6121d37540` and `3c0406dfafc503aa1dc6d98ab1b92db8c33e0e07`, with a green post-merge CI run on the merge commit ([run 35352715367](https://github.com/Jovinull/veldwake/actions/runs/35352715367)). It added the `veldwake-character` crate, the `CHARACTER_STYLE.md` contract, [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md), the client adapter and render path, and the milestone document with its captures assessed in writing. Final clean D3D12 capture/motion/lifecycle QA accepted KI-018, KI-019, and KI-020 as documented; M3/M4 regressions and M5 lifecycle passed with no validation, device-loss, fatal, or panic marker. The remote branch `feat/m5-procedural-character` is preserved at `3c0406dfafc503aa1dc6d98ab1b92db8c33e0e07`.
 
@@ -30,46 +44,131 @@ Read these before changing anything. They are the whole truth of the project; no
 14. [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md) — the aesthetic direction
 15. [`../audiovisual/STYLE_BIBLE.md`](../audiovisual/STYLE_BIBLE.md) — the versioned, checkable constraints M4 was held to, and what they explicitly do not cover
 16. [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) — the versioned, checkable constraints M5 was held to, and how they relate to the style bible
-17. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone that just closed, its evidence, its measurements and its limitations
-18. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
-19. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation, including the four M5 ones
-20. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
-21. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced and what makes one invalid
-22. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
+17. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
+18. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
+19. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone on the branch: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
+20. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
+21. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
+22. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
+23. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
+24. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
+25. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
+26. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
+27. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
+28. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
+29. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
 
 Then, as needed: [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md), the rest of the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
-Then the code, in this order, because it is the surface M6 has to work against:
+Then the code. Read it in this order, because it is the surface anything after M6 works against:
 
-- `crates/character` — the descriptor, compiler, skeleton, locomotion, ground contact, IK and collision representation;
-- `apps/client/src/character.rs` — the entire boundary between the character and the world: the `GroundSampler` adapter over `TerrainField`, the diagnostic courses, the stand points and the camera poses;
-- `apps/client/src/renderer.rs` and the WGSL in `apps/client/src/` — the world and shadow passes and the one shared lighting function;
-- `apps/client/src/camera.rs` and `apps/client/src/input.rs` — a free-fly camera and keyboard state, with no player-character relationship of any kind;
-- `crates/procedural` and `apps/client/src/world.rs` — how terrain reaches the client.
+- `crates/combat` — the fixed-step headless domain. One call to `Encounter::step` is one tick; every duration is a tick count; the weapon, the two attack specs, the swept hit query, the torso-column hurt volume, the kinematic movement rules, the adversary's state machine and the bounded event type all live here. It has no GPU, window, audio or filesystem types, and it depends on `crates/character` and never the reverse.
+- `crates/character` — the descriptor, compiler, skeleton, distance-driven locomotion, ground contact, IK and collision representation, plus the tick-driven action pose layer M6 added beside it. `pose()` is M5's path and is unchanged; `pose_with()` takes an action overlay.
+- `apps/client/src/encounter.rs` — where the domain meets the frame: the integer tick accumulator, the encounter modes including the frozen named moments, and the bounded per-frame event buffer.
+- `apps/client/src/arena.rs` — where in the world a fight happens, and how a named camera pose is placed against the two bodies rather than against the map.
+- `apps/client/src/input.rs` and `apps/client/src/camera.rs` — **both camera models live here.** With the encounter off the free-fly camera and raw keyboard state are exactly what they were before M6. With an encounter armed, input is latched on the key-down edge and interpreted relative to a third-person follow camera, and `HitShake` moves that camera on a confirmed hit and on nothing else.
+- `apps/client/src/vfx.rs`, `readout.rs`, `synth.rs`, `audio.rs` — presentation that is **driven by `CombatEvent` and never by a guess**: chips and a telegraph accent from one fixed pool, the eight-pip health readout, the pure synth with no I/O, and the one cpal device behind a lock-free queue.
+- `apps/client/src/renderer.rs` and the WGSL beside it — the world, shadow, character and effect passes, and the one shared lighting function terrain and bodies both call. Actors and weapons upload once; a frame writes transforms.
+- `crates/procedural`, `crates/streaming` and `apps/client/src/world.rs` — how terrain is generated, made resident, and reaches the client. Combat touches this only through the `GroundSampler` trait.
 
-## Continue here — M6, waiting on one listen
+The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-**M6 — Combat Slice is implemented on `feat/m6-combat-slice` and is not merged.** Independent branch QA has run and every finding is fixed on the branch; see *Branch QA* in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) for what each one was. The encounter has been played to two victories and nine defeats in a closed loop, the visual and motion passes are done, the M3/M4/M5 regressions are clean, and every gate is green at the branch head.
+## Continue here — M7 is ready for its pull request
 
-All five phases are landed. The domain is `crates/combat`; the client work is in `apps/client/src/{arena,encounter,vfx,readout,synth,audio}.rs` and the changes to `app.rs`, `camera.rs`, `input.rs`, `debug.rs` and `renderer.rs`. Three ADRs were added ([0005](../adr/0005-fixed-step-headless-combat-domain.md), [0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), [0007](../adr/0007-procedural-impact-audio-boundary.md)) and one dependency (`cpal`), audited before it was added.
+**Do not start another milestone.** The owner traversal gate is closed and independent branch QA is complete. The only thing left on this branch is opening the pull request, which the owner asked to keep as a separate step.
+
+The pull request follows the convention in [`../../CLAUDE.md`](../../CLAUDE.md) and matches PRs [#1](https://github.com/Jovinull/veldwake/pull/1), [#2](https://github.com/Jovinull/veldwake/pull/2) and [#3](https://github.com/Jovinull/veldwake/pull/3): title `feat: complete M7 traversable region`, and a body of `## Summary`, `## Validation` and `## Explicit non-goals`. The branch is based on `docs/post-m6-handoff` deliberately, so the two post-M6 documentation commits travel into the same pull request.
+
+**What branch QA changed, so a reviewer is not surprised by it:** nine regression tests (three voxel oracles for ground and water, two route properties, an independent placement oracle, one agreement test between the grid's indices and the region's bounds, two adversarial `MoveBlockReason` cases), one observability fix — `encounter frozen at a named moment` now reports `tick`, `offset` and `frozen_at` instead of the moment's tick alone — and two new entries, KI-030 and KI-031. No feature was added, nothing was tuned, and no accepted limitation was removed.
+
+To play it:
+
+```text
+VELDWAKE_ENCOUNTER=traverse cargo run --release -p veldwake-client
+```
+
+The world takes about a minute to settle. The body starts at the route start `(-69, 49)`; the adversary stands `162` steps away at `(14, 191)`, dormant until you come within `14` world units of it. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F4` detaches the camera. The named route is `217.09` world units and `63.9` seconds of walking.
+
+**The owner's own words, recorded because they are a judgement and not a measurement:**
+
+- traversal and walking the world: **PASS**;
+- terrain at eye level: **PASS**, sufficient for M7;
+- enjoyable within the current scope;
+- the walking duration does not justify running in this milestone — accepted for now;
+- **locomotion currently feels somewhat stiff and raw, but is acceptable for the M7 traversal slice.**
+
+That last line is an observation and **not a work item**. Nothing about walk speed, turn rate, gait, acceleration, animation or the camera was changed in response to it, and nothing should be on this branch. It is evidence for whatever milestone takes movement feel as its subject.
+
+### What is proven and what is not
+
+| claim | evidence |
+|---|---|
+| the route is walkable | `the_route_is_walkable_in_a_real_encounter` drives a real encounter tick by tick over the real adapters; and three driven client sessions walked it |
+| water blocks, on the drawn waterline | a driven session walked into the river and stopped at `z = 24.8`, where `(-97, 24)` has no water voxel and `(-97, 23)` does |
+| the adversary sleeps, then wakes | 10,000 ticks at 200 units leave it bit-identical with no stream draw; a driven session woke it by walking up to it |
+| **player defeat** returns both bodies to their configured starts and the session continues | proven in the real client **twice**, in one session that then walked the whole route again |
+| **player victory** leaves the adversary down and the session going | proven **in the real client** by branch QA: `adversary_health = 0`, `outcome = "adversary"`, `outcome_settled = true`, `resets` `0` before and `0` after the defeat hold, the body left at bit-identical coordinates, and the player walking `24.8` units away and continuing. Eight captures opened. Earlier note, kept because it explains the shape of the harness: Three driven sessions landed zero hits out of twenty-six swings, which is what a driver aiming from a five-second report line measures, not a property of the fight — M6 settled that question with `combat-probe aim`. **This is the one path the owner playtest should exercise deliberately.** |
+
+### What M7 leaves you to build on
+
+Facts, not suggestions:
+
+- **A smoothed presentation value must never decide an authoritative rule.** `base_height` is the filtered pelvis height and movement was comparing steps against it; at `tau = 0.12 s` a body climbing at gradient `g` carries about `0.42 g` of lag, and with `max_step_up` exactly one voxel *any* lag makes a legal step illegal. MOVE-001 exists so this cannot come back.
+- **`movement::check_move` is the only implementation of movement legality**, it returns `MoveBlockReason`, and the reachability audit calls it. Do not write a second copy to answer "why did that fail".
+- **`GroundSampler` is unchanged and must stay unchanged.** It answers where the visible solid surface is, including the river bed inside a river. Whether a body may walk there is `TraversalLegality`, a veto consulted about a move's destination only.
+- **The audit is a topological upper bound.** It evaluates every step from a settled stand. The only proof that a body driven by intent gets somewhere is simulating it.
+- **The region splits in two and the session starts in the smaller half** (KI-027): `307,144` standable columns reachable against a larger component of `314,861`. The highland *is* reachable, 22 steps from the start, and the prediction that it would not be was wrong. The barrier attribution — water `2,464`, step-up `44,495`, max-drop `1,273` — is where any milestone that wants the whole region navigable should start.
+- **A body held against a barrier slides; it does not block.** `slid_moves_*` exists because a log watching only `blocked_moves` reported zero while a body was pinned at a waterline for twenty-three units of shore.
+- **Streaming keeps up with a walking player with a third of the rail spare** — 25–42 loads a second against about 60 — with zero gaps, zero `ready_undrawn` and zero commit failures. KI-017 was measured, not fixed. A run mode roughly doubles that and needs the measurement again.
+- **No culling was added.** A body at eye level draws 291–294 chunk meshes and 471,874–475,660 quads against M4's settled 204 and 358,619, and it is still vsync-bound at 60 FPS. There was no bottleneck to fix.
+
+## Superseded — the pre-M7 continuation point
+
+**M6 is merged and there is no next milestone.** That is deliberate, and it is the first thing to understand before doing anything else.
+
+[`../planning/ROADMAP.md`](../planning/ROADMAP.md) does **not** define an M7. What it defines is a set of *later capability groups*:
+
+> Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
+
+So the next session's job is **not** to pick one and start. It is to read what now exists, weigh it against those groups, and *propose* the next milestone — scope, exit criteria, and what it deliberately will not build — for the owner to accept before any code is written. Do not create a `feat/m7-*` branch, do not name a milestone M7, and do not treat the order of the list above as a decision. It is a list, not a queue.
+
+### What now exists
+
+The repository is a playable vertical slice of one fight in one deterministic region:
+
+- A finite 800 x 96 x 800 voxel region generated from a seed, streamed around the camera, lit with a sun, a shadow map, a procedural sky, fog and two weather states.
+- A humanoid compiled from a descriptor: sixteen rigid voxel parts on a sixteen-bone skeleton, analytical gaits driven by distance travelled, soles solved against the ground with two-bone IK.
+- A fight: two combatants, one procedurally generated sword, an adversary that telegraphs and commits, a swing decided by sweeping the blade against a torso-column volume, damage, stagger, knockback, hitstop, a camera that moves only on a confirmed hit, voxel chips, a diegetic health readout, and synthesised impact audio through one cpal device.
+- Evidence machinery: named camera poses, named frozen combat moments with tick offsets, five headless probes, locked fingerprints and behavioural signatures across five crates.
+
+### What still does not exist
+
+No persistence of any kind — no saves, no world edits, no encounter state that survives a run. No second enemy, weapon, archetype or biome beyond what M5 and M6 build. No inventory, stats, progression, quests or economy. No menu, HUD framework, pause or death screen. No networking, no multiplayer, no mod runtime, no editor. No physics engine and no collision simulation — movement is kinematic against a ground query. No aggregate world simulation, settlements or history. No music, reverb or mixer. No automated visual regression, and one host and one adapter for every visual claim in the repository (KI-006, KI-021).
+
+### What M6 leaves you to build on
+
+Facts, not suggestions:
+
+- **A fixed-step authoritative domain exists and works.** `Encounter::step` takes no duration; the client's accumulator is integer; twenty seconds at 30, 60 and 144 Hz produce the same 2,400 ticks and the same trace. Anything else that needs deterministic simulation should copy this shape rather than invent a second one.
+- **Presentation reads events and never infers.** Damage, stagger, knockback, hitstop, the reaction pose, chips, sound and the camera impulse all come from one `CombatEvent`. That boundary is [ADR-0002](../adr/0002-presentation-independent-authority.md) applied to a fight and it is the reason the audio cross-check comes out exact.
+- **Two animation categories coexist**: distance-driven locomotion and a tick-driven action layer, recorded in [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md), which also records why ADR-0004 was *not* superseded.
+- **Audio has a boundary, not a system.** A pure synth with no I/O, a lock-free ring of atomics, and one thin device adapter ([ADR-0007](../adr/0007-procedural-impact-audio-boundary.md)). There is no mixer and no asset path, and adding either is a decision rather than an extension.
+- **Identifier ranges are declared and proven disjoint**: diagnostics `1`, `2`, `7`; terrain `64..128`; character `128..192`; weapon `192..224`. A new content domain declares its own range and adds its own test to the client, which is the one place all four are visible.
+- **The evidence harness has a written method** in [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md), including how a capture picks the right window. Branch QA caught the previous harness photographing a browser; the traps are recorded there rather than rediscovered.
 
 ### The owner gates, both closed
 
-**OWNER LISTENING: PASS** and **OWNER PLAYTEST: PASS**, 2026-09-19. The owner played the offline fixture — the hit reads as an impact, the whiff is distinguishable from it, and no clipping, click or problematic distortion was noticed — and played the armed encounter in the real client, finding the telegraph, attack, dodge, impact and camera legible enough for M6. Those were the two questions no measurement could answer, and they were left open on purpose until a person answered them.
+**OWNER LISTENING: PASS** and **OWNER PLAYTEST: PASS**, 2026-09-19. The owner played the offline audio fixture — the hit reads as an impact, the whiff is distinguishable from it, no clipping, click or problematic distortion — and played the armed encounter in the real client, finding the telegraph, attack, dodge, impact and camera legible enough for M6, and the slice *simple but functional, and the direction intended*.
 
-The fixture is still there, and is how the same judgement gets remade if the synth changes:
+Those judgements belong to a specific build. A change to the synth, the action curves, the camera or the telegraph invalidates them and needs a fresh one; no test will notice. The fixture is how it gets remade:
 
 ```text
 cargo nextest run -p veldwake-client --run-ignored all the_listening_fixture
 ```
 
-It writes six seconds to `%TEMP%\veldwake-m6-combat-sounds.wav`.
+### What was decided in M6, and where the reasoning lives
 
-A played victory is not outstanding either: KI-024 is closed with two of them. KI-023 is closed too, and its premise turned out to be wrong rather than the dodge — the moment being captured was a dodge that *failed*.
-
-### What was decided, and where the reasoning lives
-
-Every item the previous handoff listed as open now has an answer in code and a written reason. Do not re-open one without reading the reason first:
+Every item the pre-M6 handoff listed as open has an answer in code and a written reason. Do not re-open one without reading the reason first:
 
 | question | answer | where |
 |---|---|---|
@@ -80,7 +179,7 @@ Every item the previous handoff listed as open now has an answer in code and a w
 | hitbox and hurtbox model | a swept blade segment against one torso-column capsule refitted per tick | `crates/combat/src/hurt.rs`, KI-022 |
 | damage model | integer health, one damage figure per spec, no resistances | `crates/combat/src/spec.rs` |
 | stamina | none | milestone non-goals |
-| dodge invulnerability frames | none. A dodge succeeds by geometry or not at all | ADR-0005, KI-023 |
+| dodge invulnerability frames | none. A dodge succeeds by geometry or not at all | ADR-0005, and KI-023 for why that reads as evasion — closed, premise refuted |
 | combat controller | latched edge input, camera-relative movement, facing follows movement | `apps/client/src/input.rs` |
 | physics integration | none, and no Rapier. Kinematic movement against `GroundSampler` | ADR-0005 |
 | animation architecture | a five-action keyed pose layer beside M5's locomotion, no graph | ADR-0006 |
@@ -90,30 +189,30 @@ Every item the previous handoff listed as open now has an answer in code and a w
 | target lock | none | milestone non-goals |
 | ECS | no. Two combatants indexed by `Side`, and that is the entity model | ADR-0005 |
 
-### What M5 leaves you to build on
-
-Facts, not suggestions:
-
-- `veldwake-character` compiles one humanoid from a descriptor and poses it. It is headless, has no GPU or platform types, and does **not** depend on `veldwake-procedural`. A second body — an enemy — is a second descriptor before it is anything else.
-- The one coupling between a character and the world is the two-method `GroundSampler` trait, implemented by the client in eleven lines over `TerrainField`. Anything M6 needs from the world should be examined the same way before a crate reaches for another crate.
-- Locomotion is analytical and driven by distance, not by clips. There is no animation graph and no blend tree. An attack animation is not a clip to drop in; decide deliberately whether it becomes a second analytical layer or the thing that finally justifies an animation system, and record that decision as an ADR rather than in code.
-- Collision is a **representation** — one capsule and one box per part — and nothing consumes it. There is no collision response, no sweep, no query, and no broadphase. M6 is adding all of that from nothing if it needs it.
-- The camera is free-fly and the input module is keyboard state. Neither knows a character exists. There is no character controller and no player relationship at all.
-- The character is drawn through the same shared WGSL lighting function as terrain, with static geometry uploaded once and one small uniform per part per frame. Anything new that draws should be examined against that pattern before inventing a second lighting path.
-- `VELDWAKE_CHARACTER` and `VELDWAKE_POSE` drive the diagnostic scenes; `SETUP.md` lists every value. Those courses and camera poses are fixtures and are the cheapest way to get a reproducible frame of a character.
-
-### What M5 deliberately did not build
-
-Faces beyond two eye voxels, hair or clothing as geometry, equipment, weapons, a second archetype, character LOD, a character controller, player input, gameplay or camera integration, any physics or collision library, ragdoll, cloth, an animation graph, emotion, hand IK, and a save format. Those are later milestones and the merged branch must not be read as having prejudged any of them.
-
 ## Questions before context reset
 
-None. Everything a session starting M6 needs is in the repository: the merged state and its SHAs, the accepted scope of M6 and the explicit list of decisions left open, the crate boundaries and the test a new crate must pass, the invariants, the determinism rules, the measurement method with its host, the visual contracts, the evidence harness, and every accepted limitation as a numbered open issue rather than as prose.
+None. Everything a session with no prior context needs is in the repository: the merged state and its SHAs, what M6 built and what it deliberately did not, the crate boundaries and the test a new crate must pass, the invariants, the determinism rules, the measurement method with its host, the visual contracts, the evidence harness with its traps, and every accepted limitation as a numbered open issue rather than as prose.
 
-Nothing material about the project's real state exists only in a conversation. The M5 implementation decisions that outlive the milestone are in [ADR-0004](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md); the ones that do not are in the milestone document with the capture or the measurement that produced them.
+Nothing material about the project's real state exists only in a conversation. The decisions that outlive M6 are in [ADR-0005](../adr/0005-fixed-step-headless-combat-domain.md), [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) and [ADR-0007](../adr/0007-procedural-impact-audio-boundary.md); the ones that do not are in [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) beside the capture or the measurement that produced them. The branch-QA findings, the closed-loop play, the owner gates and both re-locked signatures are all recorded there with their reasons.
 
 ## Immediate risks
 
+- **Open the pull request; do not start another milestone.** The owner traversal gate is closed and independent branch QA is complete. The owner asked for the pull request to be a separate, deliberate step.
+- **Player victory and player defeat are QA evidence, not owner evidence.** Both are now proven in the real client, in a closed observe-decide-input-observe loop, with captures opened. The owner never reached the encounter. Do not write that the owner validated exploration to combat, a victory, or the session continuing past one.
+- **Evidence about anything shorter than five seconds cannot come from the log.** `combat state` is published on a five-second cadence, so a defeat, its `2.5` s hold and the encounter reset all fit between two reports; a QA loop polling four times a second never saw the health reach zero. Capture continuously and read the frames. The cadence was left alone deliberately.
+- **An encounter reset is a streaming discontinuity** (KI-030). It moves the anchor `164.5` units in one tick, and the far field takes about `30` s to come back — measured at `1,450` queued loads and `859` waiting meshes `1.4` s after the reset, zero by `+30.1` s, with `render` never moving. The simulation is correct from the first tick; only presentation lags. Anything that adds fast travel or a second encounter elsewhere inherits this.
+- **Column-shaped claims about the region are exact only at column centres** (KI-031). `TerrainGround` and `TerrainWalkability` both sample the terrain field continuously; `SurfaceGrid`, the audit and the route are columns. Exact at centres, up to `2` voxels apart away from them, and the water veto disagrees with itself in a one-column band along the waterline. Three tests pin all of it. Do not make either adapter column-quantised to tidy this up — it would move the M5 and M6 locked signatures.
+- **One adversary in an 800 x 800 region can simply be missed** (KI-029). The owner's session is the demonstration. Nothing was added to point at it, and nothing should be without a milestone that asks for discovery.
+- **The owner's locomotion note is not a defect to fix on this branch.** "Somewhat stiff and raw, but acceptable" was recorded and deliberately not acted on; tuning movement here would turn a judgement into an unreviewed gameplay change.
+- **Do not re-lock `GOLDEN_ROUTE_SIGNATURE` to make a test pass.** It covers the world identity, the compiled movement spec, `TRAVERSAL_RULE_VERSION`, both endpoints, every waypoint and every checkpoint, so a changed `max_step_up` moves it even when the path does not. Every re-lock carries OLD/NEW/WHY beside the constant, exactly as M5 and M6 require.
+- **`ADVERSARY_COLUMN` is a cache of a derivation, not a hand-picked pair.** `the_derived_placement_is_the_locked_one` is `#[ignore]`d because the search costs about fourteen seconds; run it deliberately after anything that touches the terrain, the movement spec or the placement rules.
+- **The whole-region audit runs in the ordinary test set and the placement search does not.** That split came from measurement — `590` ms to sample plus `273` ms to audit, against about `14` seconds to search — and no test asserts a duration. Do not add one.
+- **A camera on ground that descends behind the body looks into the bank** (KI-026). A clamp was written, measured at `0.05` world units of correction, and reverted rather than kept as a fix that fixes nothing. Any real fix raises the camera until its sightline clears the near ground, which is an occlusion problem and belongs to a camera milestone.
+- **Whether an exact partition hits the catch-up cap depends on how the spare nanoseconds fall**, not only on the frame rate. `combat-probe partition` front-loads them and measures zero capped frames at thirty hertz; spreading them does not. Both deliver exactly twenty seconds. Do not quote one distribution as a property of the rate.
+- **`CombatCounters` is not part of the encounter trace.** That is why `slid_moves` could be added without moving `GOLDEN_ENCOUNTER_SIGNATURE`. Anything that goes into `run_script`'s per-tick bytes *does* move it.
+- **The traversal dodge gate must stay inside the tick loop.** A frame runs up to four ticks and the first can cross the aggro radius; hoisting the brain-state read would make a dodge depend on how the frames were cut, which is the one thing the integer clock exists to prevent.
+
+- **There is no next milestone, and inventing one is the failure mode.** `ROADMAP.md` lists later capability groups and says explicitly not to manufacture detailed milestones before the evidence exists. Propose, get acceptance, then build.
 - **The owner's judgement is recorded, not re-derivable.** OWNER LISTENING: PASS and OWNER PLAYTEST: PASS are a person's assessment of a specific build, kept beside the measurements rather than folded into them. A change to the synth, the action curves, the camera or the telegraph invalidates that judgement and needs a fresh one; no test will notice.
 - **A swing now aims itself, inside bounds, and that is a gameplay decision rather than a convenience.** `AIM_ASSIST_CONE` is `35°` and `AIM_ASSIST_RANGE` is the reach of the attack. It exists because closed-loop play measured one hit in four from positions the aim table says connect: facing follows movement, so a body that stands still to swing cannot track one that is moving, while the adversary's brain steers continuously. Widening it turns the fight into a lock; removing it makes the fight unwinnable by aiming. Change it only against a new measurement.
 - **A named moment must check what its name claims.** `successful-dodge` asserted only that a dodge was in progress while a blade was live, and the captures taken at it were of a dodge that failed. Any new moment predicate gets the same scrutiny: the name is a claim about the frame.
@@ -125,7 +224,7 @@ Nothing material about the project's real state exists only in a conversation. T
 - **The cpal dependency enables no backend features.** WASAPI is compiled into the Windows backend with no flag. Adding `asio`, `jack`, `pipewire`, `pulseaudio` or `realtime` is a dependency decision with its own audit, not a convenience.
 - **A named moment's camera frames the fight, not the arena.** `arena::frame_the_fight` reinterprets a pose's offset in the fight's own frame, because a fight is wherever it drifted to. A capture that reverts to a fixed world offset will sooner or later photograph one body standing in front of the other.
 - **M5's visual validation is one host and one adapter, and it is merged anyway.** The independent D3D12 exit gate passed on the audited Intel Iris Xe machine and nothing compares captures automatically (KI-021). Visual readability is not reducible to the headless fixtures, so a later reviewer disagreeing with a judgement in the milestone document is a legitimate finding, not a re-litigation.
-- **Do not start M6 by deciding its architecture from a previous conversation.** The list of open decisions above is deliberate. Investigate each against the merged repository.
+- **Do not decide the next milestone's architecture from a previous conversation.** M6's decisions are settled and recorded above; the milestone after it has none yet, and speculation in an old conversation is not one. Investigate against the merged repository and propose.
 - **The character's visual contract is versioned and now locked.** `CHARACTER_STYLE_VERSION`, `CHARACTER_COMPILER_VERSION` and `CHARACTER_SCHEMA_VERSION` fold into a character's identity fingerprint, and seven fixture signatures are checked against the compiler on every test run. Moving a voxel, a bone or a gait constant without bumping the matching version is a failing test, which is the intent. Re-lock deliberately; never re-lock to make a test pass.
 - **Character identifiers are `128..192`.** Terrain is `64..128` and the M2/M3 diagnostics are `1`, `2`, `7`. The client is the only place all three tables are visible and it carries the disjointness test. A new content domain declares its own range there.
 - **`veldwake-character` must not gain a dependency on `veldwake-procedural`.** It duplicates thirty lines of hashing rather than reach for that crate's helpers, deliberately and with the reason written at the duplication. The one thing it needs from the world is `GroundSampler`, which the client implements in eleven lines over `TerrainField`.
@@ -134,7 +233,7 @@ Nothing material about the project's real state exists only in a conversation. T
 - **The diagnostic courses are closed loops and are sampled modulo their own duration.** A course that runs once has always finished before a seventy-five-second settle fires a capture. If a leg's duration or speed changes, the loop must still return to its own start position and facing, and a test says so.
 - Characters are outside the style bible. `audiovisual/STYLE_BIBLE.md` says so explicitly in *What this document does not cover*: characters, creatures, equipment, animation, and particles are later work and must not be invented there. M5 either extends that document deliberately, with the same kind of checkable rules, or writes its own and says how the two relate. Do not silently reuse terrain rules for a character and call it consistent.
 - Terrain material identifiers start at `64` (`procedural::material::FIRST_TERRAIN_ID`) precisely so the M2/M3 diagnostic identifiers `1`, `2`, and `7` stay distinguishable. Any new content domain needs its own declared range and its own round-trip test; do not extend the terrain enum by accident.
-- There is no collision, no physics, no ground contact, and no character controller anywhere in the repository. The client camera is a free-fly camera. A milestone that needs terrain contact is adding all of that from nothing, and the voxel field it would query is `veldwake-procedural`'s height field, not a physics world.
+- **There is still no physics engine and no collision simulation, and that is not the same as no collision.** What exists is specific and narrow: ground contact through the `GroundSampler` trait since M5, kinematic movement rules and two collision queries since M6 — a swept blade against a hurt volume, and a separation that keeps two bodies out of each other. All of it is closed-form against `veldwake-procedural`'s height field. A milestone that needs general collision response, projectiles, stacking or anything resembling rigid-body dynamics is adding that from nothing, and should re-read [ADR-0005](../adr/0005-fixed-step-headless-combat-domain.md) before assuming a physics engine is the answer.
 - The M4 visual captures were not committed. `agents/EVIDENCE_HARNESS.md` records the procedure, the traps, and the validity rules so they can be reproduced; `procedural::region::GOLDEN_POSES` records where they were taken from. A written assessment in the milestone document is the durable artefact, not the PNGs.
 - Do not turn the documented future crate map into empty crates. M3D deliberately added no crate: the cache has one consumer, needs no build isolation, and inverts no dependency, so it lives in `crates/streaming`. Re-argue that from the crate test in `ARCHITECTURE.md` before splitting it out.
 - The disk cache is discardable by definition. Never let a cache failure reach the runtime as data loss, turn I/O or corruption into AIR, or treat a missing file as `KnownAbsent`; absence is a typed entry. A rejected entry falls back to the source even when deletion or publication fails. Preserve the separate `rejected_entries_removed` and `rejected_entry_delete_failures` evidence.

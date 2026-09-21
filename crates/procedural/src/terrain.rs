@@ -162,10 +162,31 @@ impl TerrainSample {
         floor_to_i64(self.height)
     }
 
-    /// Whether standing water covers this column.
+    /// Whether the **continuous** water surface stands above the continuous
+    /// ground here.
+    ///
+    /// This is the field relation, and it is not the same question as "is there
+    /// a water voxel in this column" — see [`Self::has_water_voxel`], which is
+    /// the one anything about the drawn world must ask. The two genuinely
+    /// disagree on a band of columns where both values floor to the same voxel:
+    /// a column with `height = 15.2` under a water surface of `15.8` is
+    /// submerged by this relation and has no water voxel at all.
     #[must_use]
     pub fn is_submerged(&self) -> bool {
         self.water_surface > self.height
+    }
+
+    /// Whether the generator writes at least one water voxel in this column.
+    ///
+    /// **The canonical predicate, and the only one that describes the world a
+    /// viewer sees.** The generator fills a cell with water when
+    /// `world_y > surface_y && world_y <= water_surface_y`, so such a cell
+    /// exists exactly when the water surface floors above the ground surface.
+    /// Terrain generation, traversal and any test about visible water all ask
+    /// this one function rather than writing the comparison again.
+    #[must_use]
+    pub fn has_water_voxel(&self) -> bool {
+        self.water_surface_y() > self.surface_y()
     }
 
     /// Index of the topmost water voxel above this column, whether or not

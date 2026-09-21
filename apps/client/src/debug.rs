@@ -726,7 +726,7 @@ mod tests {
         let mut fake = FakePresentation::default();
         let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
         settle(&mut bridge, &mut fake);
-        bridge.track_camera(Vec3::new(37.0, 5.0, 5.0));
+        bridge.track_anchor(Vec3::new(37.0, 5.0, 5.0));
 
         let mut checked = false;
         for _ in 0..2_000 {

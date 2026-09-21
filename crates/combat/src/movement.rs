@@ -14,8 +14,31 @@
 //! The one rule everything else is built from: a proposed move is accepted only
 //! if its destination is somewhere a body may be. Sliding, knockback, the dodge
 //! and the push-out between two bodies all go through that same acceptance, so
-//! none of them can put a body outside the arena, off the ground, or over a step
+//! none of them can put a body outside its bounds, off the ground, or over a step
 //! it could not have walked up.
+//!
+//! # Exact support height, never the pelvis
+//!
+//! A step is judged between the **exact support surface under the body** and the
+//! **exact support surface at the destination**, both from
+//! [`GroundSampler::surface`]. It is deliberately *not* judged against
+//! [`CharacterState::base_height`], which `veldwake-character` documents as the
+//! **smoothed** height the pelvis follows: the feet snap to the exact visible
+//! block top, the pelvis lags behind it, and leg IK absorbs the difference.
+//!
+//! That filter is presentation. Comparing against it would have made movement
+//! authority depend on how far behind the pelvis happened to be, which is a
+//! function of how long the body had been climbing — so the same step would be
+//! legal standing still and illegal while walking, and the whole rule would be
+//! history dependent for no reason anyone chose. M6 never saw it because its
+//! arena is asserted exactly level; the first terraced walk would have.
+//!
+//! # One rule, one place, one reason
+//!
+//! [`check_move`] is the only implementation of the rule and it returns *why* a
+//! move was refused. [`accepts`] is a wrapper over it, `try_move` uses it, and
+//! an offline reachability audit uses it too — so an audit can attribute a
+//! barrier to a cause without owning a second copy of the conditions.
 
 use glam::Vec2;
 
@@ -23,11 +46,84 @@ use veldwake_character::{CharacterState, GroundSampler};
 
 use crate::spec::{ArenaSpec, MovementSpec};
 
+/// Whether a body may occupy a column at all, for reasons that are not height.
+///
+/// This is a **veto and never a height**. `GroundSampler` answers "what is the
+/// visible solid surface here", including inside a river, where it answers with
+/// the bed — and that stays exactly right for feet, IK and the pelvis. Whether a
+/// body may *walk* there is a different question, and mixing the two would turn
+/// a contact model into a rules model.
+///
+/// It is consulted for the **destination** of a move, not the source: a body
+/// that somehow stands somewhere forbidden must still be able to walk out.
+pub trait TraversalLegality {
+    /// Whether a body may occupy the column containing `(x, z)`.
+    fn walkable(&self, x: f64, z: f64) -> bool;
+}
+
+impl<T: TraversalLegality + ?Sized> TraversalLegality for &T {
+    fn walkable(&self, x: f64, z: f64) -> bool {
+        (**self).walkable(x, z)
+    }
+}
+
+/// Why a proposed move was refused.
+///
+/// Ordered as [`check_move`] tests them, and that order is part of the contract
+/// because an audit reports the *first* reason a move failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MoveBlockReason {
+    /// A position, or a surface height, was not a finite number.
+    NonFinite,
+    /// An arena constraint was present and the destination is outside it.
+    Arena,
+    /// A traversal veto refused the destination column. Water is one.
+    Traversal,
+    /// The source or the destination column has no ground at all — outside a
+    /// finite region, for instance. Absence stays absence.
+    MissingGround,
+    /// The destination stands more than `max_step_up` above the source.
+    StepUp,
+    /// The destination lies more than `max_drop` below the source.
+    Drop,
+}
+
+impl MoveBlockReason {
+    /// A short stable name, for reports and counters.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::NonFinite => "non-finite",
+            Self::Arena => "arena",
+            Self::Traversal => "traversal",
+            Self::MissingGround => "missing-ground",
+            Self::StepUp => "step-up",
+            Self::Drop => "drop",
+        }
+    }
+
+    /// Every reason, in the order [`check_move`] tests them.
+    pub const ALL: [Self; 6] = [
+        Self::NonFinite,
+        Self::Arena,
+        Self::Traversal,
+        Self::MissingGround,
+        Self::StepUp,
+        Self::Drop,
+    ];
+}
+
 /// Everything a move has to satisfy.
+///
+/// `arena` is optional because a fight in a disc and a walk across a region are
+/// the same rules with different bounds. With no arena the bounds are whatever
+/// the ground and the traversal veto say, which for a finite region is the
+/// region itself.
 pub struct MoveRules<'a> {
     pub movement: &'a MovementSpec,
-    pub arena: &'a ArenaSpec,
+    pub arena: Option<&'a ArenaSpec>,
     pub ground: Option<&'a dyn GroundSampler>,
+    pub legality: Option<&'a dyn TraversalLegality>,
 }
 
 /// What a proposed move actually achieved.
@@ -49,30 +145,70 @@ impl MoveResult {
     }
 }
 
-/// Whether a body standing at `base_height` may stand at `target`.
-#[must_use]
-pub fn accepts(rules: &MoveRules<'_>, base_height: f32, target: Vec2) -> bool {
-    if !target.is_finite() || !base_height.is_finite() {
-        return false;
+/// Whether a body standing at `from` may stand at `target`, and why not.
+///
+/// The single implementation of the rule. The order of the checks is part of
+/// the contract, because the first failure is what an audit attributes a
+/// barrier to:
+///
+/// 1. both positions are finite;
+/// 2. the arena, when there is one, contains the destination;
+/// 3. the traversal veto, when there is one, allows the destination column;
+/// 4. the source column has ground;
+/// 5. the destination column has ground;
+/// 6. the exact support heights are within `max_step_up` and `max_drop`.
+///
+/// Both heights come from [`GroundSampler::surface`] at the two positions.
+/// Neither is the pelvis; see the module documentation for why that matters.
+pub fn check_move(rules: &MoveRules<'_>, from: Vec2, target: Vec2) -> Result<(), MoveBlockReason> {
+    if !from.is_finite() || !target.is_finite() {
+        return Err(MoveBlockReason::NonFinite);
     }
-    if !rules.arena.contains(target) {
-        return false;
+    if let Some(arena) = rules.arena
+        && !arena.contains(target)
+    {
+        return Err(MoveBlockReason::Arena);
+    }
+    if let Some(legality) = rules.legality
+        && !legality.walkable(f64::from(target.x), f64::from(target.y))
+    {
+        return Err(MoveBlockReason::Traversal);
     }
     let Some(ground) = rules.ground else {
         // With no sampler there is no terrain to disagree with, which is the
         // case the pure-rules tests and the diagnostic corridor run in.
-        return true;
+        return Ok(());
     };
-    match ground.surface(f64::from(target.x), f64::from(target.y)) {
-        // Absence stays absence: a body may not walk off the edge of a finite
-        // region into a floor that was never generated.
-        None => false,
-        Some(height) => {
-            let height = height as f32;
-            height - base_height <= rules.movement.max_step_up()
-                && base_height - height <= rules.movement.max_drop()
-        }
+    // Absence stays absence: a body may not walk off the edge of a finite
+    // region into a floor that was never generated.
+    let Some(source) = ground.surface(f64::from(from.x), f64::from(from.y)) else {
+        return Err(MoveBlockReason::MissingGround);
+    };
+    let Some(destination) = ground.surface(f64::from(target.x), f64::from(target.y)) else {
+        return Err(MoveBlockReason::MissingGround);
+    };
+    let source = source as f32;
+    let destination = destination as f32;
+    if !source.is_finite() || !destination.is_finite() {
+        return Err(MoveBlockReason::NonFinite);
     }
+    if destination - source > rules.movement.max_step_up() {
+        return Err(MoveBlockReason::StepUp);
+    }
+    if source - destination > rules.movement.max_drop() {
+        return Err(MoveBlockReason::Drop);
+    }
+    Ok(())
+}
+
+/// Whether a body standing at `from` may stand at `target`.
+///
+/// A wrapper over [`check_move`], kept because most callers only need the
+/// verdict and reading `check_move(..).is_ok()` at every call site would say
+/// less than this name does.
+#[must_use]
+pub fn accepts(rules: &MoveRules<'_>, from: Vec2, target: Vec2) -> bool {
+    check_move(rules, from, target).is_ok()
 }
 
 /// Moves a body by a planar displacement, as far as the rules allow.
@@ -84,8 +220,7 @@ pub fn try_move(state: &mut CharacterState, delta: Vec2, rules: &MoveRules<'_>) 
         return MoveResult::default();
     }
     let from = Vec2::new(state.x, state.z);
-    let base = state.base_height;
-    if accepts(rules, base, from + delta) {
+    if accepts(rules, from, from + delta) {
         state.x = from.x + delta.x;
         state.z = from.y + delta.y;
         return MoveResult {
@@ -98,7 +233,7 @@ pub fn try_move(state: &mut CharacterState, delta: Vec2, rules: &MoveRules<'_>) 
         if candidate.length_squared() <= 0.0 {
             continue;
         }
-        if accepts(rules, base, from + candidate) {
+        if accepts(rules, from, from + candidate) {
             state.x = from.x + candidate.x;
             state.z = from.y + candidate.y;
             return MoveResult {
@@ -232,13 +367,13 @@ pub fn facing_of(direction: Vec2) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MoveResult, MoveRules, accepts, facing_of, overlap, separate, try_move, turn_toward,
-        wrap_angle,
+        MoveBlockReason, MoveResult, MoveRules, TraversalLegality, accepts, check_move, facing_of,
+        overlap, separate, try_move, turn_toward, wrap_angle,
     };
     use crate::spec::{ArenaSpec, AuthoredMovement, MovementSpec};
     use glam::Vec2;
     use std::f32::consts::{FRAC_PI_2, PI};
-    use veldwake_character::ground::{BoundedGround, FlatGround, StepGround};
+    use veldwake_character::ground::{BoundedGround, FlatGround, StepGround, SteppedRamp};
     use veldwake_character::{CharacterState, GroundSampler};
 
     fn movement() -> MovementSpec {
@@ -280,8 +415,9 @@ mod tests {
         let ground = FlatGround::at(4.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         let mut state = state_at(0.0, 0.0, 4.0);
         let result = try_move(&mut state, Vec2::new(0.5, -0.25), &rules);
@@ -298,8 +434,9 @@ mod tests {
         let arena = arena(10.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: None,
+            legality: None,
         };
         let mut state = state_at(1.0, 2.0, 0.0);
         for delta in [
@@ -326,8 +463,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&low),
+            legality: None,
         };
         let mut state = state_at(0.5, 0.0, 4.0);
         assert!(!try_move(&mut state, Vec2::new(1.0, 0.0), &rules).blocked);
@@ -340,8 +478,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&high),
+            legality: None,
         };
         let mut state = state_at(0.5, 0.0, 4.0);
         let result = try_move(&mut state, Vec2::new(1.0, 0.0), &rules);
@@ -363,8 +502,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&cliff),
+            legality: None,
         };
         // Walking from the high side to the low side is a four-unit drop.
         let mut state = state_at(0.5, 0.0, 4.0);
@@ -382,8 +522,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&wall),
+            legality: None,
         };
         let mut state = state_at(0.5, 0.0, 4.0);
         let result = try_move(&mut state, Vec2::new(1.0, 1.0), &rules);
@@ -407,8 +548,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&bounded),
+            legality: None,
         };
         let mut state = state_at(4.5, 0.0, 4.0);
         let result = try_move(&mut state, Vec2::new(1.0, 0.0), &rules);
@@ -423,8 +565,9 @@ mod tests {
         let ground = FlatGround::at(0.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         // A move whose only component leaves the arena is refused outright:
         // there is no free axis to slide along.
@@ -441,10 +584,10 @@ mod tests {
         assert!(!result.blocked && result.slid);
         assert!(arena.contains(Vec2::new(state.x, state.z)));
         assert!((state.z - 0.4).abs() < 1.0e-6);
-        assert!(!accepts(&rules, 0.0, Vec2::new(4.0, 0.0)));
-        assert!(accepts(&rules, 0.0, Vec2::new(1.0, 1.0)));
-        assert!(!accepts(&rules, f32::NAN, Vec2::ZERO));
-        assert!(!accepts(&rules, 0.0, Vec2::splat(f32::NAN)));
+        assert!(!accepts(&rules, Vec2::ZERO, Vec2::new(4.0, 0.0)));
+        assert!(accepts(&rules, Vec2::ZERO, Vec2::new(1.0, 1.0)));
+        assert!(!accepts(&rules, Vec2::splat(f32::NAN), Vec2::ZERO));
+        assert!(!accepts(&rules, Vec2::ZERO, Vec2::splat(f32::NAN)));
     }
 
     #[test]
@@ -453,11 +596,12 @@ mod tests {
         let arena = arena(2.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: None,
+            legality: None,
         };
-        assert!(accepts(&rules, 0.0, Vec2::new(1.0, 0.0)));
-        assert!(!accepts(&rules, 0.0, Vec2::new(3.0, 0.0)));
+        assert!(accepts(&rules, Vec2::ZERO, Vec2::new(1.0, 0.0)));
+        assert!(!accepts(&rules, Vec2::ZERO, Vec2::new(3.0, 0.0)));
     }
 
     #[test]
@@ -474,8 +618,9 @@ mod tests {
         let ground = FlatGround::at(0.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         let mut first = state_at(0.0, 0.0, 0.0);
         let mut second = state_at(0.4, 0.0, 0.0);
@@ -499,8 +644,9 @@ mod tests {
         let ground = FlatGround::at(0.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         let mut first = state_at(1.0, 1.0, 0.0);
         let mut second = state_at(1.0, 1.0, 0.0);
@@ -525,8 +671,9 @@ mod tests {
         let ground = FlatGround::at(0.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         // `second` sits on the boundary and cannot be pushed further out.
         let mut first = state_at(2.4, 0.0, 0.0);
@@ -553,8 +700,9 @@ mod tests {
         };
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&wall),
+            legality: None,
         };
         // Pushing `second` toward +x would climb a six-unit wall.
         let mut first = state_at(0.2, 0.0, 0.0);
@@ -564,7 +712,7 @@ mod tests {
         for state in [&first, &second] {
             assert!(accepts(
                 &rules,
-                state.base_height,
+                Vec2::new(state.x, state.z),
                 Vec2::new(state.x, state.z)
             ));
         }
@@ -578,8 +726,9 @@ mod tests {
         let ground = FlatGround::at(0.0);
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: Some(&arena),
             ground: Some(&ground),
+            legality: None,
         };
         let mut first = state_at(0.0, 0.0, 0.0);
         let mut second = state_at(0.01, 0.0, 0.0);
@@ -587,10 +736,481 @@ mod tests {
         assert!(resolved < 0.2, "nothing should have moved far: {resolved}");
         for state in [&first, &second] {
             assert!(
-                accepts(&rules, state.base_height, Vec2::new(state.x, state.z)),
+                accepts(
+                    &rules,
+                    Vec2::new(state.x, state.z),
+                    Vec2::new(state.x, state.z)
+                ),
                 "a blocked separation must not place a body illegally"
             );
         }
+    }
+
+    /// A ground whose height depends on `x` alone, so a test can prove which
+    /// position a rule sampled rather than assuming it.
+    #[derive(Clone, Copy, Debug)]
+    struct AxisGround {
+        /// Height is this multiple of `x`, quantized to whole units.
+        slope: f64,
+    }
+
+    impl GroundSampler for AxisGround {
+        fn surface(&self, x: f64, _z: f64) -> Option<f64> {
+            Some((self.slope * x).floor())
+        }
+    }
+
+    /// A veto that refuses a half-plane and says nothing about height.
+    #[derive(Clone, Copy, Debug)]
+    struct RefuseBeyond {
+        x: f64,
+    }
+
+    impl TraversalLegality for RefuseBeyond {
+        fn walkable(&self, x: f64, _z: f64) -> bool {
+            x < self.x
+        }
+    }
+
+    #[test]
+    fn a_rise_of_exactly_the_bound_is_walkable_and_an_epsilon_more_is_not() {
+        let movement = movement();
+        let arena = arena(10.0);
+        let exact = StepGround {
+            edge_x: 1.0,
+            low: 4.0,
+            high: 4.0 + f64::from(movement.max_step_up()),
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&exact),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(0.5, 0.0), Vec2::new(1.5, 0.0)),
+            Ok(()),
+            "a rise of exactly max_step_up is the bound, and the bound is inclusive"
+        );
+
+        let over = StepGround {
+            edge_x: 1.0,
+            low: 4.0,
+            high: 4.0 + f64::from(movement.max_step_up()) + 1.0e-4,
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&over),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(0.5, 0.0), Vec2::new(1.5, 0.0)),
+            Err(MoveBlockReason::StepUp)
+        );
+    }
+
+    #[test]
+    fn a_drop_of_exactly_the_bound_is_walkable_and_an_epsilon_more_is_not() {
+        let movement = movement();
+        let arena = arena(10.0);
+        let exact = StepGround {
+            edge_x: 1.0,
+            low: 4.0,
+            high: 4.0 - f64::from(movement.max_drop()),
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&exact),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(0.5, 0.0), Vec2::new(1.5, 0.0)),
+            Ok(())
+        );
+
+        let over = StepGround {
+            edge_x: 1.0,
+            low: 4.0,
+            high: 4.0 - f64::from(movement.max_drop()) - 1.0e-4,
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&over),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(0.5, 0.0), Vec2::new(1.5, 0.0)),
+            Err(MoveBlockReason::Drop)
+        );
+    }
+
+    #[test]
+    fn a_step_is_judged_from_the_ground_under_the_body_and_never_from_the_pelvis() {
+        // The defect this test exists to prevent: `CharacterState::base_height`
+        // is the **smoothed** pelvis height, so judging a step against it made
+        // the same step legal standing still and illegal while walking, purely
+        // because of how long the body had been climbing.
+        let movement = movement();
+        let arena = arena(64.0);
+        let ground = AxisGround { slope: 1.0 };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&ground),
+            legality: None,
+        };
+
+        // Three bodies on identical trajectories: one exactly settled, one with
+        // a pelvis half a unit behind the ground, one absurdly far behind.
+        // Nothing about the movement may differ.
+        let mut settled = state_at(0.0, 0.0, 0.0);
+        let mut lagging = state_at(0.0, 0.0, -0.5);
+        let mut absurd = state_at(0.0, 0.0, -40.0);
+        for _ in 0..600 {
+            let delta = Vec2::new(0.028_333, 0.0);
+            let a = try_move(&mut settled, delta, &rules);
+            let b = try_move(&mut lagging, delta, &rules);
+            let c = try_move(&mut absurd, delta, &rules);
+            assert_eq!(a.blocked, b.blocked, "a lagging pelvis changed a verdict");
+            assert_eq!(a.blocked, c.blocked, "a lagging pelvis changed a verdict");
+            assert_eq!(a.realized, b.realized);
+            assert_eq!(a.realized, c.realized);
+        }
+        assert!(
+            (settled.x - lagging.x).abs() < 1.0e-6 && (settled.x - absurd.x).abs() < 1.0e-6,
+            "identical trajectories diverged: {} {} {}",
+            settled.x,
+            lagging.x,
+            absurd.x
+        );
+        assert!(settled.x > 0.0, "the walk never started");
+    }
+
+    #[test]
+    fn a_body_climbs_consecutive_one_voxel_terraces_without_stalling() {
+        // A real staircase at a real walking speed. Each tick advances less
+        // than a tenth of a voxel, so the body crosses every terrace edge
+        // mid-stride rather than from a standstill — which is exactly the case
+        // a pelvis-based rule could not take.
+        let movement = movement();
+        let arena = arena(256.0);
+        let ground = SteppedRamp::terrain(0.5, 0.0);
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&ground),
+            legality: None,
+        };
+        let per_tick = movement.speed() / 120.0;
+        let mut state = state_at(0.0, 0.0, 0.0);
+        let mut blocked = 0_u32;
+        let mut heights = std::collections::BTreeSet::new();
+        for _ in 0..2_400 {
+            let result = try_move(&mut state, Vec2::new(per_tick, 0.0), &rules);
+            if result.blocked {
+                blocked += 1;
+            }
+            let Some(height) = ground.surface(f64::from(state.x), f64::from(state.z)) else {
+                panic!("the stepped ramp answers everywhere");
+            };
+            heights.insert(height as i64);
+        }
+        assert_eq!(blocked, 0, "a one-voxel terrace stopped a walking body");
+        assert!(
+            heights.len() >= 30,
+            "the body climbed only {} terraces",
+            heights.len()
+        );
+        let travelled = state.x;
+        let expected = per_tick * 2_400.0;
+        assert!(
+            (travelled - expected).abs() < 1.0e-2,
+            "the walk lost ground: {travelled} against {expected}"
+        );
+    }
+
+    #[test]
+    fn a_traversal_veto_refuses_a_destination_and_decides_no_height() {
+        let movement = movement();
+        let arena = arena(64.0);
+        let ground = FlatGround::at(3.0);
+        let veto = RefuseBeyond { x: 2.0 };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&ground),
+            legality: Some(&veto),
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(1.0, 0.0), Vec2::new(1.5, 0.0)),
+            Ok(())
+        );
+        assert_eq!(
+            check_move(&rules, Vec2::new(1.0, 0.0), Vec2::new(2.5, 0.0)),
+            Err(MoveBlockReason::Traversal)
+        );
+        // The veto is asked about the destination only: a body that somehow
+        // stands in a forbidden column must still be able to walk out of it.
+        assert_eq!(
+            check_move(&rules, Vec2::new(9.0, 0.0), Vec2::new(1.0, 0.0)),
+            Ok(()),
+            "a veto on the source would trap a body for ever"
+        );
+        // And it never supplies a height: with a step the ground refuses, the
+        // refusal is the step's.
+        let stepped = StepGround {
+            edge_x: 1.2,
+            low: 0.0,
+            high: 9.0,
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&stepped),
+            legality: Some(&veto),
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::new(1.0, 0.0), Vec2::new(1.5, 0.0)),
+            Err(MoveBlockReason::StepUp)
+        );
+    }
+
+    /// A sampler that answers with a number no comparison can order.
+    ///
+    /// Not a hypothetical: a ground adapter reading a field that has gone
+    /// non-finite would hand `check_move` a height whose `>` and `<` are both
+    /// false, and a rule written as "refuse when the rise is too large" would
+    /// then silently accept every step. The guard is there; this is what asks
+    /// whether it still is.
+    struct NonFiniteGround {
+        at_x: f32,
+        value: f64,
+    }
+
+    impl GroundSampler for NonFiniteGround {
+        fn surface(&self, x: f64, _z: f64) -> Option<f64> {
+            if x >= f64::from(self.at_x) {
+                Some(self.value)
+            } else {
+                Some(0.0)
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_is_refused_for_every_shape_of_unorderable_number() {
+        let movement = movement();
+        let flat = FlatGround::at(0.0);
+
+        // Infinity is as non-finite as NaN, on either end of the move.
+        let rules = MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&flat),
+            legality: None,
+        };
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                check_move(&rules, Vec2::ZERO, Vec2::new(bad, 0.0)),
+                Err(MoveBlockReason::NonFinite),
+                "a destination of {bad} was not refused"
+            );
+            assert_eq!(
+                check_move(&rules, Vec2::new(0.0, bad), Vec2::ZERO),
+                Err(MoveBlockReason::NonFinite),
+                "a source of {bad} was not refused"
+            );
+        }
+
+        // And a ground that answers with one, at the destination or under the
+        // body. Either way the answer is a refusal, never an accepted step
+        // over a comparison that cannot be made.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = NonFiniteGround { at_x: 1.0, value };
+            let rules = MoveRules {
+                movement: &movement,
+                arena: None,
+                ground: Some(&broken),
+                legality: None,
+            };
+            assert_eq!(
+                check_move(&rules, Vec2::ZERO, Vec2::new(1.5, 0.0)),
+                Err(MoveBlockReason::NonFinite),
+                "a destination height of {value} was not refused"
+            );
+            assert_eq!(
+                check_move(&rules, Vec2::new(1.5, 0.0), Vec2::ZERO),
+                Err(MoveBlockReason::NonFinite),
+                "a source height of {value} was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arena_bounds_the_destination_and_never_the_body_already_outside_it() {
+        // Deliberate, and worth pinning because it reads like an oversight.
+        // `check_move` asks whether the place a body is going is inside the
+        // arena; it never asks where the body is now. A body that starts or is
+        // knocked outside must be able to walk back in, and a rule that tested
+        // the source would freeze it there for ever.
+        let movement = movement();
+        let arena = arena(2.0);
+        let flat = FlatGround::at(0.0);
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&flat),
+            legality: None,
+        };
+        let outside = Vec2::new(2.4, 0.0);
+        assert!(!arena.contains(outside), "the fixture must start outside");
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(1.9, 0.0)),
+            Ok(()),
+            "a body outside the arena may step back into it"
+        );
+        // The other half of the same rule, and the part that is a real
+        // constraint rather than a kindness: only the destination counts, so a
+        // step that merely moves closer while staying outside is refused just
+        // like a step further out. A body outside an arena is pinned until one
+        // step reaches inside. No path in this crate produces such a body -
+        // `try_move`, `separate` and knockback all go through these rules - so
+        // this is the shape of the rule, written down, not a live hazard.
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(2.3, 0.0)),
+            Err(MoveBlockReason::Arena),
+            "a destination still outside is refused however much closer it is"
+        );
+        assert_eq!(
+            check_move(&rules, outside, Vec2::new(2.5, 0.0)),
+            Err(MoveBlockReason::Arena),
+            "and so is one further out"
+        );
+    }
+
+    #[test]
+    fn every_block_reason_is_reachable_and_the_first_that_applies_is_reported() {
+        let movement = movement();
+        let arena = arena(2.0);
+        let ground = StepGround {
+            edge_x: 1.0,
+            low: 0.0,
+            high: 9.0,
+        };
+        let veto = RefuseBeyond { x: 1.5 };
+        let bounded = BoundedGround {
+            inner: FlatGround::at(0.0),
+            min_x: -1.0,
+            max_x: 1.0,
+            min_z: -1.0,
+            max_z: 1.0,
+        };
+
+        // Non-finite beats everything, including an arena that would also refuse.
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&ground),
+            legality: Some(&veto),
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::splat(f32::NAN)),
+            Err(MoveBlockReason::NonFinite)
+        );
+        // Arena beats the veto: the destination is outside both.
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(8.0, 0.0)),
+            Err(MoveBlockReason::Arena)
+        );
+        // Veto beats the step: the destination is past both.
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(1.8, 0.0)),
+            Err(MoveBlockReason::Traversal)
+        );
+        // Step, with nothing else in the way.
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&ground),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(1.2, 0.0)),
+            Err(MoveBlockReason::StepUp)
+        );
+        // Drop.
+        let cliff = StepGround {
+            edge_x: 1.0,
+            low: 0.0,
+            high: -9.0,
+        };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&cliff),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(1.2, 0.0)),
+            Err(MoveBlockReason::Drop)
+        );
+        // Missing ground, at the destination and at the source.
+        let rules = MoveRules {
+            movement: &movement,
+            arena: Some(&arena),
+            ground: Some(&bounded),
+            legality: None,
+        };
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(1.5, 0.0)),
+            Err(MoveBlockReason::MissingGround)
+        );
+        assert_eq!(
+            check_move(&rules, Vec2::new(1.5, 0.0), Vec2::ZERO),
+            Err(MoveBlockReason::MissingGround)
+        );
+
+        // Every declared reason has a distinct name, so a report can be read.
+        let names: std::collections::BTreeSet<&str> = MoveBlockReason::ALL
+            .iter()
+            .map(|reason| reason.name())
+            .collect();
+        assert_eq!(names.len(), MoveBlockReason::ALL.len());
+    }
+
+    #[test]
+    fn without_an_arena_the_ground_and_the_veto_are_the_whole_bound() {
+        let movement = movement();
+        let bounded = BoundedGround {
+            inner: FlatGround::at(0.0),
+            min_x: -4.0,
+            max_x: 4.0,
+            min_z: -4.0,
+            max_z: 4.0,
+        };
+        let veto = RefuseBeyond { x: 2.0 };
+        let rules = MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&bounded),
+            legality: Some(&veto),
+        };
+        // Far outside every arena the fixtures use, and perfectly legal.
+        assert_eq!(
+            check_move(&rules, Vec2::new(-3.5, -3.5), Vec2::new(-3.0, -3.0)),
+            Ok(())
+        );
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(2.5, 0.0)),
+            Err(MoveBlockReason::Traversal)
+        );
+        assert_eq!(
+            check_move(&rules, Vec2::ZERO, Vec2::new(0.0, 5.0)),
+            Err(MoveBlockReason::MissingGround)
+        );
     }
 
     #[test]

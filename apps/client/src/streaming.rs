@@ -587,12 +587,12 @@ impl StreamingBridge {
 
     /// Records the chunk the camera occupies. A rejected position keeps the
     /// previous center and is counted; it never saturates into a fake chunk.
-    pub fn track_camera(&mut self, position: Vec3) -> CameraAnchor {
+    pub fn track_anchor(&mut self, position: Vec3) -> CameraAnchor {
         match camera_chunk(position) {
             Ok(chunk) => {
                 if self.anchor_rejected {
                     self.anchor_rejected = false;
-                    warn!(?chunk, "camera anchor is valid again");
+                    warn!(?chunk, "streaming anchor is valid again");
                 }
                 if chunk == self.desired_center {
                     return CameraAnchor::Unchanged;
@@ -604,7 +604,7 @@ impl StreamingBridge {
                 self.totals.anchor_rejections += 1;
                 if !self.anchor_rejected {
                     self.anchor_rejected = true;
-                    warn!(%error, "camera anchor rejected; keeping previous demand center");
+                    warn!(%error, "streaming anchor rejected; keeping previous demand center");
                 }
                 CameraAnchor::Rejected(error)
             }
@@ -1559,21 +1559,21 @@ pub(crate) mod tests {
         let mut bridge = bridge_at(Vec3::new(5.0, 5.0, 5.0), UploadBudget::default());
         assert_eq!(bridge.desired_center(), ChunkCoord::new(0, 0, 0));
         assert_eq!(
-            bridge.track_camera(Vec3::new(31.9, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(31.9, 5.0, 5.0)),
             CameraAnchor::Unchanged
         );
         assert_eq!(
-            bridge.track_camera(Vec3::new(32.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(32.0, 5.0, 5.0)),
             CameraAnchor::Moved(ChunkCoord::new(1, 0, 0))
         );
         assert_eq!(bridge.desired_center(), ChunkCoord::new(1, 0, 0));
         assert_eq!(
-            bridge.track_camera(Vec3::new(-0.001, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(-0.001, 5.0, 5.0)),
             CameraAnchor::Moved(ChunkCoord::new(-1, 0, 0))
         );
         assert_eq!(bridge.desired_center(), ChunkCoord::new(-1, 0, 0));
 
-        let rejected = bridge.track_camera(Vec3::new(f32::NAN, 5.0, 5.0));
+        let rejected = bridge.track_anchor(Vec3::new(f32::NAN, 5.0, 5.0));
         assert!(matches!(
             rejected,
             CameraAnchor::Rejected(CameraAnchorError::NonFinite { .. })
@@ -1658,7 +1658,7 @@ pub(crate) mod tests {
         );
 
         assert!(matches!(
-            bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)),
+            bridge.track_anchor(Vec3::new(400.0, 5.0, 400.0)),
             CameraAnchor::Moved(_)
         ));
         let report = match bridge.update(&mut fake) {
@@ -1701,14 +1701,14 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("origin not presented"));
 
         assert!(matches!(
-            bridge.track_camera(Vec3::new(400.0, 5.0, 400.0)),
+            bridge.track_anchor(Vec3::new(400.0, 5.0, 400.0)),
             CameraAnchor::Moved(_)
         ));
         settle(&mut bridge, &mut fake);
         assert_eq!(bridge.presented_stamp(origin), None);
 
         assert!(matches!(
-            bridge.track_camera(Vec3::new(5.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(5.0, 5.0, 5.0)),
             CameraAnchor::Moved(_)
         ));
         settle(&mut bridge, &mut fake);
@@ -1799,7 +1799,7 @@ pub(crate) mod tests {
     ) -> usize {
         let before: Vec<ChunkCoord> = fake.active();
         assert!(matches!(
-            bridge.track_camera(position),
+            bridge.track_anchor(position),
             CameraAnchor::Moved(_)
         ));
         let mut commits = 0;
@@ -1922,7 +1922,7 @@ pub(crate) mod tests {
         let mut previous: BTreeSet<ChunkCoord> = fake.active().into_iter().collect();
         for step in 1..=60 {
             let offset = step as f32 * 4.0;
-            bridge.track_camera(start + Vec3::new(offset, 0.0, offset));
+            bridge.track_anchor(start + Vec3::new(offset, 0.0, offset));
             for _ in 0..8 {
                 if let Err(error) = bridge.update(&mut fake) {
                     panic!("update failed: {error}");
@@ -1987,7 +1987,7 @@ pub(crate) mod tests {
 
         // First move: run only a few updates so replacements are in flight.
         assert!(matches!(
-            bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(37.0, 5.0, 5.0)),
             CameraAnchor::Moved(_)
         ));
         for _ in 0..40 {
@@ -2002,7 +2002,7 @@ pub(crate) mod tests {
         );
         // Second move before the first commits: the old target is abandoned.
         assert!(matches!(
-            bridge.track_camera(Vec3::new(69.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(69.0, 5.0, 5.0)),
             CameraAnchor::Moved(_)
         ));
         for _ in 0..20_000 {
@@ -2081,7 +2081,7 @@ pub(crate) mod tests {
             panic!("demand move failed: {error}");
         }
         assert!(matches!(
-            bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(37.0, 5.0, 5.0)),
             CameraAnchor::Moved(coord) if coord == target
         ));
         for _ in 0..40_000 {
@@ -2325,7 +2325,7 @@ pub(crate) mod tests {
         let mut bridge = banded_bridge_at(Vec3::new(5.0, 5.0, 5.0));
         settle(&mut bridge, &mut fake);
         assert!(matches!(
-            bridge.track_camera(Vec3::new(37.0, 5.0, 5.0)),
+            bridge.track_anchor(Vec3::new(37.0, 5.0, 5.0)),
             CameraAnchor::Moved(_)
         ));
 
@@ -2437,7 +2437,7 @@ pub(crate) mod tests {
         settle(&mut bridge, &mut fake);
         assert!(fake.residency().active() > 0);
         assert!(matches!(
-            bridge.track_camera(Vec3::new(900.0, 5.0, 900.0)),
+            bridge.track_anchor(Vec3::new(900.0, 5.0, 900.0)),
             CameraAnchor::Moved(_)
         ));
         let report = match bridge.update(&mut fake) {

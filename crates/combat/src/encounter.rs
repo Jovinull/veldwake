@@ -55,8 +55,10 @@ use crate::combatant::{Action, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
 use crate::hit::{Segment, Sweep, moving_substeps, sweep_moving_capsule};
 use crate::hurt::HurtVolume;
-use crate::movement::{MoveRules, facing_of, separate, try_move, turn_toward, wrap_angle};
-use crate::spec::{AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
+use crate::movement::{
+    MoveRules, TraversalLegality, facing_of, separate, try_move, turn_toward, wrap_angle,
+};
+use crate::spec::{ArenaSpec, AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
 use crate::tick::{Ticks, tick_seconds};
 use crate::weapon::{CompiledWeapon, WeaponCompiler, WeaponDescriptor, WeaponError};
 
@@ -67,10 +69,27 @@ pub struct EncounterSetup {
     pub adversary: CharacterDescriptor,
     pub weapon: WeaponDescriptor,
     pub tuning: AuthoredTuning,
-    /// Where the player starts, relative to the arena centre, in world units.
-    pub player_offset: Vec2,
-    /// Where the adversary starts, relative to the arena centre.
-    pub adversary_offset: Vec2,
+    /// Where each body starts, in world units, indexed by [`Side`].
+    ///
+    /// **Absolute positions, not offsets from a centre.** A duel in a disc can
+    /// be described either way; a traversal cannot, because the player starts at
+    /// one end of a route and the adversary at the other, and writing that as a
+    /// centre plus two large opposite offsets would name a point that is neither
+    /// body, neither the arena, nor anywhere a fight happens.
+    pub starts: [Vec2; SIDES.len()],
+    /// The disc a body may not leave, when there is one.
+    ///
+    /// `None` means the bounds are whatever the ground and the traversal veto
+    /// say — for a finite region, the region. A fight in a scanned clearing sets
+    /// it; a walk across a valley does not.
+    pub arena: Option<ArenaSpec>,
+    /// What happens when the **adversary** is defeated.
+    ///
+    /// Named for the side it is about. A policy called "victory" alone reads as
+    /// though it governed both outcomes, and it does not: a defeated player
+    /// always runs the defeat hold and then returns both bodies to their
+    /// configured starts.
+    pub player_victory: PlayerVictoryPolicy,
     /// Radians added to each body's start facing, indexed by [`Side`].
     ///
     /// Zero for a fight, which is the default and the only value any fixture
@@ -80,6 +99,112 @@ pub struct EncounterSetup {
     /// error one swing forgives, whether the adversary turns to face a player
     /// behind it.
     pub facing_offsets: [f32; SIDES.len()],
+}
+
+/// What an encounter needs from the world it is happening in.
+///
+/// Two different questions that a single sampler must not be asked to answer:
+/// [`GroundSampler`] says *where the visible solid surface is*, including the
+/// river bed inside a river, and a traversal veto says *whether a body may walk
+/// there at all*. Bundling them into one named value rather than passing two
+/// bare `Option<&dyn _>` parameters is a correctness choice: two optional trait
+/// references of the same shape at a call site swap places silently.
+#[derive(Clone, Copy, Default)]
+pub struct WorldContact<'a> {
+    ground: Option<&'a dyn GroundSampler>,
+    legality: Option<&'a dyn TraversalLegality>,
+}
+
+impl<'a> WorldContact<'a> {
+    /// A real world: a surface to stand on and a rule about where a body may go.
+    #[must_use]
+    pub const fn terrain(
+        ground: &'a dyn GroundSampler,
+        legality: &'a dyn TraversalLegality,
+    ) -> Self {
+        Self {
+            ground: Some(ground),
+            legality: Some(legality),
+        }
+    }
+
+    /// A surface with no traversal veto, which is every fixture and regression
+    /// that predates traversal.
+    #[must_use]
+    pub const fn ground_only(ground: &'a dyn GroundSampler) -> Self {
+        Self {
+            ground: Some(ground),
+            legality: None,
+        }
+    }
+
+    /// The same, for a caller that already holds an optional sampler.
+    #[must_use]
+    pub const fn from_ground(ground: Option<&'a dyn GroundSampler>) -> Self {
+        Self {
+            ground,
+            legality: None,
+        }
+    }
+
+    /// No world at all: the pure-rules tests and the diagnostic corridor.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            ground: None,
+            legality: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn ground(&self) -> Option<&'a dyn GroundSampler> {
+        self.ground
+    }
+
+    #[must_use]
+    pub const fn legality(&self) -> Option<&'a dyn TraversalLegality> {
+        self.legality
+    }
+}
+
+/// What happens once the adversary is defeated.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PlayerVictoryPolicy {
+    /// After the defeat hold, both bodies return to their configured starts and
+    /// the brain resets: a new round of the same fight. This is M6's behaviour
+    /// and every M6 fixture keeps it, which is why their signatures did not move.
+    #[default]
+    ResetEncounter,
+    /// The defeated adversary stays where it fell and nothing resets. The player
+    /// is not moved, the brain stays idle, and the encounter keeps stepping so
+    /// the player can simply walk away. This is what lets a session continue
+    /// past a fight without inventing a death or respawn system.
+    Remain,
+}
+
+/// Where an encounter's outcome has got to.
+///
+/// Three states rather than an `Option<Side>` plus a flag, because "held" and
+/// "settled" need different work and conflating them made the settled case
+/// redo the hold's arithmetic on every tick for ever.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Resolution {
+    /// Nobody is down.
+    Fighting,
+    /// Somebody is down and the defeat hold is running.
+    Holding(Side),
+    /// The hold finished and the policy chose not to reset. Nothing further
+    /// happens: no reset, no event, no repeated processing.
+    Settled(Side),
+}
+
+impl Resolution {
+    const fn defeated(self) -> Option<Side> {
+        match self {
+            Self::Fighting => None,
+            Self::Holding(side) | Self::Settled(side) => Some(side),
+        }
+    }
 }
 
 /// Why an encounter could not be built.
@@ -138,8 +263,18 @@ pub struct CombatCounters {
     pub aim_assists: [u32; SIDES.len()],
     pub defeats: [u32; SIDES.len()],
     pub resets: u32,
-    /// Moves the rules refused outright.
+    /// Moves the rules refused outright: no axis of the proposal was legal.
     pub blocked_moves: [u32; SIDES.len()],
+    /// Moves resolved one axis at a time, because the whole proposal was not
+    /// legal but part of it was.
+    ///
+    /// **A body held against a barrier slides; it does not block.** The first
+    /// M7 water run walked due south into the river, stopped dead in `z` at the
+    /// waterline and travelled twenty-three world units west along the shore —
+    /// and reported `blocked_moves = 0` the whole way, because the `x`
+    /// component of every refused move was accepted. Without this counter a log
+    /// cannot tell a free walk from a body pinned against water.
+    pub slid_moves: [u32; SIDES.len()],
     /// Ticks on which the two bodies had to be pushed apart.
     pub separations: u32,
     pub hit_queries: u64,
@@ -190,14 +325,15 @@ pub struct Encounter {
     weapon: CompiledWeapon,
     combatants: [Combatant; SIDES.len()],
     brain: AdversaryBrain,
-    offsets: [Vec2; SIDES.len()],
+    starts: [Vec2; SIDES.len()],
+    arena: Option<ArenaSpec>,
+    player_victory: PlayerVictoryPolicy,
     /// Radians added to each body's facing on a start or a reset, so a reset
     /// puts a body back where the setup asked rather than where a fight left it.
     facing_offsets: [f32; SIDES.len()],
     tick: u64,
     armed: bool,
-    /// Who was defeated, while the defeat hold runs.
-    outcome: Option<Side>,
+    resolution: Resolution,
     counters: CombatCounters,
 }
 
@@ -214,7 +350,7 @@ impl Encounter {
         let adversary = compiler.compile_descriptor(&setup.adversary)?;
         let weapon = WeaponCompiler::new().compile_descriptor(&setup.weapon)?;
         let characters = [player, adversary];
-        let offsets = [setup.player_offset, setup.adversary_offset];
+        let starts = setup.starts;
         let healths = [
             Health::full(tuning.player_health()),
             Health::full(tuning.adversary_health()),
@@ -223,13 +359,7 @@ impl Encounter {
         let mut combatants = Vec::with_capacity(SIDES.len());
         for side in SIDES {
             let index = side.index();
-            let state = start_state(
-                tuning.arena().centre(),
-                offsets,
-                setup.facing_offsets[index],
-                side,
-                ground,
-            );
+            let state = start_state(starts, setup.facing_offsets[index], side, ground);
             let character = &characters[index];
             let posed = pose_with(character, &state, ground, None);
             combatants.push(Combatant::new(
@@ -253,11 +383,13 @@ impl Encounter {
             weapon,
             combatants,
             brain: AdversaryBrain::new(tuning.seed()),
-            offsets,
+            starts,
+            arena: setup.arena,
+            player_victory: setup.player_victory,
             facing_offsets: setup.facing_offsets,
             tick: 0,
             armed: false,
-            outcome: None,
+            resolution: Resolution::Fighting,
             counters: CombatCounters::default(),
         };
         // Give both bodies their carry pose and a blade to sweep from, so the
@@ -317,10 +449,21 @@ impl Encounter {
         &self.counters
     }
 
-    /// Who is currently defeated, while the hold before a reset runs.
+    /// Who is defeated, while the hold runs and after it has settled.
     #[must_use]
     pub const fn outcome(&self) -> Option<Side> {
-        self.outcome
+        self.resolution.defeated()
+    }
+
+    /// Whether the outcome has finished resolving and nothing further will
+    /// happen to it.
+    ///
+    /// Only [`PlayerVictoryPolicy::Remain`] reaches this: under
+    /// `ResetEncounter` the hold always ends in a reset, so the outcome goes
+    /// straight back to `None`.
+    #[must_use]
+    pub const fn outcome_settled(&self) -> bool {
+        matches!(self.resolution, Resolution::Settled(_))
     }
 
     /// The attack spec that governs one side's swings.
@@ -359,7 +502,8 @@ impl Encounter {
     }
 
     /// Advances the fight by exactly one tick.
-    pub fn step(&mut self, input: Intent, ground: Option<&dyn GroundSampler>) -> StepEvents {
+    pub fn step(&mut self, input: Intent, world: WorldContact<'_>) -> StepEvents {
+        let ground = world.ground();
         let mut events = StepEvents::new();
         self.tick = self.tick.saturating_add(1);
         self.counters.ticks = self.counters.ticks.saturating_add(1);
@@ -409,11 +553,11 @@ impl Encounter {
 
         // 4. movement
         for side in SIDES {
-            self.move_combatant(side, intents[side.index()], ground);
+            self.move_combatant(side, intents[side.index()], world);
         }
 
         // 5. separation
-        self.separate_bodies(ground);
+        self.separate_bodies(world);
 
         // 6. pose
         for side in SIDES {
@@ -424,7 +568,7 @@ impl Encounter {
 
         // 7. hit
         for side in SIDES {
-            self.resolve_hits(side, ground, &mut events);
+            self.resolve_hits(side, world, &mut events);
         }
 
         // 8. outcome
@@ -564,7 +708,8 @@ impl Encounter {
     }
 
     /// Applies one body's movement intent under the rules.
-    fn move_combatant(&mut self, side: Side, intent: Intent, ground: Option<&dyn GroundSampler>) {
+    fn move_combatant(&mut self, side: Side, intent: Intent, world: WorldContact<'_>) {
+        let ground = world.ground();
         let index = side.index();
         if self.combatants[index].is_frozen() {
             return;
@@ -597,16 +742,20 @@ impl Encounter {
 
         // The specs are copied into locals because `MoveRules` borrows them and
         // the move below needs the combatant mutably at the same time.
-        let arena = *self.tuning.arena();
+        let arena = self.arena;
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
+            arena: arena.as_ref(),
             ground,
+            legality: world.legality(),
         };
         let result = try_move(self.combatants[index].state_mut(), velocity * step, &rules);
         if result.blocked {
             self.counters.blocked_moves[index] =
                 self.counters.blocked_moves[index].saturating_add(1);
+        }
+        if result.slid {
+            self.counters.slid_moves[index] = self.counters.slid_moves[index].saturating_add(1);
         }
 
         // The gait's phase advances with the distance actually travelled, not
@@ -640,7 +789,7 @@ impl Encounter {
     }
 
     /// Pushes the two bodies apart if they overlap.
-    fn separate_bodies(&mut self, ground: Option<&dyn GroundSampler>) {
+    fn separate_bodies(&mut self, world: WorldContact<'_>) {
         let radii = (
             self.combatants[0].capsule().radius,
             self.combatants[1].capsule().radius,
@@ -656,11 +805,12 @@ impl Encounter {
         }
         self.counters.separations = self.counters.separations.saturating_add(1);
         let movement = *self.tuning.movement();
-        let arena = *self.tuning.arena();
+        let arena = self.arena;
         let rules = MoveRules {
             movement: &movement,
-            arena: &arena,
-            ground,
+            arena: arena.as_ref(),
+            ground: world.ground(),
+            legality: world.legality(),
         };
         let (first, second) = self.combatants.split_at_mut(1);
         let Some(first) = first.first_mut() else {
@@ -691,12 +841,8 @@ impl Encounter {
     }
 
     /// Sweeps one side's blade and applies what it touched.
-    fn resolve_hits(
-        &mut self,
-        attacker: Side,
-        ground: Option<&dyn GroundSampler>,
-        events: &mut StepEvents,
-    ) {
+    fn resolve_hits(&mut self, attacker: Side, world: WorldContact<'_>, events: &mut StepEvents) {
+        let ground = world.ground();
         let index = attacker.index();
         if self.combatants[index].is_frozen() {
             return;
@@ -774,8 +920,8 @@ impl Encounter {
             self.counters.defeats[victim_index] =
                 self.counters.defeats[victim_index].saturating_add(1);
             events.push(CombatEvent::Defeated { side: victim });
-            if self.outcome.is_none() {
-                self.outcome = Some(victim);
+            if matches!(self.resolution, Resolution::Fighting) {
+                self.resolution = Resolution::Holding(victim);
             }
         } else {
             self.combatants[victim_index].set_action(Action::Stagger {
@@ -789,11 +935,12 @@ impl Encounter {
             // Knockback goes through the same movement rules as a footstep, then
             // the victim is re-posed so the drawn body is where it was pushed.
             let movement = *self.tuning.movement();
-            let arena = *self.tuning.arena();
+            let arena = self.arena;
             let rules = MoveRules {
                 movement: &movement,
-                arena: &arena,
+                arena: arena.as_ref(),
                 ground,
+                legality: world.legality(),
             };
             let _ = try_move(
                 self.combatants[victim_index].state_mut(),
@@ -813,33 +960,40 @@ impl Encounter {
         }
     }
 
-    /// Runs the defeat hold and resets the encounter when it expires.
+    /// Runs the defeat hold, then applies the policy for who went down.
+    ///
+    /// A settled outcome returns immediately and for ever: under
+    /// [`PlayerVictoryPolicy::Remain`] the defeated adversary simply stays
+    /// where it fell, and re-deciding that on every tick of the rest of a
+    /// session would be work whose only possible result is the same answer.
     fn update_outcome(&mut self, ground: Option<&dyn GroundSampler>, events: &mut StepEvents) {
-        let Some(defeated) = self.outcome else {
+        let Resolution::Holding(defeated) = self.resolution else {
             return;
         };
         let elapsed = match self.combatants[defeated.index()].action() {
             Action::Defeated { elapsed } => *elapsed,
             // The defeated body's action was replaced, which would be a bug in
-            // the ordering above. Resetting is the safe answer and the counter
+            // the ordering above. Resolving is the safe answer and the counter
             // below makes it visible.
             _ => self.tuning.defeat_hold(),
         };
         if elapsed < self.tuning.defeat_hold() {
             return;
         }
+        if defeated == Side::Adversary && self.player_victory == PlayerVictoryPolicy::Remain {
+            // The player won and keeps the world it is standing in. Nothing
+            // moves, nothing resets, and no event is published, because nothing
+            // happened that presentation has to react to: the body was already
+            // `Defeated` and said so when it fell.
+            self.resolution = Resolution::Settled(defeated);
+            return;
+        }
         for side in SIDES {
-            let state = start_state(
-                self.tuning.arena().centre(),
-                self.offsets,
-                self.facing_offsets[side.index()],
-                side,
-                ground,
-            );
+            let state = start_state(self.starts, self.facing_offsets[side.index()], side, ground);
             self.combatants[side.index()].reset(state);
         }
         self.brain.reset();
-        self.outcome = None;
+        self.resolution = Resolution::Fighting;
         self.counters.resets = self.counters.resets.saturating_add(1);
         for side in SIDES {
             self.repose(side, ground);
@@ -914,15 +1068,14 @@ impl Encounter {
 
 /// Where one side starts, settled on the ground.
 fn start_state(
-    centre: Vec2,
-    offsets: [Vec2; SIDES.len()],
+    starts: [Vec2; SIDES.len()],
     facing_offset: f32,
     side: Side,
     ground: Option<&dyn GroundSampler>,
 ) -> CharacterState {
     let index = side.index();
-    let position = centre + offsets[index];
-    let other = centre + offsets[side.other().index()];
+    let position = starts[index];
+    let other = starts[side.other().index()];
     // Each starts facing the other, because a faceoff is the first frame of
     // evidence and two bodies looking past each other is not one. The offset is
     // zero in every fixture and exists so a measurement can ask for the
@@ -963,14 +1116,14 @@ pub fn action_duration(action: &Action, spec: &AttackSpec) -> Ticks {
 mod tests {
     use super::{
         AIM_ASSIST_CONE, AIM_ASSIST_RANGE, CountingGround, Encounter, EncounterError,
-        EncounterSetup, action_duration,
+        EncounterSetup, PlayerVictoryPolicy, TraversalLegality, WorldContact, action_duration,
     };
     use crate::combatant::{Action, Intent, SIDES, Side};
     use crate::event::CombatEvent;
     use crate::fixture;
     use crate::spec::AuthoredTuning;
     use glam::Vec2;
-    use veldwake_character::ground::{FlatGround, StepGround};
+    use veldwake_character::ground::{FlatGround, StepGround, SteppedRamp};
     use veldwake_character::skeleton::BoneId;
     use veldwake_character::{CHARACTER_VOXEL_SIZE, GroundSampler};
 
@@ -1000,7 +1153,7 @@ mod tests {
             {
                 return true;
             }
-            let _ = encounter.step(Intent::idle(), Some(ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(ground));
         }
         false
     }
@@ -1011,7 +1164,7 @@ mod tests {
         let mut encounter = armed(&fixture::golden_setup(), &ground);
         assert_eq!(encounter.tick_index(), 0);
         for expected in 1..=10 {
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
             assert_eq!(encounter.tick_index(), expected);
         }
         assert_eq!(encounter.counters().ticks, 10);
@@ -1030,7 +1183,7 @@ mod tests {
         for _ in 0..600 {
             let events = encounter.step(
                 Intent::player(Vec2::new(1.0, 0.0), true, true),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             assert!(events.is_empty(), "a paused encounter must publish nothing");
         }
@@ -1056,8 +1209,10 @@ mod tests {
         let mut went_active = None;
         let mut whiffed = None;
         for tick in 0..spec.total() + 4 {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             for event in events.iter() {
                 match event {
                     CombatEvent::SwingStarted {
@@ -1105,7 +1260,10 @@ mod tests {
         let ground = ground();
         let mut encounter = armed(&fixture::golden_setup(), &ground);
         let spec = *encounter.attack_spec(Side::Player);
-        let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            WorldContact::ground_only(&ground),
+        );
         // One step has already run, so the swing has `total - 1` left.
         for remaining in 1..spec.total() {
             assert!(
@@ -1113,7 +1271,7 @@ mod tests {
                 "the swing ended early, at tick {remaining} of {}",
                 spec.total()
             );
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         }
         assert!(
             encounter.combatant(Side::Player).action().is_free(),
@@ -1141,8 +1299,10 @@ mod tests {
         let spec = *encounter.attack_spec(Side::Player);
         let mut hits = 0;
         for tick in 0..spec.total() + 2 {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             hits += events
                 .iter()
                 .filter(|event| {
@@ -1184,7 +1344,10 @@ mod tests {
             // one swing lands one hit.
             let toward = encounter.combatant(Side::Adversary).position()
                 - encounter.combatant(Side::Player).position();
-            let events = encounter.step(Intent::player(toward, free, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(toward, free, false),
+                WorldContact::ground_only(&ground),
+            );
             for event in events.iter() {
                 match event {
                     CombatEvent::Hit {
@@ -1220,8 +1383,10 @@ mod tests {
             // knockback is the victim's position at the start of the hit tick
             // rather than at the start of the swing.
             let victim_before = encounter.combatant(Side::Adversary).position();
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             if let Some(event) = events.first_hit() {
                 hit_event = Some(event);
                 // Everything a hit produces, on the tick it produced it.
@@ -1275,7 +1440,7 @@ mod tests {
             "the hit needs a direction"
         );
         // Hitstop lands on both, from the next tick.
-        let _ = encounter.step(Intent::idle(), Some(&ground));
+        let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         assert!(encounter.combatant(Side::Player).is_frozen());
         assert!(encounter.combatant(Side::Adversary).is_frozen());
     }
@@ -1286,8 +1451,10 @@ mod tests {
         let mut encounter = armed(&fixture::sandbox_setup(), &ground);
         let spec = *encounter.attack_spec(Side::Player);
         for tick in 0..spec.total() {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             if events.first_hit().is_some() {
                 break;
             }
@@ -1300,7 +1467,7 @@ mod tests {
         for _ in 0..spec.hitstop() - 1 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(1.0, 0.0), false, false),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             assert_eq!(
                 encounter.combatant(Side::Player).action().elapsed(),
@@ -1324,7 +1491,7 @@ mod tests {
             "the freeze is counted"
         );
         // And then it thaws, on the tick after the last frozen one.
-        let _ = encounter.step(Intent::idle(), Some(&ground));
+        let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         assert!(!encounter.combatant(Side::Player).is_frozen());
         assert_eq!(
             encounter.combatant(Side::Player).action().elapsed(),
@@ -1342,8 +1509,7 @@ mod tests {
         // the survivor is untouched.
         let ground = ground();
         let mut setup = fixture::golden_setup();
-        setup.player_offset = Vec2::new(0.0, 1.0);
-        setup.adversary_offset = Vec2::new(0.0, -1.0);
+        setup.starts = [Vec2::new(0.0, 1.0), Vec2::new(0.0, -1.0)];
         setup.tuning = AuthoredTuning {
             player_health: 1,
             adversary_health: 1,
@@ -1362,8 +1528,10 @@ mod tests {
         let mut defeats = Vec::new();
         let mut hits = Vec::new();
         for tick in 0..adversary_spec.total() {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             for event in events.iter() {
                 match event {
                     CombatEvent::Defeated { side } => defeats.push(side),
@@ -1414,8 +1582,10 @@ mod tests {
         let hold = encounter.tuning().defeat_hold();
         let start = encounter.combatant(Side::Player).position();
         for tick in 0..spec.total() {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             if events.any(|event| matches!(event, CombatEvent::Defeated { .. })) {
                 break;
             }
@@ -1423,7 +1593,7 @@ mod tests {
         assert_eq!(encounter.outcome(), Some(Side::Adversary));
         let mut reset = false;
         for _ in 0..hold * 3 {
-            let events = encounter.step(Intent::idle(), Some(&ground));
+            let events = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
             if events.any(|event| matches!(event, CombatEvent::EncounterReset)) {
                 reset = true;
                 break;
@@ -1448,7 +1618,10 @@ mod tests {
             "a reset must put the bodies back where they started"
         );
         // A swing identifier is never reused, even across a reset.
-        let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            WorldContact::ground_only(&ground),
+        );
         match encounter.combatant(Side::Player).action() {
             Action::Attack { swing, .. } => assert!(swing.raw() > 0),
             other => panic!("expected a swing, got {other:?}"),
@@ -1472,8 +1645,10 @@ mod tests {
         let mut saw_defeat = false;
         let mut saw_reset = false;
         for tick in 0..spec.total() + 8 {
-            let events =
-                encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             saw_defeat |= events.any(|event| matches!(event, CombatEvent::Defeated { .. }));
             saw_reset |= events.any(|event| matches!(event, CombatEvent::EncounterReset));
             assert_eq!(events.dropped(), 0, "a tick lost an event");
@@ -1488,30 +1663,39 @@ mod tests {
         let dodge = *encounter.tuning().dodge();
         let _ = encounter.step(
             Intent::player(Vec2::new(0.0, -1.0), false, true),
-            Some(&ground),
+            WorldContact::ground_only(&ground),
         );
         assert!(encounter.combatant(Side::Player).action().is_dodging());
         assert_eq!(encounter.counters().dodges[0], 1);
         // Asking again mid dodge is refused and counted.
-        let _ = encounter.step(Intent::player(Vec2::ZERO, false, true), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, false, true),
+            WorldContact::ground_only(&ground),
+        );
         assert_eq!(encounter.counters().dodges[0], 1);
         assert!(encounter.counters().dodges_refused[0] >= 1);
         // And asking to attack mid dodge is refused too: commitment is the point.
-        let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            WorldContact::ground_only(&ground),
+        );
         assert!(encounter.combatant(Side::Player).action().is_dodging());
         for _ in 0..dodge.duration() {
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         }
         assert!(encounter.combatant(Side::Player).action().is_free());
         // Still cooling down.
-        let _ = encounter.step(Intent::player(Vec2::ZERO, false, true), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, false, true),
+            WorldContact::ground_only(&ground),
+        );
         assert_eq!(encounter.counters().dodges[0], 1, "the cooldown must hold");
         for _ in 0..dodge.cooldown() + 2 {
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         }
         let _ = encounter.step(
             Intent::player(Vec2::new(0.0, -1.0), false, true),
-            Some(&ground),
+            WorldContact::ground_only(&ground),
         );
         assert_eq!(encounter.counters().dodges[0], 2, "and then release");
     }
@@ -1521,7 +1705,10 @@ mod tests {
         let ground = ground();
         let mut encounter = armed(&fixture::golden_setup(), &ground);
         let before = encounter.separation_distance();
-        let _ = encounter.step(Intent::player(Vec2::ZERO, false, true), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, false, true),
+            WorldContact::ground_only(&ground),
+        );
         match encounter.combatant(Side::Player).action() {
             Action::Dodge { direction, .. } => {
                 let forward = veldwake_character::pose::facing_direction(
@@ -1536,7 +1723,7 @@ mod tests {
             other => panic!("expected a dodge, got {other:?}"),
         }
         for _ in 0..30 {
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
         }
         assert!(
             encounter.separation_distance() > before,
@@ -1620,7 +1807,7 @@ mod tests {
         let mut swings = 0_u32;
         let mut previous: Option<u32> = None;
         for _ in 0..6_000 {
-            let _ = encounter.step(Intent::idle(), Some(&ground));
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
             let elapsed = match encounter.combatant(Side::Adversary).action() {
                 Action::Attack { elapsed, .. } => Some(*elapsed),
                 _ => None,
@@ -1661,12 +1848,14 @@ mod tests {
         let ground = ground();
         let aim = |offset_degrees: f32, range: f32| {
             let mut setup = fixture::sandbox_setup();
-            setup.player_offset = Vec2::new(0.0, range * 0.5);
-            setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+            setup.starts = [Vec2::new(0.0, range * 0.5), Vec2::new(0.0, -range * 0.5)];
             setup.facing_offsets[Side::Player.index()] = offset_degrees.to_radians();
             let mut encounter = armed(&setup, &ground);
             let before = encounter.combatant(Side::Player).state().facing;
-            let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+            let _ = encounter.step(
+                Intent::player(Vec2::ZERO, true, false),
+                WorldContact::ground_only(&ground),
+            );
             let after = encounter.combatant(Side::Player).state().facing;
             let assists = encounter.counters().aim_assists[Side::Player.index()];
             (before, after, assists)
@@ -1710,11 +1899,13 @@ mod tests {
         // set once, when the blade commits, and then the body is on its own.
         let ground = ground();
         let mut setup = fixture::sandbox_setup();
-        setup.player_offset = Vec2::new(0.0, 1.0);
-        setup.adversary_offset = Vec2::new(0.0, -1.0);
+        setup.starts = [Vec2::new(0.0, 1.0), Vec2::new(0.0, -1.0)];
         setup.facing_offsets[Side::Player.index()] = 0.3;
         let mut encounter = armed(&setup, &ground);
-        let _ = encounter.step(Intent::player(Vec2::ZERO, true, false), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            WorldContact::ground_only(&ground),
+        );
         assert_eq!(encounter.counters().aim_assists[Side::Player.index()], 1);
         let aimed = encounter.combatant(Side::Player).state().facing;
 
@@ -1722,7 +1913,10 @@ mod tests {
         // however the other body drifts.
         let spec = *encounter.attack_spec(Side::Player);
         for _ in 0..spec.total() {
-            let _ = encounter.step(Intent::player(Vec2::ZERO, false, false), Some(&ground));
+            let _ = encounter.step(
+                Intent::player(Vec2::ZERO, false, false),
+                WorldContact::ground_only(&ground),
+            );
             let now = encounter.combatant(Side::Player).state().facing;
             assert!(
                 (now - aimed).abs() < 1.0e-6,
@@ -1745,7 +1939,10 @@ mod tests {
         setup.facing_offsets[Side::Player.index()] = 0.3;
         let mut encounter = armed(&setup, &ground);
         let before = encounter.combatant(Side::Player).state().facing;
-        let _ = encounter.step(Intent::player(Vec2::ZERO, false, true), Some(&ground));
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, false, true),
+            WorldContact::ground_only(&ground),
+        );
         assert_eq!(encounter.counters().aim_assists[Side::Player.index()], 0);
         assert!(encounter.combatant(Side::Player).action().is_dodging());
         let after = encounter.combatant(Side::Player).state().facing;
@@ -1806,7 +2003,10 @@ mod tests {
             }
             let adversary_was_attacking =
                 encounter.combatant(Side::Adversary).action().is_attacking();
-            let events = encounter.step(Intent::player(toward, attack, false), Some(&ground));
+            let events = encounter.step(
+                Intent::player(toward, attack, false),
+                WorldContact::ground_only(&ground),
+            );
 
             let hits: Vec<Side> = events
                 .iter()
@@ -1879,7 +2079,7 @@ mod tests {
         let mut worst = 0.0_f32;
         for _ in 0..fixture::GOLDEN_RUN_TICKS {
             let intent = runner.next_intent(&encounter);
-            let _ = encounter.step(intent, Some(&ground));
+            let _ = encounter.step(intent, WorldContact::ground_only(&ground));
             if runner.finished() {
                 runner.restart();
             }
@@ -1936,15 +2136,16 @@ mod tests {
         let swings = |range: f32, error_degrees: f32| {
             let mut setup = fixture::sandbox_setup();
             setup.tuning.player_attack.knockback = 0.0;
-            setup.player_offset = Vec2::new(0.0, range * 0.5);
-            setup.adversary_offset = Vec2::new(0.0, -range * 0.5);
+            setup.starts = [Vec2::new(0.0, range * 0.5), Vec2::new(0.0, -range * 0.5)];
             setup.facing_offsets[Side::Player.index()] = error_degrees.to_radians();
             let mut encounter = armed(&setup, &ground);
             let spec = *encounter.attack_spec(Side::Player);
             let mut landed = false;
             for tick in 0..spec.total() + 2 {
-                let events =
-                    encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+                let events = encounter.step(
+                    Intent::player(Vec2::ZERO, tick == 0, false),
+                    WorldContact::ground_only(&ground),
+                );
                 landed |= events
                     .iter()
                     .any(|event| matches!(event, CombatEvent::Hit { .. }));
@@ -1986,7 +2187,10 @@ mod tests {
         let mut worst_tip = 0.0_f32;
         let mut worst_base = 0.0_f32;
         for tick in 0..spec.total() + 4 {
-            let _ = encounter.step(Intent::player(Vec2::ZERO, tick == 0, false), Some(&ground));
+            let _ = encounter.step(
+                Intent::player(Vec2::ZERO, tick == 0, false),
+                WorldContact::ground_only(&ground),
+            );
             let blade = encounter.blade_world(Side::Player);
             worst_tip = worst_tip.max((blade.tip - previous.tip).length());
             worst_base = worst_base.max((blade.base - previous.base).length());
@@ -2011,7 +2215,7 @@ mod tests {
         let mut encounter = armed(&fixture::golden_setup(), &ground);
         let mut defeated = None;
         for _ in 0..12_000 {
-            let events = encounter.step(Intent::idle(), Some(&ground));
+            let events = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
             for event in events.iter() {
                 if let CombatEvent::Defeated { side } = event {
                     defeated = Some(side);
@@ -2028,12 +2232,332 @@ mod tests {
         );
     }
 
+    /// A veto that refuses a half-plane, standing in for water.
+    #[derive(Clone, Copy, Debug)]
+    struct RefuseBeyondZ {
+        z: f32,
+    }
+
+    impl TraversalLegality for RefuseBeyondZ {
+        fn walkable(&self, _x: f64, z: f64) -> bool {
+            z < f64::from(self.z)
+        }
+    }
+
+    #[test]
+    fn a_real_encounter_walks_a_stepped_ramp_without_the_pelvis_stopping_it() {
+        // The whole authority path, not `try_move` alone: `CharacterState`'s
+        // pelvis filter runs for real here, and the rule must be untouched by
+        // it. The adversary is left far away and dormant so the only thing
+        // moving the player is the intent.
+        let ground = SteppedRamp::terrain(0.5, 0.0);
+        let mut setup = fixture::golden_setup();
+        setup.arena = None;
+        setup.starts = [Vec2::new(0.0, 0.0), Vec2::new(0.0, -400.0)];
+        let mut encounter = armed(&setup, &ground);
+
+        let start_x = encounter.combatant(Side::Player).position().x;
+        let mut blocked_before = encounter.counters().blocked_moves[Side::Player.index()];
+        let mut worst_stall = 0_u32;
+        let mut stall = 0_u32;
+        for _ in 0..2_400 {
+            let _ = encounter.step(
+                Intent::player(Vec2::new(1.0, 0.0), false, false),
+                WorldContact::ground_only(&ground),
+            );
+            let blocked = encounter.counters().blocked_moves[Side::Player.index()];
+            if blocked > blocked_before {
+                stall += 1;
+                worst_stall = worst_stall.max(stall);
+            } else {
+                stall = 0;
+            }
+            blocked_before = blocked;
+        }
+        let travelled = encounter.combatant(Side::Player).position().x - start_x;
+        // Twenty seconds at the walk speed, minus nothing: a terrace must not
+        // cost the body ground.
+        let expected = encounter.tuning().movement().speed() * 20.0;
+        assert!(
+            travelled > expected * 0.98,
+            "the walk lost ground on a staircase: {travelled} against {expected}"
+        );
+        assert_eq!(
+            worst_stall, 0,
+            "a one-voxel terrace stalled a walking body for {worst_stall} ticks"
+        );
+        let Some(height) = ground.surface(
+            f64::from(encounter.combatant(Side::Player).position().x),
+            0.0,
+        ) else {
+            panic!("the ramp answers everywhere");
+        };
+        assert!(height > 30.0, "the body barely climbed: {height}");
+    }
+
+    #[test]
+    fn a_traversal_veto_stops_a_body_in_a_real_encounter_and_lets_it_slide() {
+        let ground = FlatGround::at(0.0);
+        let veto = RefuseBeyondZ { z: 2.0 };
+        let mut setup = fixture::golden_setup();
+        setup.arena = None;
+        setup.starts = [Vec2::new(0.0, 0.0), Vec2::new(0.0, -400.0)];
+        let mut encounter = armed(&setup, &ground);
+        for _ in 0..1_200 {
+            // Straight at the barrier, and diagonally along it.
+            let _ = encounter.step(
+                Intent::player(Vec2::new(0.4, 1.0), false, false),
+                WorldContact::terrain(&ground, &veto),
+            );
+            let position = encounter.combatant(Side::Player).position();
+            assert!(
+                position.y < 2.0,
+                "a body crossed a traversal veto to {position}"
+            );
+            assert!(position.is_finite());
+        }
+        assert!(
+            encounter.combatant(Side::Player).position().x > 1.0,
+            "a body stopped by a veto must still slide along it"
+        );
+        // And the slide is *counted*, because it is what a barrier looks like
+        // from a log: the first M7 water run walked into the river, was held at
+        // the waterline, slid twenty-three units along the shore, and reported
+        // `blocked_moves = 0` for every one of them.
+        assert!(
+            encounter.counters().slid_moves[Side::Player.index()] > 0,
+            "a body held against a barrier reported no slide"
+        );
+        assert_eq!(
+            encounter.counters().blocked_moves[Side::Player.index()],
+            0,
+            "this body was never refused outright, only redirected"
+        );
+    }
+
+    #[test]
+    fn a_defeated_adversary_remains_and_the_session_continues() {
+        let ground = ground();
+        let mut setup = fixture::sandbox_setup();
+        setup.player_victory = PlayerVictoryPolicy::Remain;
+        let mut encounter = armed(&setup, &ground);
+
+        // Hit it until it falls.
+        let mut ticks = 0_u32;
+        while encounter.outcome().is_none() && ticks < 4_000 {
+            let _ = encounter.step(
+                Intent::player(Vec2::ZERO, ticks.is_multiple_of(40), false),
+                WorldContact::ground_only(&ground),
+            );
+            ticks += 1;
+        }
+        assert_eq!(
+            encounter.outcome(),
+            Some(Side::Adversary),
+            "the sandbox adversary never fell"
+        );
+        assert!(!encounter.outcome_settled(), "the hold has not run yet");
+
+        let resets_before = encounter.counters().resets;
+        let where_the_player_stood = encounter.combatant(Side::Player).position();
+        let where_the_body_fell = encounter.combatant(Side::Adversary).position();
+
+        // Well past the defeat hold, walking away the whole time.
+        let mut reset_events = 0_u32;
+        for _ in 0..3_000 {
+            let events = encounter.step(
+                Intent::player(Vec2::new(1.0, 0.0), false, false),
+                WorldContact::ground_only(&ground),
+            );
+            reset_events += events
+                .iter()
+                .filter(|event| matches!(event, CombatEvent::EncounterReset))
+                .count() as u32;
+        }
+        assert_eq!(reset_events, 0, "a remaining victory published a reset");
+        assert_eq!(
+            encounter.counters().resets,
+            resets_before,
+            "a remaining victory reset the encounter"
+        );
+        assert_eq!(encounter.outcome(), Some(Side::Adversary));
+        assert!(encounter.outcome_settled(), "the outcome never settled");
+        assert!(
+            encounter.combatant(Side::Adversary).action().is_defeated(),
+            "the defeated body got up"
+        );
+        assert!(
+            (encounter.combatant(Side::Adversary).position() - where_the_body_fell).length()
+                < 1.0e-3,
+            "the defeated body moved after it fell"
+        );
+        assert_eq!(
+            encounter.brain().state(),
+            crate::adversary::AdversaryState::Idle,
+            "the brain of a defeated body must stay idle"
+        );
+        assert!(
+            encounter.combatant(Side::Player).position().x > where_the_player_stood.x + 1.0,
+            "the player could not walk away from its own victory"
+        );
+    }
+
+    #[test]
+    fn a_defeated_player_returns_to_its_configured_start() {
+        let ground = ground();
+        let mut setup = fixture::golden_setup();
+        setup.player_victory = PlayerVictoryPolicy::Remain;
+        // Far apart on purpose, so a reset to "the arena centre" would be
+        // visibly wrong: each body must return to its own start.
+        setup.arena = None;
+        // Inside the adversary's aggro radius so the fight actually happens,
+        // and far from the origin so a reset to "the arena centre" would be
+        // visibly wrong: each body must return to its own configured start.
+        setup.starts = [Vec2::new(-61.5, 12.0), Vec2::new(-61.5, 9.0)];
+        let mut encounter = armed(&setup, &ground);
+
+        // Stand still in front of an adversary that walks over and kills you.
+        let mut ticks = 0_u32;
+        while encounter.counters().resets == 0 && ticks < 40_000 {
+            let _ = encounter.step(
+                Intent::player(Vec2::ZERO, false, false),
+                WorldContact::ground_only(&ground),
+            );
+            ticks += 1;
+        }
+        assert_eq!(
+            encounter.counters().resets,
+            1,
+            "a defeated player must reset the encounter"
+        );
+        assert_eq!(encounter.outcome(), None, "a reset clears the outcome");
+        assert!(!encounter.outcome_settled());
+        for side in SIDES {
+            let expected = setup.starts[side.index()];
+            let actual = encounter.combatant(side).position();
+            assert!(
+                (actual - expected).length() < 1.0e-3,
+                "{} reset to {actual} rather than to its start {expected}",
+                side.name()
+            );
+        }
+        assert_eq!(
+            encounter.brain().state(),
+            crate::adversary::AdversaryState::Idle,
+            "a reset returns the brain to idle"
+        );
+    }
+
+    #[test]
+    fn a_distant_adversary_is_dormant_and_costs_the_stream_nothing() {
+        let ground = ground();
+        let mut setup = fixture::golden_setup();
+        setup.arena = None;
+        // Well outside the aggro radius and staying there.
+        setup.starts = [Vec2::new(0.0, 0.0), Vec2::new(0.0, -200.0)];
+        let mut encounter = armed(&setup, &ground);
+
+        // One tick first, because `start_state` hands out an unwrapped facing
+        // and the first `turn_toward` normalises `pi` to `-pi`. That is a
+        // representation moving, not a body, and the property under test is
+        // that nothing moves *afterwards*.
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, false, false),
+            WorldContact::ground_only(&ground),
+        );
+        let at_rest = encounter.combatant(Side::Adversary).position();
+        let facing = encounter.combatant(Side::Adversary).state().facing;
+        let decisions = encounter.brain().decisions();
+        for _ in 0..10_000 {
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, false, false),
+                WorldContact::ground_only(&ground),
+            );
+            assert!(events.is_empty(), "a dormant adversary produced an event");
+        }
+        assert_eq!(
+            encounter.brain().state(),
+            crate::adversary::AdversaryState::Idle
+        );
+        assert_eq!(
+            encounter.brain().decisions(),
+            decisions,
+            "a dormant brain drew from its deterministic stream"
+        );
+        assert_eq!(
+            encounter.combatant(Side::Adversary).position(),
+            at_rest,
+            "a dormant adversary moved"
+        );
+        assert_eq!(
+            encounter.combatant(Side::Adversary).state().facing,
+            facing,
+            "a dormant adversary turned"
+        );
+        assert_eq!(encounter.counters().swings[Side::Adversary.index()], 0);
+        assert_eq!(
+            encounter.counters().blocked_moves[Side::Adversary.index()],
+            0
+        );
+    }
+
+    #[test]
+    fn an_adversary_wakes_when_the_player_comes_inside_its_aggro_radius() {
+        let ground = ground();
+        let aggro = fixture::adversary().aggro_radius;
+        let mut setup = fixture::golden_setup();
+        setup.arena = None;
+        setup.starts = [Vec2::new(0.0, aggro + 6.0), Vec2::new(0.0, 0.0)];
+        let mut encounter = armed(&setup, &ground);
+        assert_eq!(
+            encounter.brain().state(),
+            crate::adversary::AdversaryState::Idle
+        );
+
+        let mut woke_at = None;
+        for tick in 0..4_000_u64 {
+            let _ = encounter.step(
+                Intent::player(Vec2::new(0.0, -1.0), false, false),
+                WorldContact::ground_only(&ground),
+            );
+            if woke_at.is_none()
+                && encounter.brain().state() != crate::adversary::AdversaryState::Idle
+            {
+                woke_at = Some((tick, encounter.separation_distance()));
+            }
+        }
+        let Some((tick, distance)) = woke_at else {
+            panic!("the adversary never woke up");
+        };
+        assert!(tick > 0, "it woke before the player had moved");
+        assert!(
+            distance <= aggro + 0.1,
+            "it woke at {distance}, outside its aggro radius of {aggro}"
+        );
+
+        // The same trace produces the same wake tick.
+        let mut again = armed(&setup, &ground);
+        let mut second = None;
+        for tick in 0..4_000_u64 {
+            let _ = again.step(
+                Intent::player(Vec2::new(0.0, -1.0), false, false),
+                WorldContact::ground_only(&ground),
+            );
+            if second.is_none() && again.brain().state() != crate::adversary::AdversaryState::Idle {
+                second = Some(tick);
+            }
+        }
+        assert_eq!(second, Some(tick), "the wake tick is not reproducible");
+    }
+
     #[test]
     fn the_arena_holds_both_bodies_whatever_they_are_asked_to_do() {
         let ground = ground();
         let setup = fixture::golden_setup();
         let mut encounter = armed(&setup, &ground);
-        let arena = *encounter.tuning().arena();
+        let Some(arena) = setup.arena else {
+            panic!("the golden fixture has an arena");
+        };
         for tick in 0..4_000 {
             // Drive hard at the boundary, alternating direction.
             let push = if (tick / 200) % 2 == 0 {
@@ -2043,7 +2567,7 @@ mod tests {
             };
             let _ = encounter.step(
                 Intent::player(push, tick % 97 == 0, tick % 53 == 0),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             for side in SIDES {
                 let position = encounter.combatant(side).position();
@@ -2063,14 +2587,13 @@ mod tests {
         let mut setup = fixture::golden_setup();
         // Start them on top of each other, which is the case a division by the
         // distance would turn into a NaN.
-        setup.player_offset = Vec2::ZERO;
-        setup.adversary_offset = Vec2::ZERO;
+        setup.starts = [Vec2::ZERO, Vec2::ZERO];
         let mut encounter = armed(&setup, &ground);
         let mut worst = 0.0_f32;
         for tick in 0..2_000 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(0.0, -1.0), tick % 61 == 0, false),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             let overlap = crate::movement::overlap(
                 encounter.combatant(Side::Player).position(),
@@ -2100,13 +2623,12 @@ mod tests {
             high: 6.0,
         };
         let mut setup = fixture::golden_setup();
-        setup.player_offset = Vec2::new(0.0, 0.0);
-        setup.adversary_offset = Vec2::new(0.0, -2.0);
+        setup.starts = [Vec2::new(0.0, 0.0), Vec2::new(0.0, -2.0)];
         let mut encounter = armed(&setup, &step);
         for _ in 0..1_200 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(1.0, 0.0), false, false),
-                Some(&step),
+                WorldContact::ground_only(&step),
             );
             for side in SIDES {
                 let position = encounter.combatant(side).position();
@@ -2137,7 +2659,7 @@ mod tests {
         for tick in 0..600 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(0.4, -0.9), tick % 71 == 0, tick % 43 == 0),
-                None,
+                WorldContact::none(),
             );
             for side in SIDES {
                 assert!(encounter.combatant(side).position().is_finite());
@@ -2159,7 +2681,10 @@ mod tests {
         ];
         for tick in 0..2_000 {
             let move_world = hostile[tick % hostile.len()];
-            let events = encounter.step(Intent::player(move_world, true, true), Some(&ground));
+            let events = encounter.step(
+                Intent::player(move_world, true, true),
+                WorldContact::ground_only(&ground),
+            );
             assert_eq!(events.dropped(), 0);
             for side in SIDES {
                 let combatant = encounter.combatant(side);
@@ -2246,7 +2771,7 @@ mod tests {
         for _ in 0..100 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(0.0, -1.0), false, false),
-                Some(&counting),
+                WorldContact::ground_only(&counting),
             );
         }
         let per_tick = (counting.queries() - before) as f64 / 100.0;
@@ -2307,7 +2832,7 @@ mod tests {
         for tick in 0..300 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(0.6, -0.8), tick % 80 == 0, false),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             let posed = encounter.combatant(Side::Player).posed();
             let hand = posed.bone_world()[BoneId::HandR.index()];
@@ -2335,7 +2860,7 @@ mod tests {
         for tick in 0..1_200 {
             let _ = encounter.step(
                 Intent::player(Vec2::new(0.0, -1.0), tick % 120 == 0, false),
-                Some(&ground),
+                WorldContact::ground_only(&ground),
             );
             for side in SIDES {
                 let combatant = encounter.combatant(side);

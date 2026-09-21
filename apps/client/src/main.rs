@@ -12,6 +12,7 @@ mod readout;
 mod renderer;
 mod streaming;
 mod synth;
+mod traversal;
 mod vfx;
 mod world;
 
