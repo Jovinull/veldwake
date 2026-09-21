@@ -20,7 +20,7 @@ Questions are decisions not safely inferable from the transcript. Resolve at the
 8. Select voxel storage unit/scales, chunk dimensions, edit granularity, terrain topology, meshing baseline, and coordinate precision through prototypes. Everything here is settled except **edit granularity**, which remains untouched: nothing in the game can change a voxel.
 9. Decide finite-world topology/size and world-version compatibility policy.
 10. Define the first STYLE_BIBLE with concrete shape/palette/material examples and review ownership.
-11. Decide persistence guarantees for edited/generated chunks and recovery expectations. **Still open after M7 and now the nearest one**: a session leaves no trace at all, and M7 deliberately added none.
+11. Decide persistence guarantees for edited/generated chunks and recovery expectations. **Still open after M7**: a session leaves no trace at all, and M7 deliberately added none. Being open is not being chosen — no milestone has been selected to follow M7, and this entry is not a nomination.
 
 ## Before gameplay/product slices
 
