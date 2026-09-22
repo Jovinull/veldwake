@@ -8,7 +8,7 @@
 
 use crate::hash::fnv1a64;
 use crate::landmark::descriptor::{
-    MonolithDescriptor, RUBBLE_APRON, SilhouetteClass, SpanAxis, draw,
+    DescriptorError, MonolithDescriptor, RUBBLE_APRON, SilhouetteClass, SpanAxis, draw,
 };
 use crate::landmark::material::LandmarkMaterial;
 
@@ -59,13 +59,30 @@ pub struct Silhouette {
 }
 
 impl CompiledMonolith {
-    /// Compiles a canonical descriptor.
+    /// Compiles a descriptor, after checking that it is one this compiler can
+    /// compile.
     ///
-    /// Infallible by construction: [`MonolithDescriptor::from_seed`] only
-    /// produces descriptors inside the style bands, and the tests assert that
-    /// every one of them compiles into a supported, asymmetric mass.
-    #[must_use]
-    pub fn new(descriptor: MonolithDescriptor) -> Self {
+    /// The check is not ceremony. The build reads the descriptor's numbers as
+    /// dimensions and as a divisor, so a descriptor from outside the style
+    /// bands is not merely ugly: `band_period = 0` divides by zero, and a
+    /// negative height compiles to an empty grid that would later be placed in
+    /// the world as a landmark with no voxels. [`MonolithDescriptor::from_seed`]
+    /// cannot produce either, but it is not the only way to build a
+    /// descriptor, and "the only caller is careful" is a comment rather than a
+    /// guarantee. This returns the same [`DescriptorError`] the validator
+    /// already speaks.
+    ///
+    /// # Errors
+    ///
+    /// [`DescriptorError`] when the descriptor is outside the style bands its
+    /// class declares.
+    pub fn new(descriptor: MonolithDescriptor) -> Result<Self, DescriptorError> {
+        descriptor.validate()?;
+        Ok(Self::compile(descriptor))
+    }
+
+    /// Compiles a descriptor already known to be valid.
+    fn compile(descriptor: MonolithDescriptor) -> Self {
         let (span, depth) = (descriptor.span_width(), descriptor.depth);
         let lean = descriptor.lean;
         let span_cells = span + lean.abs();
@@ -618,7 +635,15 @@ mod tests {
     use super::*;
 
     fn compiled(class: SilhouetteClass, seed: u64) -> CompiledMonolith {
-        CompiledMonolith::new(MonolithDescriptor::from_seed(class, SpanAxis::X, seed))
+        drawn(MonolithDescriptor::from_seed(class, SpanAxis::X, seed))
+    }
+
+    /// Compiles a descriptor the draw produced, which must always compile.
+    fn drawn(descriptor: MonolithDescriptor) -> CompiledMonolith {
+        match CompiledMonolith::new(descriptor) {
+            Ok(compiled) => compiled,
+            Err(error) => panic!("a drawn descriptor does not compile: {error}"),
+        }
     }
 
     #[test]
@@ -626,8 +651,7 @@ mod tests {
         for class in SilhouetteClass::ALL {
             for axis in [SpanAxis::X, SpanAxis::Z] {
                 for seed in 0..96_u64 {
-                    let landmark =
-                        CompiledMonolith::new(MonolithDescriptor::from_seed(class, axis, seed));
+                    let landmark = drawn(MonolithDescriptor::from_seed(class, axis, seed));
                     assert!(landmark.voxel_count() > 40, "{class:?} {seed} is tiny");
                     assert!(landmark.is_supported(), "{class:?} {seed} floats");
                     assert!(landmark.respects_taper(), "{class:?} {seed} overhangs");
@@ -647,7 +671,7 @@ mod tests {
         assert_ne!(first.geometry_fingerprint(), other.geometry_fingerprint());
         // The same descriptor on the other axis is a different arrangement of
         // the same voxels, and the fingerprint sees it.
-        let turned = CompiledMonolith::new(MonolithDescriptor {
+        let turned = drawn(MonolithDescriptor {
             axis: SpanAxis::Z,
             ..*first.descriptor()
         });
@@ -753,6 +777,71 @@ mod tests {
                 panic!("a gate's opening column carries its lintel");
             };
             assert_eq!(column.0, clearance);
+        }
+    }
+
+    #[test]
+    fn the_compiler_refuses_a_descriptor_it_would_have_to_guess_at() {
+        // Branch QA found this by building descriptors the draw cannot
+        // produce: the compiler read `band_period` as a divisor and every
+        // dimension as a length, so an out-of-band descriptor did not produce
+        // an ugly landmark, it produced a panic or an empty one. The bands are
+        // the compiler's precondition, so the compiler is the place to say so.
+        let valid = MonolithDescriptor::from_seed(SilhouetteClass::Gate, SpanAxis::X, 7);
+        assert!(CompiledMonolith::new(valid).is_ok());
+
+        // A zero band period divided by zero.
+        let divisor = MonolithDescriptor {
+            band_period: 0,
+            ..valid
+        };
+        assert_eq!(
+            CompiledMonolith::new(divisor),
+            Err(DescriptorError::OutOfBand {
+                field: "band_period",
+                found: 0,
+                low: 3,
+                high: 4
+            })
+        );
+
+        // Negative dimensions compiled into an empty grid that a plan would
+        // then have placed in the world as a landmark with no voxels.
+        let empty = MonolithDescriptor {
+            height: -4,
+            shaft_width: -3,
+            depth: -5,
+            ..valid
+        };
+        assert!(matches!(
+            CompiledMonolith::new(empty),
+            Err(DescriptorError::OutOfBand {
+                field: "height",
+                ..
+            })
+        ));
+
+        // And a dimension large enough to overflow the grid's own arithmetic.
+        let enormous = MonolithDescriptor {
+            height: i64::MAX / 3,
+            shaft_width: i64::MAX / 3,
+            depth: i64::MAX / 3,
+            ..valid
+        };
+        assert!(CompiledMonolith::new(enormous).is_err());
+
+        // Every class's drawn descriptors still compile, which is the other
+        // half of the contract: the guard rejects nothing the plan draws.
+        for class in SilhouetteClass::ALL {
+            for axis in [SpanAxis::X, SpanAxis::Z] {
+                for seed in 0..64_u64 {
+                    let drawn = MonolithDescriptor::from_seed(class, axis, seed);
+                    assert!(
+                        CompiledMonolith::new(drawn).is_ok(),
+                        "{class:?} {axis:?} {seed} is drawn and refused"
+                    );
+                }
+            }
         }
     }
 }

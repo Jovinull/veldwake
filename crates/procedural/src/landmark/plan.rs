@@ -18,7 +18,7 @@ use veldwake_voxel::CHUNK_EDGE;
 use crate::hash::fnv1a64;
 use crate::identity::{StreamLabel, WorldIdentity};
 use crate::landmark::compile::CompiledMonolith;
-use crate::landmark::descriptor::{MonolithDescriptor, SilhouetteClass, SpanAxis};
+use crate::landmark::descriptor::{DescriptorError, MonolithDescriptor, SilhouetteClass, SpanAxis};
 use crate::landmark::material::LandmarkMaterial;
 use crate::landmark::visibility::{Observer, VisibleBand, WorldOccluders};
 use crate::landmark::{LANDMARK_PLAN_VERSION, LandmarkControls};
@@ -229,7 +229,10 @@ impl LandmarkInstance {
 }
 
 /// Why a world cannot be given landmarks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// `PartialEq` but not `Eq`, because a descriptor rejection carries the
+/// proportion it measured and proportions are floating point.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlanError {
     /// No column near the hint is a place a person could stand and look out.
     NoOverlook { hint: (i64, i64) },
@@ -241,6 +244,11 @@ pub enum PlanError {
     NoRevealedSite { candidates: usize },
     /// A landmark would stand through the top of the region.
     AboveRegion { top: i64, ceiling: i64 },
+    /// The plan drew a descriptor its own compiler rejects. Unreachable while
+    /// the draw stays inside the style bands, and typed rather than asserted
+    /// so that a future draw which leaves them fails to build a world instead
+    /// of building a broken one.
+    Descriptor(DescriptorError),
 }
 
 impl std::fmt::Display for PlanError {
@@ -262,6 +270,12 @@ impl std::fmt::Display for PlanError {
                 write!(
                     formatter,
                     "a landmark reaches {top}, above the region ceiling {ceiling}"
+                )
+            }
+            Self::Descriptor(error) => {
+                write!(
+                    formatter,
+                    "the plan drew a descriptor it cannot compile: {error}"
                 )
             }
         }
@@ -986,7 +1000,7 @@ fn build_instance(
         axis,
         sub_hash(hash_2d(seed, stream, site.0, site.1), index as u64),
     );
-    let compiled = CompiledMonolith::new(descriptor);
+    let compiled = CompiledMonolith::new(descriptor).map_err(PlanError::Descriptor)?;
     let (size_x, size_y, size_z) = compiled.size();
     let origin = (
         site.0 - i64::try_from(size_x).unwrap_or_default() / 2,
