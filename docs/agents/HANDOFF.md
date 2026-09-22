@@ -1,18 +1,20 @@
 # Current handoff
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 ## Current position
 
-**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks`, and its blind owner playtest passed on 2026-09-22.** Nothing is merged and no pull request is open. Branch head `d987ec6301460336b4214d1ee704d3ea77b936d7`: **four commits ahead of `main`**, **three after `docs/post-m7-handoff`** — plan, implementation, documentation.
+**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks`, the owner's discovery playtest passed on 2026-09-22, and independent branch QA has run.** Nothing is merged and no pull request is open. The branch state is at the end of this section, because a head written down here goes stale the moment anything else lands.
 
-**OWNER PLAYTEST — DISCOVERABLE LANDMARKS: PASS.** Told only to play and explore normally, the owner noticed two structures with no navigation interface of any kind, read them as two different destinations — one a tower, one a broken construction — chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked it. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
+**OWNER DISCOVERY PLAYTEST WITHOUT NAVIGATION INSTRUCTIONS: PASS.** The wording is exact and the exactness matters: during the session the owner was given no coordinate, direction, waypoint or route, but had read the implementation report beforehand, so the session was *uninstructed* rather than literally blind. Told only to play and explore normally, the owner noticed two structures with no navigation interface of any kind, read them as two different destinations — one a tower, one a broken construction — chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked it. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
 
 **That is the whole point of the milestone, so it is worth stating against M7.** M7: walking the world works, and the owner found nothing in it. M8: the owner immediately noticed two different destinations, chose one, explored toward it, and found the adversary.
 
 **Be exact about what is owner evidence and what is not.** The owner gave no distance measurement, no contrast judgement, no judgement of the third landmark, no clear-versus-overcast comparison, no judgement of the gate's passability and no judgement of KI-032. All of those are technical and self-QA evidence, and promoting any of them to owner judgement is the same mistake M7's handoff exists to prevent.
 
-Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved, the owner's session, and what this agent could **not** verify.
+**Branch QA has been done and found one defect**, now fixed: `CompiledMonolith::new` accepted a descriptor it could not compile — `band_period = 0` divided by zero and negative dimensions compiled into an empty landmark — because it trusted a convention the type system did not enforce. It now validates and returns `DescriptorError`, and `PlanError::Descriptor` carries it. QA also added eight oracles that judge the landmarks from the drawn voxels rather than from the plan, re-derived every number the milestone claims, walked a body through the gate in the authoritative loop, and corrected three numbers in the documentation.
+
+Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved, the owner's session, the branch QA section, and what nobody could verify.
 
 **M7 — Traversable Region is complete and merged. M1 through M7 are all in `main`.** It landed through [PR #11](https://github.com/Jovinull/veldwake/pull/11) at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, whose parents are `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` and `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, after the owner's playtest, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run on the merge commit ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The remote branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, which is the head where the 699 tests and every gate were run. The branch was based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd` deliberately, so the two post-M6 documentation commits travelled into the same pull request.
 
@@ -90,11 +92,11 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M8 needs independent branch QA and nothing else
+## Continue here — M8 is reviewed and the next step is the pull request
 
-**The single next step is an independent review of `main...HEAD`.** Not a pull request, not a merge, not M9, and not more landmark work: the owner gate is closed, and what is missing is the pass an agent may not perform on its own work. After QA the branch goes through the usual sequence — PR, CI on the exact head, merge commit, post-merge CI, handoff branch.
+**The single next step is opening the pull request**, and it is the owner's call to make, not an agent's. Both gates that precede it are closed: the owner's discovery playtest passed on 2026-09-22, and independent branch QA has reviewed the whole of `main...HEAD`, fixed one defect, added eight independent oracles and reconciled the documentation. After the pull request the sequence is the usual one — CI on the exact head, merge commit, post-merge CI, handoff branch — and none of it happens without the owner asking.
 
-**Where a reviewer should push hardest**, because these are the places this branch decided something rather than derived it:
+**What a reviewer of the pull request should look at first**, because these are the places the branch decided something rather than derived it:
 
 - **the two-level visibility split** ([ADR-0009](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md)). The world proxy does occlusion and no framing; the client oracle does framing and no raycasting. Only one test compares them, and it can only prove one direction. Try to find a landmark the proxy likes and the camera cannot see;
 - **the keep-out**. `0.86` by `2.84` is the adversary's capsule rounded up, applied to a destination only. Try to get a body inside stone, and try to get it refused somewhere the drawn voxels are open;
@@ -108,6 +110,10 @@ The shapes worth holding while reading: the domain is authoritative and headless
 - the overlook's `r = 40` vegetation reservation is a composition control nobody has judged on sight yet;
 - the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all;
 - the family still reads close to familiar voxel-RPG architecture (KI-036), which is art direction for a later milestone and not a defect in this one.
+
+**Branch state at the end of QA.** `feat/m8-discoverable-landmarks`: **eight commits ahead of `main`** (`0c81c069bb95a8caf3b6a5252b89b023c6334ae1`) and **seven after `docs/post-m7-handoff`** (`08081b8a15be3ea70de82e03cb0b113d71c7c8d9`) — the milestone plan, the implementation, its documentation, the owner's session, then QA's defect fix, its oracles and this reconciliation. Working tree clean, local equal to origin, no pull request open.
+
+The head itself is deliberately not written here: a commit cannot name its own hash, and the last two times one was copied into this file it was stale within a day. Read it with `git rev-parse HEAD`, and count against a named base with `git rev-list --count main..HEAD` rather than from how many commits a session happened to make — an earlier report said "two commits" for a branch that was four ahead.
 
 ### What M7 left, and what it still means
 

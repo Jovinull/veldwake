@@ -1,6 +1,6 @@
 # Procedural content domains
 
-Status: **Exploratory domain models under accepted procedural philosophy; the character domain has a first worked implementation in M5**.
+Status: **Exploratory domain models under accepted procedural philosophy; the character domain has a first worked implementation in M5, and the architecture domain has a first, deliberately tiny one in M8**.
 
 This document preserves generator ideas from the source without prematurely defining schemas.
 
@@ -33,6 +33,12 @@ L-systems or project-specific growth grammars may generate trunk and branch hier
 Settlement generation is growth and constraint solving, not random house scattering. A culture grammar may define roof/window/wall style, local materials, street width, tower frequency, preferred shapes, decoration, palette, defenses, and public spaces. Terrain, water, resources, trade routes, danger, history, population, and function influence layout.
 
 A mining town, trading capital, isolated village, and settlement built around ruins should differ for causal and cultural reasons. Growth/decline needs compatible stages so world simulation can add, repurpose, damage, and rebuild structures without visual incoherence.
+
+M8 implemented the smallest honest fragment of that paragraph and nothing beyond it.
+
+**Real.** One family, the Monolith, with three silhouette classes — Spire, Gate, Broken — drawn from a seed into a canonical descriptor, validated against style bands, and compiled once into voxels, per-column occupancy and silhouette measurements that everything downstream reads. Terrain-scale voxels, a three-material palette in its own `VoxelId` range, and placement by the world's own rules: level, dry, far enough apart, visible from where the composition intends and hidden from where it does not. A vegetation reservation that removes the plants a structure would otherwise stand inside. Solid geometry the client turns into a movement veto, so a visible wall refuses a body and a gate's opening admits one.
+
+**Not real, and deliberately not invented.** Culture, roof and window grammar, streets, settlement layout, growth and decline stages, function, history, interiors, decoration, inscriptions, and any second family. There is no causal reason these three stand where they stand beyond composition — no prior civilisation, no trade route, no ruin of anything. The owner's own reaction after playing M8 is the honest statement of where this domain is: simple, sufficient for discovery, and still close to the visual language of familiar voxel games (KI-036).
 
 ## Items and equipment
 

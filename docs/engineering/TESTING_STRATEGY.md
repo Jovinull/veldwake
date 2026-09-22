@@ -93,7 +93,7 @@ The aim assist that followed is bounded by tests rather than by intent: at swing
 
 ## Traversal
 
-The workspace has **746 tests** that run by default and **749** with `--run-ignored all`; the ignored ones are run deliberately: M6's offline listening fixture, M7's whole-region reachability report — which M8 extended with a landmark section — and M7's adversary placement re-derivation.
+The workspace has **755 tests** that run by default and **758** with `--run-ignored all`; the ignored ones are run deliberately: M6's offline listening fixture, M7's whole-region reachability report — which M8 extended with a landmark section — and M7's adversary placement re-derivation.
 
 M7's tests are organised around the three things that could silently be wrong.
 
@@ -130,3 +130,14 @@ M8's tests answer four questions that could each be silently wrong, and they are
 
 **The placement could be about a world nobody looks at.** The client's `landmark` module projects each landmark through the real follow camera with the real projection and the real fog table, and `the_world_proxy_and_the_presentation_agree_about_what_is_visible` requires that anything the world proxy calls visible the camera can actually frame. The two levels measure different things on purpose — the proxy does occlusion and no framing, the oracle does framing and no raycasting — and the tests say which is which.
 
+### What branch QA added
+
+M8's own tests ask the plan and the compiler whether they agree with themselves. Branch QA added a second layer that does not: oracles built from the voxels the generator writes, from a world of the same identity composed **without** landmarks, and from the authoritative tick loop.
+
+- `qa_a_landmark_only_ever_replaces_air` differences every chunk a landmark touches against that landmark-free baseline and inspects every voxel that differs. It is the proof that no terrain or water moved, and it needs no cooperation from the code that wrote the landmarks.
+- `qa_landmark_chunks_do_not_depend_on_the_order_they_are_asked_for` generates the same chunks under six permutations, one at a time in fresh worlds, and through a clone.
+- `qa_the_keep_out_agrees_with_the_voxels_a_viewer_can_see` reads the landmark solids out of the chunks and checks the traversal veto against them at quarter-column resolution, in both directions: never walkable where a body would hold stone, never fenced off where it would not.
+- `qa_a_real_encounter_walks_a_body_through_the_gate_and_into_its_pillars` drives a real encounter through the opening and into a pillar with the same machinery and opposite expectations.
+- `qa_a_plant_the_grammar_proposes_inside_a_reservation_is_gone_from_the_world`, `qa_no_landmark_stands_on_a_shoreline` and `qa_the_overlook_is_a_place_the_finished_world_lets_a_body_stand` check the composition's own promises against the field and the drawn voxels.
+- `the_fingerprint_reacts_to_every_landmark_control` closes a gap: the identity's "reacts to every input" test predates the landmark controls and did not cover them.
+- `the_compiler_refuses_a_descriptor_it_would_have_to_guess_at` is the regression for the one defect QA found.

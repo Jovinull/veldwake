@@ -1,6 +1,6 @@
 # M8 — Discoverable Landmarks
 
-Status: **implemented on `feat/m8-discoverable-landmarks`, and the owner's blind playtest passed on 2026-09-22.** Every phase below is complete, every gate in the gate table ran, and the core product gate is closed. What is left is independent branch QA; the branch is not merged and no pull request is open.
+Status: **implemented on `feat/m8-discoverable-landmarks`, the owner's discovery playtest passed on 2026-09-22, and independent branch QA has run.** Every phase below is complete, every gate in the gate table ran, and the core product gate is closed. The branch is not merged and no pull request is open.
 Base: `docs/post-m7-handoff` at `08081b8a15be3ea70de82e03cb0b113d71c7c8d9`, which is `main` at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1` plus one documentation commit.
 Branch state at the owner gate: head `d987ec6301460336b4214d1ee704d3ea77b936d7`, **four commits ahead of `main`** and **three after `docs/post-m7-handoff`** — the milestone plan, the implementation, and the documentation of it. A report that said "two commits" was counting one session's own commits, not the branch.
 
@@ -27,7 +27,7 @@ M8 is **not** persistence, **not** world editing, **not** a spawn or encounter s
 | gate | **passable.** If the opening visually admits the body, traversal admits it |
 | overlook clearing | the golden composition may use a reservation of about the measured `r ≈ 40` so that landmarks of about 24 units and taller read. **40 is a control of the golden plan, not a universal landmark rule**, and visual QA may reject the clearing if it reads as artificial |
 | streaming | current envelope only: `render_radius = 6`, `CHUNK_EDGE = 32`, `Lod0Only`. No LOD rollout, no radius increase, no streaming rewrite. If evidence contradicts this, stop and report |
-| exit gate | a **blind** OWNER PLAYTEST: the owner is told only "jogue/explore normalmente" |
+| exit gate | an OWNER PLAYTEST with **no navigation instructions**: the owner is told only "jogue/explore normalmente", and is given no coordinate, direction, waypoint or route. The owner had read the implementation report beforehand, so this is uninstructed rather than literally blind |
 | out of scope | persistence, world editing, inventory, loot, equipment, progression, quests, NPCs, a second enemy or weapon, a second biome or region, settlements, economy, history, day/night, running refinement, jump, climb, swim, fast travel, any navigation UI, generalized physics, generalized voxel collision, interiors, runtime pathfinding, ECS, mandatory LOD, streaming rewrite, multiplayer, WASM, a universal architecture generator |
 
 ## Architectural corrections from the implementation review
@@ -50,7 +50,8 @@ These were imposed on the approved design before any code was written. Each is a
 | M8D | chunk integration: suppressed vegetation, landmark voxels, identity and cache fingerprint, the global `VoxelId` lookup, order independence | complete |
 | M8E | traversal integration: plan-aware world vegetation, keep-out from the real body radius, `SurfaceGrid`, audit, route, enemy host, gate passage, continuous route | complete |
 | M8F | presentation and evidence: the client visibility oracle, real rendering, captures, motion, weather, performance | complete |
-| M8G | technical self-QA: full regression, the real game, fresh captures, documentation. Then stop for the blind owner playtest | complete |
+| M8G | technical self-QA: full regression, the real game, fresh captures, documentation. Then stop for the owner playtest | complete |
+| QA | independent branch QA over `main...HEAD`: code review, adversarial oracles from the drawn voxels, runtime gate passage, re-derived audit and route, driven visual and motion evidence, regressions, gates, documentation reconciliation | complete |
 
 ## The feasibility result this milestone starts from
 
@@ -107,8 +108,10 @@ The gate's opening is `21` columns of ground with stone beginning `23` voxels up
 
 | profile | cost of `LandmarkPlan::derive` for the golden world |
 |---|---|
-| release | **248–272 ms** |
-| debug | **1,108 ms** |
+| release | **248–409 ms** over two sessions on the audited host |
+| debug | **1.1–1.5 s** |
+
+The first session recorded `248`–`272` ms and `1,108` ms; branch QA re-measured `316`–`409` ms and `1,486` ms on the same machine with other work idle. The spread is host load rather than a change in the work, and it is an observation on one host rather than a target — no test asserts it.
 
 The owner's instruction was to measure before choosing a reuse strategy. The measurement says two things. First, `cargo nextest` runs **one process per test**, so no in-process cache — `OnceLock` or otherwise — can help the suite at all; the only levers are the derivation's own cost and the number of tests that build a world. Second, the reuse that does matter is two worlds of the same identity inside one process, which the client had three of: `World::source()`, `World::generator()` and `World::fingerprint()` each built one. `WorldSelection::build` now derives once and shares the plan behind its `Arc`, and `TerrainGenerator::with_plan` is the explicit way to say so. No hidden cache, no lazy first call.
 
@@ -211,12 +214,12 @@ The capture at the overlook reported `59.9` FPS, `render = 2,197` demanded again
 | `cargo deny check` | PASS — advisories, bans, licenses, sources |
 | `cargo audit` | PASS — no vulnerabilities in 226 dependencies |
 | driven capture smoke on the audited host | PASS — eight driven release runs, every capture `1920 x 991` and every run exit `0`; the five read in writing are in the table above |
-| blind owner playtest | **PASS** — 2026-09-22, see the owner section below |
-| independent branch QA | **NOT YET APPLICABLE** — the next step, and not this agent's to perform |
+| owner discovery playtest, without navigation instructions | **PASS** — 2026-09-22, see the owner section below |
+| independent branch QA | **PASS** — see the branch QA section below |
 
-## OWNER PLAYTEST — DISCOVERABLE LANDMARKS: PASS
+## OWNER DISCOVERY PLAYTEST WITHOUT NAVIGATION INSTRUCTIONS: PASS
 
-2026-09-22, by the repository owner, played blind: the owner was told only to play and explore normally, with no coordinates, no direction, no screenshot, no route and no hint about which landmark hosts the adversary.
+2026-09-22, by the repository owner. **The wording is exact on purpose.** During the session the owner received no coordinate, no direction, no waypoint, no route and no hint about which landmark hosts the adversary; what the owner did with the world was entirely unprompted. The owner had, however, read the implementation report before playing, so this was not a session with zero prior knowledge, and calling it *blind* would claim more than happened. The discovery itself is unaffected: nothing told the owner where to look, and the owner looked, chose and walked.
 
 **What the owner observed, in the owner's own terms:**
 
@@ -250,6 +253,62 @@ Everything else in this document is technical or self-QA evidence and stays that
 **The family can still read somewhat close to the visual language of Cube World and familiar voxel-RPG architecture.** Not an M8 defect and not something to correct on this branch. It is evidence for a future decision about architectural art direction, a stronger Veldwake-specific shape grammar, and a procedural built-world identity — recorded in [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) as KI-036 alongside the other product and art limitations that milestone kept rather than hid.
 
 **One reading is worth separating from both of those, because it is about this composition rather than about the art direction.** The two landmarks visible from the overlook are the Spire and the **Gate**, and the owner read the second one as a broken construction. The style contract's one-sentence test asks that a person can name the broad gate as a gate; the distinctness half of that test passed and the naming half did not. What this agent can add is a mechanism, not a judgement, and it is an inference rather than anything the owner said: from the overlook the gate's lintel is above the frame (KI-032), so what a viewer sees at rest is two shafts and the sky between them — which is what a fallen frame looks like. The owner was not asked and did not comment on it.
+
+## Independent branch QA
+
+A separate review of the whole of `main...HEAD`, run after the owner's session and before any pull request. Its job was to try to break what the implementation claims, using oracles that do not ask the implementation about itself: the drawn voxels, the authoritative tick loop, a landmark-free baseline world, and the real client.
+
+### One defect, found and fixed
+
+**`CompiledMonolith::new` accepted a descriptor it could not compile.** The constructor was documented "infallible by construction" and relied on every caller using `MonolithDescriptor::from_seed`, which the type system did not require. With a hand-built descriptor the compiler read `band_period` as a divisor and panicked on `0`, and read negative dimensions as lengths and produced an **empty** landmark, which a plan would then have placed in the world as a landmark with no voxels. Neither is reachable from the golden path — `from_seed` draws `band_period` from `3..=4` — and the crate already had the right answer in `MonolithDescriptor::validate`; the constructor simply never called it.
+
+The fix is the smallest one that makes the documentation true by type: `CompiledMonolith::new` returns `Result<Self, DescriptorError>`, `PlanError` gained a `Descriptor` variant so a world that draws an uncompilable descriptor fails to be built rather than being built wrong, and `the_compiler_refuses_a_descriptor_it_would_have_to_guess_at` pins both directions — the guard rejects the three adversarial shapes, and it rejects nothing the draw produces across all three classes, both axes and sixty-four seeds.
+
+### What the oracles proved
+
+| question | oracle | result |
+|---|---|---|
+| does a landmark ever replace terrain or water? | every chunk a landmark touches, generated twice — once in the golden world and once in a world of the same identity built with `LandmarkPlan::bare` — and every differing voxel inspected | **no.** `524,288` voxels compared: `1,740` landmark voxels written, all over air or over a plant the landmark's own reservation had already removed, and `2,543` plant voxels removed. Not one terrain or water voxel moved |
+| do the chunks depend on the order they are asked for? | six coprime-stride permutations, one world per chunk in isolation, and a clone | **no.** Byte-identical fingerprints in every order |
+| does the keep-out agree with the voxels a viewer sees? | the landmark solids read out of the generated chunks, against `TerrainWalkability` at quarter-column resolution, including negative coordinates | **yes, in both directions.** No walkable position holds drawn stone, and the ground around each landmark is not fenced off |
+| can a body really walk through the gate? | a real `Encounter`, real ground, real veto, real capsule, driven tick by tick with a walk intent | **yes through the opening** — it enters the footprint and arrives within `1.0` of the far side — and **no through a pillar**, where it stops more than `1.0` short |
+| is a plant the grammar proposes inside a reservation really gone? | the raw grammar against the composed view, and the trunk column read out of the generated chunk | **gone at all three levels** |
+| does a landmark stand on a shoreline? | every column within the `14`-column margin the plan samples on a two-column stride | **none.** The stride's approximation holds exactly here |
+| is the overlook a place the finished world lets a body stand? | the field, the plan and the composed vegetation, asked about the resolved column | dry, level to a voxel for four columns, no landmark on it, no plant in the body's own band |
+| does the world fingerprint react to the landmark controls? | thirteen controls changed one at a time | **all thirteen move it.** The identity's own "reacts to every input" test had not covered the field M8 added; it does now |
+
+### What re-derivation confirmed
+
+Every number the sections above claim was re-derived rather than trusted. The audit reproduces exactly: `621,798` standable, `306,937` forward, `307,334` reverse, `306,919` bidirectional, `18` one-way, components `[314861, 306919, 16, 2]`, barriers `2,840` traversal, `44,495` step-up, `1,273` drop, highland `493,837` standable and `243,333` reachable with the nearest `22` steps away. The approaches reproduce: `65`, `61` and `211` steps. The host and placement reproduce: the spire, `(-135, 62)`, `69` steps, first of `475` level candidates. The route reproduces: `70` columns, `5` waypoints, `97.17` units, `28.6` s, two chunk crossings on each axis, signature `0xa06c9d72a8824848` equal to the lock. `terrain-probe signature` reports `0x0cd95da61656b11b`, the relocked `GOLDEN_REGION_SIGNATURE`, without any test in the loop.
+
+KI-034 reproduces precisely: the route takes `68` diagonal steps, exactly **one** of which passes a blocked shoulder, and **none** with both shoulders blocked. The continuous runtime test accepts every walk-speed sample of the route, so the brush never crosses stone.
+
+### What the real client showed
+
+Eleven driven runs on the audited host per [`../agents/EVIDENCE_HARNESS.md`](../agents/EVIDENCE_HARNESS.md), one process at a time, focus verified before every frame, client area `1920 x 991`, exit `0` and no error, panic or validation marker in any of them. Every capture was opened and read.
+
+- **The discovery itself.** From the session start the spire stands clear of the tree line ahead of the body; turning the camera about `160` degrees brings the gate into frame in the opposite direction. Two destinations, no interface.
+- **The gate, walked.** Approached from the overlook, the body meets a **pillar** and is held by it — it slides along the face and does not pass. Lined up with the opening, the same walk carries it **between the two shafts** and out the far side, with the ground continuing underneath.
+- **The reveal.** From inside and beyond the gate, the broken monolith is a pale vertical above the tree line at `149` units, framed by the gate's own shafts.
+- **The spire, close.** The foundation meets the grass with no gap and no sinking, the banding reads, and the body walks past it without entering it.
+- **The adversary.** Reached by walking to the spire: `adversary_dormant` went to `false` and the player's health from `96` to `78`, with both health readouts drawn.
+- **Weather.** Under overcast the gate still reads as two banded shafts against a pale sky.
+- **Regressions by eye.** The M3 diagnostic corridor renders exactly as before — the renderer's new ordered material lookup did not touch the diagnostic palette — and a seeded diagnostic world draws its own composed landmark.
+
+Streaming during a walking traversal, from the same runs: `render_radius = 6` and `Lod0Only` unchanged, `59.98` FPS at `16.67` ms average wall frame, `2,197` demanded, `507` presented, `501,922` GPU quads, `cpu_evictions = 66` (so the body really moved), and `gaps_closed`, `ready_undrawn_max`, `upload_failures`, `commit_invariant_failures` and `hard_cap_blocks` all zero.
+
+### What QA corrected in this document
+
+- **The derivation is slower than first recorded.** Re-measured on the same host: `316`–`409` ms in release over eight runs and `1,486` ms in debug, against the `248`–`272` ms and `1,108` ms first written down. Nothing about the work changed; the first numbers were taken in a quieter moment and were quoted as a range they do not cover. The tables above and KI-035 now carry the wider observation, and no test asserts a duration.
+- **The three landmarks write `1,740` voxels, not `1,729`.** The smaller number is what the three compiled objects hold; the world also writes `11` voxels of foundation between the base course and the terrain under it.
+- **The diagnostic-seed sample was too small to generalise.** KI-033 was written from five seeds; twenty seeds and five edge values give `14` composed, `6` bare and **zero** panics, including `0`, `u64::MAX` and the golden seed's neighbours. The contract holds and the rate is better than the first sample suggested.
+
+### What QA observed and did not act on
+
+- **The camera can end up inside a landmark.** Walking close past a shaft puts the follow camera inside the stone for a moment; the body and the way ahead stay visible and navigation is unaffected. This is [KI-025](../KNOWN_ISSUES.md) — no camera occlusion solving — meeting its first man-made occluder, and it is recorded rather than fixed, because a camera collision system is a milestone of its own.
+- **A blind driver curves.** Holding "forward" for a hundred units in the driven harness lands about `11` degrees off, because the follow camera re-derives its yaw from the camera-to-anchor vector every frame and the lateral offset slowly rotates it. A player corrects continuously and never notices; a script does not, which is why three of the eleven runs missed the adversary's `14`-unit aggro radius entirely. It is a property of the harness plus the camera, not a defect in either, and it is exactly the effect M7 recorded when a blind driver could not aim.
+- **The world proxy looks at trees, not at all vegetation.** `WorldOccluders::occluder` takes the canopy over a column and ignores shrubs, which the module's own documentation described as "vegetation". A shrub is one or two voxels and can at most hide a landmark's lowest course from an eye three and a half voxels up, so the proxy is slightly generous about a base and never about a crown — and the composition's margins are twenty visible voxels against a minimum of eight. The scope is now written down exactly rather than corrected, because correcting it would move the plan for no gain.
+- **KI-036 stands untouched.** No prop, decoration, second family, second material, particle, light or interior was added.
 
 ## What this agent could not verify
 

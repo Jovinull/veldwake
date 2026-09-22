@@ -264,10 +264,12 @@ Release unless stated, Intel Core i5-1335U / Intel Iris Xe / D3D12, `m4-golden` 
 
 | measure | value |
 |---|---|
-| `LandmarkPlan::derive`, release | `248`–`272` ms |
-| `LandmarkPlan::derive`, debug | `1,108` ms |
+| `LandmarkPlan::derive`, release | `248`–`409` ms across two sessions |
+| `LandmarkPlan::derive`, debug | `1.1`–`1.5` s |
 | when it runs | once per `TerrainGenerator`, eagerly, before any chunk is generated |
 | what it costs the suite | `veldwake-procedural` 60 s → 94 s, `veldwake-client` 114 s → 142 s, one process per test |
+
+The two sessions disagree by about a third — `248`–`272` ms first, `316`–`409` ms when branch QA re-measured with the machine otherwise idle — and the wider range is the honest one. Nothing about the work changed between them; a single quiet sample is not a range. No test asserts any of this.
 
 The first working derivation cost `3.2 s` in release. Five changes took it to `248` ms: a five-point pre-filter before the full level-and-dry disc, a cached water lookup, reservations that rebuild without discarding the terrain cache, solving the visible band in one pass instead of a nineteen-step binary search, and a straight-line dry test that prunes wet sites before any sight line is cast. The remaining cost is dominated by `level_and_dry` over the candidate lattice and by the sight lines themselves.
 
@@ -280,7 +282,9 @@ No in-process cache was added. `cargo nextest` runs one process per test, so a m
 | standable columns in the region | 622,023 | 621,798 |
 | steps refused for a traversal reason, whole-region audit | 2,464 | 2,840 |
 | symmetric components | `[314861, 307144, 16, 2]` | `[314861, 306919, 16, 2]` |
-| voxels written by the three landmarks | — | 1,729 |
+| voxels written by the three landmarks | — | 1,740 (1,729 compiled, 11 of foundation) |
 
-Nothing measurable changed in streaming or rendering. A capture run at the overlook, `m4-golden`, twenty-six seconds after the window opened: `59.9` FPS at `16.69` ms average wall frame, `render = 2,197` demanded, `cpu_resident = 444`, `presented = 334`, `gpu_active = 193`, `gpu_quads = 343,812`, and `gaps_closed`, `upload_failures` and `commit_invariant_failures` all zero. The run had **not** reached idle coverage at that point — KI-017's minute to settle is unchanged — and the landmarks were drawn anyway, because at 62 and 63 units they are inside the first chunks to arrive. The three of them contribute 1,729 voxels to chunks that were already resident.
+Nothing measurable changed in streaming or rendering. Branch QA measured a walking traversal rather than a still: `59.98` FPS at `16.67` ms average wall frame, `render = 2,197` demanded against `507` presented and `501,922` GPU quads, `cpu_evictions = 66`, and `gaps_closed`, `ready_undrawn_max`, `upload_failures`, `commit_invariant_failures` and `hard_cap_blocks` all zero, with `render_radius = 6` and `Lod0Only` unchanged.
+
+A capture run at the overlook, `m4-golden`, twenty-six seconds after the window opened: `59.9` FPS at `16.69` ms average wall frame, `render = 2,197` demanded, `cpu_resident = 444`, `presented = 334`, `gpu_active = 193`, `gpu_quads = 343,812`, and `gaps_closed`, `upload_failures` and `commit_invariant_failures` all zero. The run had **not** reached idle coverage at that point — KI-017's minute to settle is unchanged — and the landmarks were drawn anyway, because at 62 and 63 units they are inside the first chunks to arrive. The three of them contribute 1,729 voxels to chunks that were already resident.
 
