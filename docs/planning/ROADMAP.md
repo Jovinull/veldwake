@@ -74,11 +74,40 @@ From a discovery overlook the player sees, in the world itself, more than one de
 
 Proposed after M7 from the evidence M7 produced rather than from the list below — in particular KI-029, the owner walking an 800 x 800 region and never finding the one thing standing in it — and named by the owner. M8 is deliberately **not** persistence, **not** world editing, **not** a navigation system and **not** a physics engine.
 
+## M9 — Meaningful Reward
+
+The first proof of Mastery: from the discovery overlook one direction ends in a
+fight and the other ends in a weapon worth carrying into it. A found longblade
+stands in the gate's opening, an explicit verb exchanges it for the weapon in
+the player's hand, and the site keeps whichever one the player is not carrying.
+The two weapons are a sidegrade, not an upgrade — greater reach paid for with
+greater commitment — and the choice survives a defeat and its encounter reset
+while deliberately not surviving a process restart.
+
+**Implemented on `feat/m9-meaningful-reward` and stopped for the owner
+playtest. Not merged, no pull request.** Every gate is green (799 tests, clippy,
+fmt, doc tests, rustdoc, metadata, deny, audit, eight driven client runs on the
+audited host) and every historical lock is byte-identical, including
+`GOLDEN_ENCOUNTER_SIGNATURE`, both M6 weapon fingerprints and every world and
+traversal signature. `crates/procedural` is not modified at all.
+
+Proposed after M8 from the evidence M8 produced — a person chose a direction
+because of what stood at the end of it, and then had no reason to go beyond
+arriving — rather than from the list below, and accepted by the owner with
+corrections. M9 is deliberately **not** persistence, **not** an inventory,
+**not** a loot or progression system, **not** a second enemy and **not** a
+two-handed weapon. Its durable decision is
+[ADR-0010](../adr/0010-session-acquired-state-in-the-authoritative-encounter.md)
+and its invariants are **ARM-001** and **ARM-002**. See
+[`M9_MEANINGFUL_REWARD.md`](M9_MEANINGFUL_REWARD.md).
+
+The owner gate, **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, has not been run.
+
 ## Later capability groups
 
 Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
 
-**This still holds after M8, and the list is not a queue. Nothing has been chosen to follow M8.** The order above is the order it was written in, not a decision. M7 and M8 were both chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
+**This still holds after M9, and the list is not a queue. Nothing has been chosen to follow M9.** The order above is the order it was written in, not a decision. M7 and M8 were both chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
 
 ## Milestone exit rule
 

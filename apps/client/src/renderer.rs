@@ -459,6 +459,15 @@ struct GpuCharacterPart {
     bind_group: wgpu::BindGroup,
 }
 
+/// What the weapon standing at the exchange site costs on the GPU.
+#[derive(Clone, Copy, Debug, Default)]
+struct PlacedWeaponCost {
+    quads: usize,
+    vertex_bytes: usize,
+    index_bytes: usize,
+    uniform_bytes: usize,
+}
+
 /// One drawn body on the GPU, and the weapon in its hand.
 ///
 /// Rigid parts make the geometry static: the buffers are immutable after upload
@@ -716,6 +725,9 @@ pub struct Renderer {
     /// deliberately outside `actors` so that nothing which iterates bodies
     /// finds an object among them.
     placed_weapon: Option<GpuCharacterPart>,
+    /// What the placed weapon costs, so the character stats can count it as
+    /// the third weapon instance it is rather than only as an extra draw.
+    placed_weapon_cost: PlacedWeaponCost,
 }
 
 impl Renderer {
@@ -1272,6 +1284,7 @@ impl Renderer {
             part_layout,
             actors: Vec::new(),
             placed_weapon: None,
+            placed_weapon_cost: PlacedWeaponCost::default(),
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -1648,6 +1661,7 @@ impl Renderer {
     ) -> Result<(), CharacterUploadError> {
         self.actors.clear();
         self.placed_weapon = None;
+        self.placed_weapon_cost = PlacedWeaponCost::default();
         self.upload_actor(character, None).map(|_| ())
     }
 
@@ -1746,6 +1760,12 @@ impl Renderer {
             fingerprint = format_args!("{:#018x}", weapon.fingerprint()),
             "placed weapon uploaded"
         );
+        self.placed_weapon_cost = PlacedWeaponCost {
+            quads: uploaded.quads,
+            vertex_bytes: uploaded.vertex_bytes,
+            index_bytes: uploaded.index_bytes,
+            uniform_bytes: size_of::<PartUniform>(),
+        };
         self.placed_weapon = Some(uploaded.part);
         Ok(())
     }
@@ -1902,13 +1922,19 @@ impl Renderer {
             stats.shadow_draws += actor.draw_count();
         }
         // The placed weapon is a third weapon instance in the world and is
-        // counted as one. The exchange pair is the player's and the site's; the
-        // adversary carries an independent original outside that pair, so
-        // "exactly two weapons in the world" would be wrong.
+        // counted as one, with its bytes and its quads. The exchange pair is
+        // the player's and the site's; the adversary carries an independent
+        // original outside that pair, so "exactly two weapons in the world"
+        // would be wrong, and a count that named three while the bytes named
+        // two would be worse than either.
         if self.placed_weapon.is_some() {
             stats.weapons += 1;
             stats.world_draws += 1;
             stats.shadow_draws += 1;
+            stats.quads += self.placed_weapon_cost.quads;
+            stats.vertex_bytes += self.placed_weapon_cost.vertex_bytes;
+            stats.index_bytes += self.placed_weapon_cost.index_bytes;
+            stats.uniform_bytes += self.placed_weapon_cost.uniform_bytes;
         }
         stats.dynamic_upload_bytes = stats.uniform_bytes;
         stats

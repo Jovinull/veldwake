@@ -79,6 +79,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M5_PROCEDURAL_CHARACTER.md`](planning/M5_PROCEDURAL_CHARACTER.md)
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
+- [`planning/M9_MEANINGFUL_REWARD.md`](planning/M9_MEANINGFUL_REWARD.md): the current milestone — the weapon exchange at the gate, the measured sidegrade, and what stopped for the owner playtest
 - [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the last merged milestone — what landmarks are, what the owner's session proved, and what branch QA re-derived
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)

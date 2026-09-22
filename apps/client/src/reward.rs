@@ -4,9 +4,10 @@
 //! **No search, and no change to `veldwake-procedural`.** M8 derived a gate and
 //! recorded its tallest column; the learning it wrote down is that *a gate's
 //! tallest column is the lintel over its opening*, so
-//! [`LandmarkInstance::crown_column`] already names the centre of the passage.
+//! [`veldwake_procedural::LandmarkInstance`]'s `crown_column` already names the
+//! centre of the passage.
 //! M9 reads that one field, turns it into a world position with the client's
-//! own [`column_centre`](crate::traversal::column_centre), and asks the client's
+//! own [`column_centre`], and asks the client's
 //! own surface grid how high the ground under it is. That is the whole
 //! derivation: no candidate lattice, no region sweep, no second placement
 //! search, and therefore nothing added to the eager landmark plan whose cost
@@ -29,6 +30,7 @@ use glam::{Mat4, Vec2, Vec3};
 use veldwake_character::{CHARACTER_VOXEL_SIZE, GroundSampler};
 use veldwake_combat::armament::RewardSetup;
 use veldwake_combat::weapon::{CompiledWeapon, WeaponDescriptor};
+use veldwake_procedural::landmark::SpanAxis;
 use veldwake_procedural::{LandmarkPlan, SilhouetteClass, TerrainGenerator};
 
 use crate::character::TerrainGround;
@@ -49,6 +51,26 @@ pub const REWARD_ADAPTER_VERSION: u32 = 1;
 /// driven in. It is presentation and nothing depends on it but the picture.
 pub const SITE_SINK: f32 = 0.25;
 
+/// How far the anchor sits from the centre of the gate's opening, in columns
+/// along the gate's own span axis.
+///
+/// **A measured correction, not a preference.** The first implementation put
+/// the weapon at the exact centre of the opening, which is also the line a
+/// player walks through a gate and the line the follow camera looks down. The
+/// captures are unambiguous: at three world units the planted weapon is a grey
+/// slab directly between the camera and the body, occluding the torso and both
+/// legs, and the only part of the frame that reads as a sword is its shadow.
+/// It destroyed the object's readability and the gate's at once.
+///
+/// One column to the side is the whole fix. The golden gate's opening is seven
+/// columns across, so `±1` is still well inside it and still framed by both
+/// shafts; the walking line passes `1.0` world unit away, which is outside the
+/// widest body's `0.86` keep-out radius and comfortably inside the `1.75`
+/// interaction radius. Nothing was searched for and no placement machinery was
+/// added: the anchor is still the gate's own opening centre, offset by one
+/// column of the gate's own span axis.
+pub const SITE_SPAN_OFFSET: i64 = -1;
+
 /// Yaw of the planted weapon, in radians.
 ///
 /// Zero, and measured rather than chosen. The gate's opening is crossed along
@@ -66,12 +88,21 @@ pub const SITE_YAW: f32 = 0.0;
 /// fingerprints, both compiled attack specs and the found weapon's profile
 /// version.
 ///
+/// **Old** `0x0815_132f_1a6b_7572`, **new** `0x0f08_fbf7_08e3_206d`, **why**:
+/// the anchor moved one column, from the exact centre of the gate's opening at
+/// `(-7, 58)` to `(-7, 57)`. The centre is also the line a body walks through a
+/// gate and the line the follow camera looks down, and the driven captures show
+/// the planted weapon occluding the whole torso and both legs from three world
+/// units out — the only thing in the frame that read as a sword was its shadow.
+/// See [`SITE_SPAN_OFFSET`]. Nothing else in the signature changed: same world,
+/// same weapons, same specs, same radius.
+///
 /// **It is deliberately not part of any chunk-cache key.** A disk-cache entry
 /// answers one question — will the source produce the same chunk bytes? — and
 /// a weapon standing in a gate changes no chunk byte at all. Folding gameplay
 /// identity into the cache key would invalidate every cached chunk in the world
 /// for a change that generated nothing.
-pub const REWARD_BEHAVIOR_SIGNATURE: u64 = 0x0815_132f_1a6b_7572;
+pub const REWARD_BEHAVIOR_SIGNATURE: u64 = 0x0f08_fbf7_08e3_206d;
 
 /// Where the fixed exchange stands in one world.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,10 +128,19 @@ pub fn host(plan: &LandmarkPlan) -> Option<&veldwake_procedural::LandmarkInstanc
         .find(|instance| instance.class() == SilhouetteClass::Gate)
 }
 
-/// The anchor column: the centre of the gate's opening.
+/// The anchor column: the gate's opening centre, one column to the side.
+///
+/// The crown column of a gate is the lintel over its passage, so it is the
+/// centre of the opening. [`SITE_SPAN_OFFSET`] then steps one column along the
+/// gate's own span axis, for the reason that constant records.
 #[must_use]
 pub fn anchor_column(plan: &LandmarkPlan) -> Option<(i64, i64)> {
-    host(plan).map(|gate| gate.crown_column)
+    let gate = host(plan)?;
+    let (x, z) = gate.crown_column;
+    Some(match gate.descriptor.axis {
+        SpanAxis::X => (x + SITE_SPAN_OFFSET, z),
+        SpanAxis::Z => (x, z + SITE_SPAN_OFFSET),
+    })
 }
 
 /// Resolves the exchange site in one world, or `None` when the world composed
@@ -216,7 +256,8 @@ mod tests {
     };
     use crate::character::TerrainGround;
     use crate::traversal::{
-        BODY_KEEP_OUT_HEIGHT, ROUTE_START_X, ROUTE_START_Z, SurfaceGrid, audit, column_centre,
+        BODY_KEEP_OUT_HEIGHT, BODY_KEEP_OUT_RADIUS, ROUTE_START_X, ROUTE_START_Z, SurfaceGrid,
+        audit, column_centre,
     };
     use glam::Vec3;
     use veldwake_character::CHARACTER_VOXEL_SIZE;
@@ -236,12 +277,42 @@ mod tests {
             panic!("the golden world must carry a gate");
         };
         assert_eq!(gate.class(), SilhouetteClass::Gate);
-        assert_eq!(anchor_column(plan), Some(gate.crown_column));
-        // The crown column of a gate is its lintel, so the anchor lies between
-        // the two shafts rather than in one of them.
+        let Some(anchor) = anchor_column(plan) else {
+            panic!("a gate must give an anchor");
+        };
+        // One column along the gate's span axis from the opening centre, and
+        // nothing else: no search, no lattice, no second placement rule.
+        let expected = match gate.descriptor.axis {
+            veldwake_procedural::landmark::SpanAxis::X => (
+                gate.crown_column.0 + super::SITE_SPAN_OFFSET,
+                gate.crown_column.1,
+            ),
+            veldwake_procedural::landmark::SpanAxis::Z => (
+                gate.crown_column.0,
+                gate.crown_column.1 + super::SITE_SPAN_OFFSET,
+            ),
+        };
+        assert_eq!(anchor, expected);
+        // Still inside the gate's own footprint, so it is still framed by both
+        // shafts rather than standing outside the structure.
         let (min_x, max_x, min_z, max_z) = gate.bounds;
-        assert!(gate.crown_column.0 >= min_x && gate.crown_column.0 <= max_x);
-        assert!(gate.crown_column.1 >= min_z && gate.crown_column.1 <= max_z);
+        assert!(
+            anchor.0 >= min_x && anchor.0 <= max_x,
+            "the anchor left the gate on x"
+        );
+        assert!(
+            anchor.1 >= min_z && anchor.1 <= max_z,
+            "the anchor left the gate on z"
+        );
+        // And off the line a body walks through the opening, by enough that the
+        // widest body's keep-out radius never reaches it.
+        let offset =
+            (anchor.0 - gate.crown_column.0).abs() + (anchor.1 - gate.crown_column.1).abs();
+        assert_eq!(offset, 1, "the anchor is not exactly one column off centre");
+        assert!(
+            f64::from(i32::try_from(offset).unwrap_or(1)) > BODY_KEEP_OUT_RADIUS,
+            "the walking line still passes through the object"
+        );
     }
 
     #[test]

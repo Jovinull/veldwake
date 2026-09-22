@@ -141,3 +141,59 @@ M8's own tests ask the plan and the compiler whether they agree with themselves.
 - `qa_a_plant_the_grammar_proposes_inside_a_reservation_is_gone_from_the_world`, `qa_no_landmark_stands_on_a_shoreline` and `qa_the_overlook_is_a_place_the_finished_world_lets_a_body_stand` check the composition's own promises against the field and the drawn voxels.
 - `the_fingerprint_reacts_to_every_landmark_control` closes a gap: the identity's "reacts to every input" test predates the landmark controls and did not cover them.
 - `the_compiler_refuses_a_descriptor_it_would_have_to_guess_at` is the regression for the one defect QA found.
+
+## The weapon exchange
+
+M9 adds twenty-nine tests across the domain and the client, and the workspace
+now has **799** — 796 by default and three `#[ignore]`d, all of which pass when
+run explicitly.
+
+What the domain asserts, all through the authoritative tick loop rather than
+about the code:
+
+- an encounter with no reward configured cannot exchange, refuses nothing and
+  counts nothing, so every M6, M7 and M8 fixture is provably inert;
+- an exchange needs a world that offers a site, and is refused out of range,
+  while attacking, dodging, staggered or defeated;
+- **attack outranks dodge outranks interact**, and a press a swing consumed does
+  not fire later as a stale latch — asserted over two hundred following ticks;
+- the adversary resolves to the original weapon and the original spec in every
+  armament state (ARM-002);
+- the player's weapon, spec and swept blade all follow the armament;
+- the historical aim-assist range is **exactly** `2.9000` for both M6 bodies and
+  larger for the found weapon;
+- **ARM-001** by driving a real defeat: the reset restores the body, its
+  position, its facing and its health, and leaves the armament alone. The
+  victory case under `Remain` is asserted the same way;
+- an exchange is its own inverse, and a new encounter starts over;
+- the found weapon connects from further away **in the real loop**, measured by
+  a sandbox drill against a dormant target so only the player's weapon is in
+  play;
+- the sidegrade relation — the closing time the reach buys is within eight ticks
+  of the lock the commitment costs — asserted as a relation, not a lock.
+
+What the client asserts:
+
+- the anchor is the gate's own opening centre offset by one column along the
+  gate's span axis, still inside the footprint and off the walking line;
+- the site is dry, level to a voxel over the interaction radius, clear of final
+  vegetation, outside every landmark keep-out, standable and reachable on foot,
+  all from the **production adapters**;
+- a session does not begin inside its own reward;
+- the planted blade's tip lands on the ground it was put on, at the column
+  centre, the right way up and the right length;
+- **the gate is still walkable with the weapon standing in it**, in both
+  armament states, driven through a real encounter (LAND-002 re-proved);
+- **resolving a reward writes no voxel into the world**, by generating the
+  chunks around the gate from a generator the reward was resolved against and
+  one it was not and comparing them — the guard that a future change making
+  placement reach into generation would trip;
+- `E` maps to interact and no other key does;
+- an interact-only first input arms the session and is not swallowed, and an
+  interact is not suppressed while the adversary sleeps;
+- a held exchange key latches once per press.
+
+The M9 locks are `FOUND_WEAPON_GEOMETRY_FINGERPRINT`,
+`FOUND_WEAPON_IDENTITY_FINGERPRINT`, `FOUND_ENCOUNTER_SIGNATURE` and
+`REWARD_BEHAVIOR_SIGNATURE`. The found encounter uses the **same trace format**
+as `GOLDEN_ENCOUNTER_SIGNATURE` and is not expected to equal it.

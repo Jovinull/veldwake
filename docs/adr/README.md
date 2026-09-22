@@ -27,3 +27,4 @@ Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence
 | [0007](0007-procedural-impact-audio-boundary.md) | Procedural impact audio and its device boundary | Accepted | 2026-09-18 |
 | [0008](0008-traversal-legality-separate-from-ground-contact.md) | Traversal legality separate from ground contact | Accepted | 2026-09-20 |
 | [0009](0009-two-level-landmark-visibility-and-eager-world-plan.md) | Two-level landmark visibility and an eagerly derived world plan | Accepted | 2026-09-21 |
+| [0010](0010-session-acquired-state-in-the-authoritative-encounter.md) | Session-acquired state in the authoritative encounter | Accepted | 2026-09-22 |

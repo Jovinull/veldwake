@@ -4,6 +4,44 @@ Last updated: 2026-09-22
 
 ## Current position
 
+**M9 — Meaningful Reward is implemented on `feat/m9-meaningful-reward` and is stopped, deliberately, for the owner playtest.** There is **no pull request and no merge**, and there must not be one until the owner has played it. `main` is unchanged at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`; the branch is two commits past `docs/post-m8-handoff` at `658ebfbd618b1d7387eee7890d11af53b5f8e045`.
+
+**The one thing to do next is run the owner gate.** It is **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, and it is allowed to fail. Do not start another milestone, do not open a pull request, and do not act on owner feedback inside the same branch before independent QA has seen it.
+
+```text
+VELDWAKE_ENCOUNTER=traverse VELDWAKE_PROFILE=m4-golden cargo run --release -p veldwake-client
+```
+
+The owner may be given the normal control list, including **`E` — interact**, and may be asked deliberately to try **both** weapons. **The owner has read the M9 architecture report and therefore already knows the reward is a second weapon at the gate**, so this milestone may never claim owner-observed *discovery* of the object or its location — M8 proved discovery, and any discovery or visibility claim here is technical and self-QA evidence. What the owner gate asks is whether the two weapons are perceptibly different, whether the found one changes positioning and timing, whether greater reach reads as paired with greater commitment, whether either is universally superior, which one the owner prefers and why, whether the exchange feels like a reward, and whether the object looks like it belongs in this world. **PASS needs a meaningful difference *and* no clear dominance.** "They feel basically the same" is a FAIL; "the found one is obviously better at everything" is a design failure.
+
+**What M9 is.** The first proof of Mastery in this project. A longblade stands in the gate's opening; `E` exchanges it for the weapon in the player's hand; the site keeps whichever one the player is not carrying; returning reverses the choice. The two are a sidegrade: the found weapon connects out to `3.4477` world units against the original's `2.8835` and locks for `103` ticks against `75`, and against the adversary's `2.40` u/s approach the extra reach buys `28` ticks and the extra commitment costs exactly `28`. It fells the adversary in three swings instead of four, and each miss exposes `37%` longer.
+
+**What M9 is not**, and none of it is an oversight: persistence, an inventory, slots, loot, rarity, drops, progression, stats, a second enemy, a second reward site, a third weapon, a third actor, an entity model, object collision, an interaction framework, or a two-handed weapon. The found weapon hangs off `HandR` exactly as M6's does and the free hand does nothing; **the documentation must never call it two-handed.**
+
+**Read [`../planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md) before touching anything M9 built.** Its durable decision is [ADR-0010](../adr/0010-session-acquired-state-in-the-authoritative-encounter.md) — session-acquired state in the authoritative encounter — and its two invariants are **ARM-001** (an encounter reset restores the bodies and never the armament) and **ARM-002** (one weapon selector, and the adversary is outside the exchange pair), both in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
+
+**Facts a next session must not rediscover.**
+
+- **`crates/procedural` is not modified by M9. Not one line.** The exchange site is derived from the gate M8 already built: `LandmarkInstance::crown_column` is the lintel over the opening, so it is the opening's centre, and the anchor is one column along the gate's span axis from it. No search, no lattice, no candidate set, and therefore nothing added to the eager landmark plan KI-035 measures.
+- **No chunk byte changes, so no world lock moved.** The world fingerprint, `TERRAIN_BEHAVIOR_SIGNATURE`, `GOLDEN_WORLD_BEHAVIOR_SIGNATURE`, `LANDMARK_BEHAVIOR_SIGNATURE`, `GOLDEN_REGION_SIGNATURE`, `TRAVERSAL_RULE_VERSION`, `GOLDEN_ROUTE_SIGNATURE`, `ADVERSARY_COLUMN`, every M5 lock and all three M6 weapon and encounter locks are byte-identical. `resolving_a_reward_writes_no_voxel_into_the_world` is the tripwire that would catch a future change making placement reach into generation.
+- **`COMBAT_STYLE_VERSION` stays at `1`, on purpose.** It is hashed into every `WeaponIdentity`, so bumping it for a second accepted weapon would move the historical M6 weapon's identity while its descriptor, geometry and behaviour are untouched. The M9 profile is additive under the same grammar and carries its own `FOUND_WEAPON_PROFILE_VERSION`. Do not bump the shared version to tidy this up.
+- **`GOLDEN_ENCOUNTER_SIGNATURE` is `0x6415_7522_d253_5658` and must stay there.** If it moves, that is a defect to explain, not a lock to update.
+- **The aim-assist range is derived and floored.** `max(AIM_ASSIST_RANGE, connects_out_to(other body))`. Both M6 bodies connect out to less than `2.90` — `2.8835` and `2.7439` — so the `max()` returns the literal for both and M6 is exact by arithmetic. The found weapon gets `3.4477`. Leaving the constant fixed was measured to collapse the found weapon's usable facing window from `69` degrees to `26`.
+- **`reach::attack_envelope` is production code and `fixture.rs` no longer owns it.** The encounter's aim rule, the fixtures and `combat-probe` all call it. Do not write a second copy of the formula.
+- **Every weapon-dependent path goes through `Encounter::weapon_of`** — the world matrix, the blade segment, the sweep radius, the attack spec and the aim range. There is no remaining bare `self.weapon` where a player's choice should matter, and the adversary always resolves to the original (ARM-002).
+- **Input priority is attack, then dodge, then interact**, and a press a higher verb consumed is consumed rather than held. A test runs two hundred ticks after an attack-plus-interact press and asserts nothing fires.
+- **An interact is not suppressed while the adversary sleeps**, unlike a dodge. Visiting the gate before any fight is the point of the milestone, and an interact-only first input arms the session.
+- **Three weapon instances exist in a running session, not two.** The exchange pair is the player's and the site's; the adversary carries an independent original outside it. The client reports `weapons=3`. Do not write "there are exactly two weapons in the world".
+- **The planted weapon is non-colliding.** A body walks through it, which is why `TRAVERSAL_RULE_VERSION` did not move and the gate is exactly as walkable as M8 left it.
+- **The anchor is one column off the opening's centre, and that was a correction with evidence.** The centre is also the line a body walks and the line the camera looks down; the captures at three world units showed the weapon occluding the torso and both legs with only its shadow reading as a sword. `REWARD_BEHAVIOR_SIGNATURE` was re-locked once for it, `0x0815_132f_1a6b_7572` to `0x0f08_fbf7_08e3_206d`, and the paragraph naming why is in `reward.rs`.
+
+**Two findings recorded rather than fixed, and both matter to whatever comes next.**
+
+- **KI-038: the adversary has no navigation, and M8 gave it a wall.** Approached from the east it steers straight into the spire's keep-out and stops — `brain="approach"`, position frozen, separation stuck at `8.72` units — because M9 is the first thing that gives a player a reason to arrive from a direction M7's derived route never used. The same session worked from the south. Nothing in M9 caused it and nothing in M9 addresses it.
+- **KI-037: the two weapons sound identical.** `intensity = damage / victim_max_health * 4.0` clamped to one saturates at M6's `24` damage, so the found weapon's `32` produces exactly the same voice. Measured, recorded, and deliberately not fixed — the owner ruled no audio work belongs in M9.
+
+**What this agent could not verify**, and no document may claim otherwise: whether the two weapons feel different to a person, whether the found weapon reads as belonging in this world or as generic loot, whether its scale is imposing or absurd, and a player victory in the real client — the closed loop took the adversary to `64` twice and never to `0`, so victory-preserves-armament is headless evidence only.
+
 **M8 — Discoverable Landmarks is complete and merged. M1 through M8 are all in `main`.** It landed through [PR #12](https://github.com/Jovinull/veldwake/pull/12) at merge commit `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`, whose parents are `0c81c069bb95a8caf3b6a5252b89b023c6334ae1` and `d5e200bbd18d7c5aee167151509b89be260b85e2`, after the owner's discovery playtest, independent branch QA, a green pull-request CI run ([run 35732875867](https://github.com/Jovinull/veldwake/actions/runs/35732875867)) and a green post-merge CI run on the merge commit ([run 35735467195](https://github.com/Jovinull/veldwake/actions/runs/35735467195)). The remote branch `feat/m8-discoverable-landmarks` is preserved at `d5e200bbd18d7c5aee167151509b89be260b85e2`, the head where the 755 tests and every gate were run. The workspace has **755 tests**, three of them `#[ignore]`d; all **758** pass when the ignored ones are run explicitly.
 
 **There is no next milestone.** That is deliberate and it is the first thing to understand before doing anything else.
@@ -64,11 +102,13 @@ Read these before changing anything. They are the whole truth of the project; no
 18. [`../audiovisual/LANDMARK_STYLE.md`](../audiovisual/LANDMARK_STYLE.md) — the versioned, checkable constraints M8's one landmark family is held to, and what the implementation moved
 19. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
 20. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
-21. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the most recent milestone: the composition, the owner's session, the branch QA section, and what nobody could verify
+21. [`../planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md) — the current milestone: the weapon exchange, the measured sidegrade, the one visual correction it made, and what stopped for the owner
+22. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the milestone before it: the composition, the owner's session, the branch QA section, and what nobody could verify
 22. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone before it: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
 23. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
 24. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
-25. [`../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md`](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — why landmark visibility is answered at two levels and why the world plan is derived eagerly and typed
+25. [`../adr/0010-session-acquired-state-in-the-authoritative-encounter.md`](../adr/0010-session-acquired-state-in-the-authoritative-encounter.md) — why the armament is authority, why its lifetime is the session, and why that is not yet persistence
+26. [`../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md`](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — why landmark visibility is answered at two levels and why the world plan is derived eagerly and typed
 26. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
 27. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
 28. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
@@ -96,7 +136,16 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — nothing has been chosen to follow M8
+## History — the post-M8 continuation point, spent
+
+M9 was proposed from this section and accepted by the owner with corrections, so
+its *instructions* are spent. Its facts are not, and the list below is still the
+ground anything after M9 stands on — in particular that the roadmap's capability
+groups are not a queue, that the last four milestones were each proposed from the
+state of the repository, and that M9 answered exactly one of the gaps it names:
+there is now a reason to go somewhere beyond arriving. The rest are untouched.
+
+## Continue here — nothing has been chosen to follow M9
 
 **Do not start a milestone. Propose one.**
 
@@ -255,7 +304,16 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **There is no active milestone, and that is the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue.
+- **M9 is built and unplayed. The gate is the next action, and nothing else is.** No pull request, no merge, no M10. If the owner's feedback asks for a change, record it in the owner's words and let independent branch QA see the branch before acting on it — that is the M8 discipline and it is what keeps a judgement from becoming an unreviewed edit in the same commit.
+- **The owner already knows what the reward is and where it is**, because the owner read the architecture report. Any claim of owner-observed discovery, visibility or composition in M9 would be false. M8 owns discovery; M9 owns whether the choice matters.
+- **Do not bump `COMBAT_STYLE_VERSION`.** It is hashed into every weapon identity, and bumping it would move the M6 weapon whose descriptor, geometry and behaviour are untouched.
+- **Do not re-lock `GOLDEN_ENCOUNTER_SIGNATURE`, any world signature, `TRAVERSAL_RULE_VERSION`, `GOLDEN_ROUTE_SIGNATURE` or `ADVERSARY_COLUMN`.** All of them are byte-identical on this branch and a movement is a defect to explain.
+- **`crates/procedural` must stay untouched by M9 work.** If a change appears to require generating different chunk bytes, stop and report rather than changing the cache-identity decision.
+- **The M9 weapon is a longblade held in one hand.** It is not two-handed, there is no second-hand contact and there is no two-handed pose. Writing otherwise would describe a feature that does not exist.
+- **The exchange is session state and nothing persists.** A restart returns to the authored pair. Do not add a save to make the reward feel better; that is the next milestone's decision to take deliberately.
+- **A blind driver cannot aim.** Four M9 runs produced zero player hits; only a closed observe-decide-act loop landed any. Any future claim about hits, victories or feel from a scripted run is measuring the harness.
+- **The adversary can be walled off by a landmark (KI-038).** Approaching the spire from the east leaves it stuck. Do not read that as an M9 regression, and do not fix it inside M9.
+- **There is no milestone after M9, and that is the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue.
 - **The owner judged discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
 - **The visual-simplicity and Cube-World observations are recorded, not actioned.** The owner said the structures are simple but sufficient, and that they still read close to familiar voxel-RPG architecture (KI-036). Neither is a work item on this branch: no props, no decoration, no second family, no second material system, no particles, no lights, no interiors.
 - **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `316`–`409` ms in release and about `1.5` s in debug per world (KI-035). `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
