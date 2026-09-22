@@ -113,4 +113,3 @@ M8 added world content that has to be visible, solid and drawn, which touches th
 **No character dimension enters the world.** The plan exposes exact solid geometry, column by column. The client, which owns `CollisionRepresentation`, turns the widest body's capsule into a `TraversalLegality` veto and a `SurfaceGrid` flag. `GroundSampler` is untouched: a landmark is a refusal, never a surface, and nothing walks on one.
 
 **One vegetation truth.** Once a landmark suppresses plants, the raw grammar no longer describes the world. `WorldVegetation` — grammar, field and plan — is the only thing that answers "is a plant actually here?", and chunk generation composes exactly it.
-
