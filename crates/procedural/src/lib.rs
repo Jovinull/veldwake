@@ -23,6 +23,7 @@
 //! | [`identity`] | which world is this, and under which rules? |
 //! | [`terrain`] | how high is the ground, what is it made of, what grows here? |
 //! | [`vegetation`] | which plants stand where, and what shape are they? |
+//! | [`landmark`] | what stands in this world that was not grown or eroded? |
 //! | [`material`] | what does a material mean to a chunk and to a renderer? |
 //! | [`generator`] | what voxels does one chunk contain? |
 //! | [`region`] | which places and values are locked as fixtures? |
@@ -31,6 +32,7 @@ mod hash;
 
 pub mod generator;
 pub mod identity;
+pub mod landmark;
 pub mod material;
 pub mod noise;
 pub mod region;
@@ -42,6 +44,10 @@ pub use identity::{
     RegionExtent, STYLE_CONTRACT_VERSION, StreamLabel, TERRAIN_BEHAVIOR_SIGNATURE,
     TERRAIN_GENERATOR_VERSION, TerrainConfig, TerrainConfigError, WorldIdentity, WorldSeed,
 };
+pub use landmark::{
+    LANDMARK_ID_END, LANDMARK_ID_FIRST, LandmarkControls, LandmarkInstance, LandmarkMaterial,
+    LandmarkPlan, LandmarkRole, SilhouetteClass,
+};
 pub use material::TerrainMaterial;
 pub use terrain::{BiomeZone, Landform, TerrainField, TerrainSample};
-pub use vegetation::VegetationSystem;
+pub use vegetation::{VegetationSystem, WorldVegetation};

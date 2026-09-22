@@ -93,7 +93,7 @@ The aim assist that followed is bounded by tests rather than by intent: at swing
 
 ## Traversal
 
-The workspace has **699 tests**, three of them `#[ignore]`d and run deliberately: M6's offline listening fixture, M7's whole-region reachability report, and M7's adversary placement re-derivation.
+The workspace has **755 tests** that run by default and **758** with `--run-ignored all`; the ignored ones are run deliberately: M6's offline listening fixture, M7's whole-region reachability report — which M8 extended with a landmark section — and M7's adversary placement re-derivation.
 
 M7's tests are organised around the three things that could silently be wrong.
 
@@ -117,3 +117,27 @@ Eight tests, from four questions a reviewer asked that the branch had not.
 - **Is the adversary's clearing verified by anything that did not choose it?** `the_adversary_stands_where_the_drawn_voxels_allow_a_fight` re-derives level, dry and clear from the generated voxels without touching `SurfaceGrid` or the placement predicates, and bounds the walk with a Chebyshev lower bound that needs no graph.
 - **Is "the region" one idea or two?** The extent becomes a continuous half-open rectangle for the veto and integer column indices for the grid, by the same arithmetic done twice. `the_grid_indexes_exactly_the_region_its_bounds_describe` checks both corners in both directions, so the two cannot drift apart unnoticed.
 - **What does `check_move` do with a number that cannot be ordered?** `a_move_is_refused_for_every_shape_of_unorderable_number` covers infinities as well as `NaN`, at both ends of the move and from the ground sampler itself. `the_arena_bounds_the_destination_and_never_the_body_already_outside_it` pins the rule that reads like an oversight, including the half QA guessed wrong: a step that stays outside is refused however much closer it gets.
+
+## Landmarks
+
+M8's tests answer four questions that could each be silently wrong, and they are deliberately split between the crate that composes the world and the client that shows it.
+
+**The composition could be an accident.** `the_golden_composition_is_locked` compares the derived plan against `LANDMARK_BEHAVIOR_SIGNATURE`; `the_plan_is_a_pure_function_of_the_world` derives twice and compares fingerprints, origins, base courses, crown columns and compiled geometry. The rest of the plan's tests assert the composition's *meaning* rather than its coordinates: three classes, two first choices and one reveal, the first pair at least `min_separation_degrees` apart as seen from the overlook, the reveal within its band of the landmark that reveals it, nothing crowding anything, everything inside the region and under its ceiling, and a reservation covering every column a landmark fills.
+
+**The chunks could disagree with the plan.** `a_landmark_reads_the_same_from_every_chunk_that_holds_a_piece_of_it` walks every chunk a landmark touches and requires the drawn voxel to equal `material_at` inside the bounds and to be no landmark material outside it. `a_landmark_rests_on_terrain_in_every_column_it_fills` reads the generated voxels under and over each column: terrain under a grounded course, air under a lintel, air over the top — and cross-checks the count of opening columns against the compiled silhouette. `a_landmark_crossing_a_seam_is_written_identically_from_both_sides` generates the same chunks in both orders. `no_plant_stands_inside_a_landmark` asks the one canonical `WorldVegetation` view, which is the same composition chunk generation uses.
+
+**A visible wall could be walkable, or a gate could not be.** `a_body_cannot_walk_into_a_landmark` refuses a grounded column through the runtime veto, the cached grid and `standable`; `a_landmark_blocks_the_runtime_rule_and_not_only_the_audit` gets `MoveBlockReason::Traversal` out of `check_move`; `the_keep_out_is_the_widest_body_the_world_carries` compiles both rigs and pins the keep-out to the adversary's capsule rather than to a constant somebody typed; `the_gate_is_a_gate_and_a_body_can_walk_through_it` runs a breadth-first search with the real movement spec from one side of the gate to the other and requires the path to cross the footprint with stone at least a body's height overhead, and `the_runtime_walks_through_the_gate_and_not_only_the_audit` re-walks that crossing in walk-speed increments through the production adapters, because a column graph is an upper bound.
+
+**The placement could be about a world nobody looks at.** The client's `landmark` module projects each landmark through the real follow camera with the real projection and the real fog table, and `the_world_proxy_and_the_presentation_agree_about_what_is_visible` requires that anything the world proxy calls visible the camera can actually frame. The two levels measure different things on purpose — the proxy does occlusion and no framing, the oracle does framing and no raycasting — and the tests say which is which.
+
+### What branch QA added
+
+M8's own tests ask the plan and the compiler whether they agree with themselves. Branch QA added a second layer that does not: oracles built from the voxels the generator writes, from a world of the same identity composed **without** landmarks, and from the authoritative tick loop.
+
+- `qa_a_landmark_only_ever_replaces_air` differences every chunk a landmark touches against that landmark-free baseline and inspects every voxel that differs. It is the proof that no terrain or water moved, and it needs no cooperation from the code that wrote the landmarks.
+- `qa_landmark_chunks_do_not_depend_on_the_order_they_are_asked_for` generates the same chunks under six permutations, one at a time in fresh worlds, and through a clone.
+- `qa_the_keep_out_agrees_with_the_voxels_a_viewer_can_see` reads the landmark solids out of the chunks and checks the traversal veto against them at quarter-column resolution, in both directions: never walkable where a body would hold stone, never fenced off where it would not.
+- `qa_a_real_encounter_walks_a_body_through_the_gate_and_into_its_pillars` drives a real encounter through the opening and into a pillar with the same machinery and opposite expectations.
+- `qa_a_plant_the_grammar_proposes_inside_a_reservation_is_gone_from_the_world`, `qa_no_landmark_stands_on_a_shoreline` and `qa_the_overlook_is_a_place_the_finished_world_lets_a_body_stand` check the composition's own promises against the field and the drawn voxels.
+- `the_fingerprint_reacts_to_every_landmark_control` closes a gap: the identity's "reacts to every input" test predates the landmark controls and did not cover them.
+- `the_compiler_refuses_a_descriptor_it_would_have_to_guess_at` is the regression for the one defect QA found.

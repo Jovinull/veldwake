@@ -7,6 +7,17 @@ mod debug;
 mod diagnostics;
 mod encounter;
 mod input;
+// Mostly evidence machinery: the binary draws landmarks through the ordinary
+// chunk path and only asks this module for a named capture pose, while the
+// tests ask it whether what is drawn can actually be seen.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the framing oracle is evidence; only the poses are called"
+    )
+)]
+mod landmark;
 mod lighting;
 mod readout;
 mod renderer;

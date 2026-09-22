@@ -97,3 +97,11 @@ Three additions, all on the existing five-second cadence.
 **Where a frozen moment actually stopped.** `encounter frozen at a named moment` now reports `tick`, `offset` and `frozen_at` rather than the moment's tick alone. Branch QA found that `moment:confirmed-hit` and `moment:confirmed-hit+6` both printed `tick=499` while the second was frozen at `505`, and that a milestone document had recorded the line's number as the fact. A value computed from another belongs in the log beside it.
 
 **What branch QA measured with all of this.** The `combat state` cadence is five seconds, which is fine for a session and too slow for an event: a player defeat, its `2.5` s hold and the encounter reset all fit inside one interval, and a loop polling the log four times a second never observed a zero health. Evidence about anything shorter than the report interval has to come from continuous capture, not from the log. The interval was left alone.
+
+## What the M8 landmark world reports today
+
+Nothing new in the client's frame-loop telemetry, deliberately: a landmark is voxels in a chunk, and the streaming and combat lines already describe those. What M8 adds is headless.
+
+`terrain-probe landmarks` prints the plan and, before it, **re-derives the plan and refuses to print if the second derivation disagrees with the world's own** — determinism as a runtime check rather than as a claim. It reports the derivation's cost in the current build profile, the plan fingerprint, the overlook's column, ground face and clearing radius, and for each landmark its role, class, crown column, distance from the overlook, vertical bounds, footprint, height, opening columns and their height, the silhouette the world proxy measured with how much of it falls under the elevation limit, whether it is backed by sky, the descriptor and geometry fingerprints, which landmark reveals it, its voxel count by material, span axis, lean and seed.
+
+The `#[ignore]`d whole-region reachability report gained a landmark section: the overlook, and for each landmark the nearest standable column, how many steps it is from the route start and how far out the search had to look — which is how "can a player actually get there" is answered with the game's own movement rule rather than with a straight line. It also prints which landmark hosts the fight and what the hosted placement search returns.

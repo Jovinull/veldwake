@@ -74,6 +74,11 @@ fn spawn_camera() -> Camera {
         if let Some(camera) = spawn_character_camera(name, &generator) {
             return camera;
         }
+        // And a landmark pose, which frames what the world composed rather
+        // than what the client put in it.
+        if let Some(camera) = crate::landmark::spawn_landmark_camera(name, &generator) {
+            return camera;
+        }
     }
     world.spawn_camera(requested.as_deref())
 }
@@ -196,7 +201,10 @@ impl App {
         let config = profile.config();
         let budget = UploadBudget::default();
         let world = WorldSelection::from_environment();
-        let world_fingerprint = world.fingerprint();
+        // One world, built once: the streaming source, the client's own
+        // generator and the cache key all come from the same derivation.
+        let built = world.build();
+        let world_fingerprint = built.fingerprint;
         // The experimental disk cache is opt-in and off by default: without
         // the variable the client behaves exactly as before and touches no
         // filesystem. The client picks a directory and nothing else; the entry
@@ -231,7 +239,7 @@ impl App {
             config,
             budget,
             self.camera.position(),
-            world.source(),
+            built.source,
             cache,
         )
         .map_err(|error| AppRunError(error.to_string()))?;
@@ -245,7 +253,7 @@ impl App {
         // The character is compiled on the CPU and uploaded once: rigid
         // parts make its geometry static, so nothing here runs again.
         let selection = CharacterSelection::from_environment();
-        self.terrain = world.generator();
+        self.terrain = built.generator;
 
         // The encounter comes first, because it owns both bodies when it is on
         // and the M5 preview character would otherwise draw over actor zero.

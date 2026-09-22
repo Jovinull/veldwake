@@ -19,6 +19,7 @@ use veldwake_voxel::{CHUNK_EDGE, ChunkCoord};
 
 use crate::{
     identity::{StreamLabel, TerrainConfig, WorldIdentity},
+    landmark::LandmarkPlan,
     material::TerrainMaterial,
     noise::{hash_2d, hash_3d, sub_hash, unit_from_hash},
     terrain::{SHORE_RISE, TerrainField},
@@ -457,6 +458,149 @@ impl VegetationSystem {
             && max_x <= region_max_x
             && min_z >= region_min_z
             && max_z <= region_max_z
+    }
+}
+
+/// The vegetation of a **world**: the grammar with a landmark plan applied.
+///
+/// One canonical answer to "is a plant actually here?". The chunk generator
+/// composes exactly this, so nothing downstream — an audit, a placement rule,
+/// a probe — can believe in a tree the renderer does not draw, or miss one it
+/// does. The raw [`VegetationSystem`] stays available for machinery that is
+/// about the grammar itself.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldVegetation<'a> {
+    grammar: &'a VegetationSystem,
+    field: &'a TerrainField,
+    plan: &'a LandmarkPlan,
+}
+
+impl<'a> WorldVegetation<'a> {
+    #[must_use]
+    pub const fn new(
+        grammar: &'a VegetationSystem,
+        field: &'a TerrainField,
+        plan: &'a LandmarkPlan,
+    ) -> Self {
+        Self {
+            grammar,
+            field,
+            plan,
+        }
+    }
+
+    /// The seed the canopy highlight hashes against.
+    #[must_use]
+    pub const fn seed(&self) -> u64 {
+        self.grammar.seed()
+    }
+
+    /// The grammar behind this view.
+    #[must_use]
+    pub const fn grammar(&self) -> &'a VegetationSystem {
+        self.grammar
+    }
+
+    /// The tree a cell carries in this world, if the plan leaves it standing.
+    #[must_use]
+    pub fn tree_in_cell(&self, cell_x: i64, cell_z: i64) -> Option<TreeDescriptor> {
+        let tree = self.grammar.tree_in_cell(self.field, cell_x, cell_z)?;
+        let (low, high) = tree.bounds();
+        (!self
+            .plan
+            .suppresses_plant(tree.base_x, tree.base_z, low[0], high[0], low[2], high[2]))
+        .then_some(tree)
+    }
+
+    /// The shrub a cell carries in this world, if the plan leaves it standing.
+    #[must_use]
+    pub fn shrub_in_cell(&self, cell_x: i64, cell_z: i64) -> Option<ShrubDescriptor> {
+        let shrub = self.grammar.shrub_in_cell(self.field, cell_x, cell_z)?;
+        (!self.plan.suppresses_plant(
+            shrub.base_x,
+            shrub.base_z,
+            shrub.base_x,
+            shrub.base_x + MAX_SHRUB_REACH,
+            shrub.base_z,
+            shrub.base_z + MAX_SHRUB_REACH,
+        ))
+        .then_some(shrub)
+    }
+
+    /// Every tree that writes into a chunk in this world.
+    #[must_use]
+    pub fn trees_touching(&self, coord: ChunkCoord) -> Vec<TreeDescriptor> {
+        self.grammar
+            .trees_touching(self.field, coord)
+            .into_iter()
+            .filter(|tree| {
+                let (low, high) = tree.bounds();
+                !self.plan.suppresses_plant(
+                    tree.base_x,
+                    tree.base_z,
+                    low[0],
+                    high[0],
+                    low[2],
+                    high[2],
+                )
+            })
+            .collect()
+    }
+
+    /// Every shrub that writes into a chunk in this world.
+    #[must_use]
+    pub fn shrubs_touching(&self, coord: ChunkCoord) -> Vec<ShrubDescriptor> {
+        self.grammar
+            .shrubs_touching(self.field, coord)
+            .into_iter()
+            .filter(|shrub| {
+                !self.plan.suppresses_plant(
+                    shrub.base_x,
+                    shrub.base_z,
+                    shrub.base_x,
+                    shrub.base_x + MAX_SHRUB_REACH,
+                    shrub.base_z,
+                    shrub.base_z + MAX_SHRUB_REACH,
+                )
+            })
+            .collect()
+    }
+
+    /// Whether a plant actually occupies a world voxel in this world.
+    #[must_use]
+    pub fn occupied(&self, x: i64, y: i64, z: i64) -> bool {
+        let spacing = self.grammar.config.tree_spacing;
+        for cell_z in
+            (z - MAX_TREE_REACH).div_euclid(spacing)..=(z + MAX_TREE_REACH).div_euclid(spacing)
+        {
+            for cell_x in
+                (x - MAX_TREE_REACH).div_euclid(spacing)..=(x + MAX_TREE_REACH).div_euclid(spacing)
+            {
+                if self
+                    .tree_in_cell(cell_x, cell_z)
+                    .and_then(|tree| tree.material_at(self.seed(), x, y, z))
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+        }
+        let shrub_spacing = self.grammar.config.shrub_spacing;
+        for cell_z in (z - MAX_SHRUB_REACH).div_euclid(shrub_spacing)..=z.div_euclid(shrub_spacing)
+        {
+            for cell_x in
+                (x - MAX_SHRUB_REACH).div_euclid(shrub_spacing)..=x.div_euclid(shrub_spacing)
+            {
+                if self
+                    .shrub_in_cell(cell_x, cell_z)
+                    .and_then(|shrub| shrub.material_at(x, y, z))
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 

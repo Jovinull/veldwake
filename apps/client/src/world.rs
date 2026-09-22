@@ -144,7 +144,37 @@ impl WorldSelection {
         }
     }
 
-    /// The streaming source for this world.
+    /// Everything one world needs, built once.
+    ///
+    /// Since M8 a world carries a landmark plan, which is derived when the
+    /// generator is built and costs real time. Asking this type separately
+    /// for a source, a generator and a fingerprint used to build three
+    /// worlds and derive the plan three times; this builds one and shares it,
+    /// because the plan lives behind an `Arc` and a generator is cheap to
+    /// clone. The explicit reuse the milestone chose, with no hidden cache
+    /// and no lazy first call.
+    #[must_use]
+    pub fn build(self) -> BuiltWorld {
+        let generator = self.generator();
+        let source: Box<dyn ChunkSource> = match (&generator, self) {
+            (Some(generator), _) => Box::new(TerrainChunkSource::new(generator.clone())),
+            (None, _) => Box::new(DiagnosticChunkSource),
+        };
+        BuiltWorld {
+            fingerprint: source.fingerprint(),
+            generator,
+            source,
+        }
+    }
+
+    /// The streaming source for this world, on its own.
+    ///
+    /// [`Self::build`] is what the client uses; this stays for the tests that
+    /// are about a source and nothing else.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the client builds a whole world instead")
+    )]
     #[must_use]
     pub fn source(self) -> Box<dyn ChunkSource> {
         match self {
@@ -174,6 +204,13 @@ impl WorldSelection {
     ///
     /// The disk cache is keyed on it, so switching worlds cannot replay another
     /// world's chunks: every stored entry simply reads as stale.
+    ///
+    /// Prefer [`Self::build`] when the caller also wants the source or the
+    /// generator: this builds a whole world to read one number.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the client reads the built world's key")
+    )]
     #[must_use]
     pub fn fingerprint(self) -> u64 {
         self.source().fingerprint()
@@ -227,6 +264,15 @@ pub fn resolve_pose(requested: Option<&str>) -> &'static CameraPose {
             first
         }
     }
+}
+
+/// One world, built once: the same generator behind the streaming source and
+/// behind every question the client asks about the ground.
+pub struct BuiltWorld {
+    /// `None` for the diagnostic corridor, which is not generated terrain.
+    pub generator: Option<TerrainGenerator>,
+    pub source: Box<dyn ChunkSource>,
+    pub fingerprint: u64,
 }
 
 #[cfg(test)]

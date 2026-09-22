@@ -12,13 +12,16 @@
 //! derives every slope from those heights, instead of evaluating the field four
 //! extra times for every column.
 
+use std::sync::Arc;
+
 use veldwake_voxel::{CHUNK_EDGE, Chunk, ChunkCoord, LocalCoord, VoxelId};
 
 use crate::{
     identity::{TerrainConfigError, WorldIdentity, WorldSeed},
+    landmark::{LandmarkPlan, PlanError},
     material::TerrainMaterial,
     terrain::{ColumnProfile, TerrainField, TerrainSample, slope_from_neighbours},
-    vegetation::{MAX_SHRUB_REACH, VegetationSystem},
+    vegetation::{MAX_SHRUB_REACH, VegetationSystem, WorldVegetation},
 };
 
 /// One voxel of halo on each horizontal side, which is what a central
@@ -27,26 +30,98 @@ const HALO: usize = 1;
 /// Edge of the haloed profile grid.
 const GRID_EDGE: usize = CHUNK_EDGE + 2 * HALO;
 
+/// Why a world cannot be built.
+///
+/// Two failures, kept apart because they are different mistakes: an art
+/// control that cannot be compiled into terrain, and a world that cannot carry
+/// the landmark composition its controls ask for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WorldError {
+    Config(TerrainConfigError),
+    Plan(PlanError),
+}
+
+impl std::fmt::Display for WorldError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(error) => write!(formatter, "{error}"),
+            Self::Plan(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldError {}
+
+impl From<TerrainConfigError> for WorldError {
+    fn from(error: TerrainConfigError) -> Self {
+        Self::Config(error)
+    }
+}
+
+impl From<PlanError> for WorldError {
+    fn from(error: PlanError) -> Self {
+        Self::Plan(error)
+    }
+}
+
 /// The generator for one world identity.
 ///
 /// Cheap to clone and free of interior mutability, so the streaming worker can
 /// hold one and the test suite can hold another without either observing the
-/// other.
-#[derive(Clone, Copy, Debug)]
+/// other. It is no longer `Copy`: since M8 a world carries its landmark plan,
+/// which is derived once, shared behind an `Arc`, and **fallible**. Deriving
+/// it lazily inside `generate` would hide a failure behind an
+/// `Option<Chunk>` and a cost behind the first chunk, so a world that cannot
+/// be planned fails to be built instead.
+#[derive(Clone, Debug)]
 pub struct TerrainGenerator {
     identity: WorldIdentity,
     field: TerrainField,
     vegetation: VegetationSystem,
+    plan: Arc<LandmarkPlan>,
     fingerprint: u64,
 }
 
 impl TerrainGenerator {
-    pub fn new(identity: WorldIdentity) -> Result<Self, TerrainConfigError> {
+    /// Builds a world: validates the controls, then derives and validates the
+    /// landmark plan.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Config`] for an art control that cannot be compiled, and
+    /// [`WorldError::Plan`] when the world cannot carry the landmark
+    /// composition its controls describe.
+    pub fn new(identity: WorldIdentity) -> Result<Self, WorldError> {
+        identity.validate()?;
+        let field = TerrainField::new(&identity);
+        let vegetation = VegetationSystem::new(&identity);
+        let plan = LandmarkPlan::derive(&identity, &field, &vegetation)?;
+        Ok(Self {
+            identity,
+            field,
+            vegetation,
+            plan: Arc::new(plan),
+            fingerprint: identity.fingerprint(),
+        })
+    }
+
+    /// Builds a world that shares an already derived plan.
+    ///
+    /// The explicit way to pay the derivation once when two generators of the
+    /// same identity are needed — the client's own copy and the streaming
+    /// source's. There is no hidden cache: a caller that wants reuse asks for
+    /// it here.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Config`] for an art control that cannot be compiled.
+    pub fn with_plan(identity: WorldIdentity, plan: Arc<LandmarkPlan>) -> Result<Self, WorldError> {
         identity.validate()?;
         Ok(Self {
             identity,
             field: TerrainField::new(&identity),
             vegetation: VegetationSystem::new(&identity),
+            plan,
             fingerprint: identity.fingerprint(),
         })
     }
@@ -56,7 +131,7 @@ impl TerrainGenerator {
     pub fn golden() -> Self {
         match Self::new(WorldIdentity::golden()) {
             Ok(generator) => generator,
-            Err(error) => panic!("the compile-time golden terrain descriptor is invalid: {error}"),
+            Err(error) => panic!("the compile-time golden world cannot be built: {error}"),
         }
     }
 
@@ -65,14 +140,30 @@ impl TerrainGenerator {
     /// Explicit seed selection, without a general configuration system. A
     /// diagnostic world is for looking at a different valley, not for tuning
     /// art controls at runtime.
+    /// A diagnostic world may be one the golden landmark composition does not
+    /// fit: its valley may offer no pair of sites that satisfies the controls.
+    /// That is not an error here — the world is then built without landmarks,
+    /// which is the honest answer for a world nobody composed. Only the golden
+    /// world is required to carry all three, and a test says so.
     #[must_use]
     pub fn with_seed(seed: WorldSeed) -> Self {
-        match Self::new(WorldIdentity::new(
-            seed,
-            crate::identity::TerrainConfig::golden(),
-        )) {
-            Ok(generator) => generator,
-            Err(error) => panic!("the compile-time golden terrain descriptor is invalid: {error}"),
+        let identity = WorldIdentity::new(seed, crate::identity::TerrainConfig::golden());
+        if let Err(error) = identity.validate() {
+            panic!("the diagnostic world {seed:?} cannot be built: {error}");
+        }
+        let field = TerrainField::new(&identity);
+        let vegetation = VegetationSystem::new(&identity);
+        let plan = LandmarkPlan::derive(&identity, &field, &vegetation)
+            .or_else(|_| LandmarkPlan::bare(&identity, &field, &vegetation));
+        match plan {
+            Ok(plan) => Self {
+                identity,
+                field,
+                vegetation,
+                plan: Arc::new(plan),
+                fingerprint: identity.fingerprint(),
+            },
+            Err(error) => panic!("the diagnostic world {seed:?} cannot be built: {error}"),
         }
     }
 
@@ -86,9 +177,39 @@ impl TerrainGenerator {
         &self.field
     }
 
+    /// The vegetation of this **world**: the grammar with the landmark plan's
+    /// reservations applied.
+    ///
+    /// The one canonical answer to "is a plant actually here?". Chunk
+    /// generation composes exactly this, so an audit, a probe or a placement
+    /// rule that asks this view can never believe in a tree the renderer does
+    /// not draw.
     #[must_use]
-    pub const fn vegetation(&self) -> &VegetationSystem {
+    pub fn vegetation(&self) -> WorldVegetation<'_> {
+        WorldVegetation::new(&self.vegetation, &self.field, &self.plan)
+    }
+
+    /// The raw placement grammar, without the plan.
+    ///
+    /// Only for machinery that is *about* the grammar — the probe's density
+    /// report and the plan's own derivation. Anything asking what the world
+    /// contains wants [`Self::vegetation`].
+    #[must_use]
+    pub const fn vegetation_grammar(&self) -> &VegetationSystem {
         &self.vegetation
+    }
+
+    /// The landmark plan of this world.
+    #[must_use]
+    pub fn landmarks(&self) -> &LandmarkPlan {
+        &self.plan
+    }
+
+    /// A shared handle to the plan, for building a second generator of the
+    /// same world without deriving it again.
+    #[must_use]
+    pub fn landmark_plan(&self) -> Arc<LandmarkPlan> {
+        Arc::clone(&self.plan)
     }
 
     /// Identity of everything this generator produces.
@@ -127,6 +248,7 @@ impl TerrainGenerator {
         let samples = self.column_samples(coord);
         self.fill_terrain(coord, &samples, &mut chunk);
         self.plant_vegetation(coord, &mut chunk);
+        self.place_landmarks(coord, &mut chunk);
         Some(chunk)
     }
 
@@ -228,9 +350,10 @@ impl TerrainGenerator {
             i64::from(coord.y) * edge,
             i64::from(coord.z) * edge,
         ];
-        let seed = self.vegetation.seed();
+        let world = self.vegetation();
+        let seed = world.seed();
 
-        for tree in self.vegetation.trees_touching(&self.field, coord) {
+        for tree in world.trees_touching(coord) {
             let (low, high) = tree.bounds();
             for (y, local_y) in overlap(low[1], high[1], origin[1]) {
                 for (z, local_z) in overlap(low[2], high[2], origin[2]) {
@@ -244,7 +367,7 @@ impl TerrainGenerator {
             }
         }
 
-        for shrub in self.vegetation.shrubs_touching(&self.field, coord) {
+        for shrub in world.shrubs_touching(coord) {
             let top = shrub.base_y + shrub.height - 1;
             for (y, local_y) in overlap(shrub.base_y, top, origin[1]) {
                 for (z, local_z) in overlap(shrub.base_z, shrub.base_z + MAX_SHRUB_REACH, origin[2])
@@ -256,6 +379,48 @@ impl TerrainGenerator {
                             continue;
                         };
                         write_if_air(chunk, local_x, local_y, local_z, material);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes every landmark voxel that falls inside this chunk.
+    ///
+    /// Landmarks are the last content written and they only ever fill air:
+    /// terrain is already there, the plan's reservations removed every plant
+    /// that would have stood in the way, and a landmark that overwrote either
+    /// would mean the renderer and the rules were looking at different worlds.
+    fn place_landmarks(&self, coord: ChunkCoord, chunk: &mut Chunk) {
+        let edge = CHUNK_EDGE as i64;
+        let origin = [
+            i64::from(coord.x) * edge,
+            i64::from(coord.y) * edge,
+            i64::from(coord.z) * edge,
+        ];
+        for instance in self.plan.touching(
+            origin[0],
+            origin[0] + edge - 1,
+            origin[2],
+            origin[2] + edge - 1,
+        ) {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let (low_y, high_y) = instance.vertical_bounds();
+            for (y, local_y) in overlap(low_y, high_y, origin[1]) {
+                for (z, local_z) in overlap(low_z, high_z, origin[2]) {
+                    for (x, local_x) in overlap(low_x, high_x, origin[0]) {
+                        let Some(material) = instance.material_at(x, y, z) else {
+                            continue;
+                        };
+                        let cell = local(local_x, local_y, local_z);
+                        let previous = chunk.read_local(cell);
+                        debug_assert!(
+                            previous.is_air(),
+                            "a landmark wrote over {previous:?} at {x}, {y}, {z}"
+                        );
+                        if previous.is_air() {
+                            let _ = chunk.write_local(cell, material.voxel_id());
+                        }
                     }
                 }
             }
@@ -345,7 +510,11 @@ pub fn distinct_ids(chunk: &Chunk) -> Vec<VoxelId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{identity::TerrainConfig, terrain::SHORE_RISE};
+    use crate::{
+        identity::TerrainConfig,
+        landmark::{LandmarkMaterial, LandmarkPlan},
+        terrain::SHORE_RISE,
+    };
     use veldwake_voxel::fingerprint;
 
     fn generated(generator: &TerrainGenerator, coord: ChunkCoord) -> Chunk {
@@ -493,8 +662,9 @@ mod tests {
             let chunk = generated(&generator, coord);
             for id in distinct_ids(&chunk) {
                 assert!(
-                    TerrainMaterial::from_voxel_id(id).is_some(),
-                    "{id:?} is not a terrain material"
+                    TerrainMaterial::from_voxel_id(id).is_some()
+                        || LandmarkMaterial::from_voxel_id(id).is_some(),
+                    "{id:?} is neither a terrain nor a landmark material"
                 );
             }
         }
@@ -645,7 +815,7 @@ mod tests {
     #[test]
     fn a_tree_crossing_a_seam_is_written_identically_from_both_sides() {
         let generator = TerrainGenerator::golden();
-        let field = generator.field();
+        let _field = generator.field();
         let vegetation = generator.vegetation();
         // Look along the valley until a tree actually straddles a boundary;
         // which chunk that happens in is a property of the world, not of the
@@ -656,7 +826,7 @@ mod tests {
             let right_coord = ChunkCoord::new(column + 1, 0, 1);
             let boundary = i64::from(column + 1) * CHUNK_EDGE as i64;
             let straddling: Vec<_> = vegetation
-                .trees_touching(field, left_coord)
+                .trees_touching(left_coord)
                 .into_iter()
                 .filter(|tree| {
                     let (low, high) = tree.bounds();
@@ -726,5 +896,564 @@ mod tests {
             named.contains(&"meadow-grass") || named.contains(&"highland-grass"),
             "no grass in {named:?}"
         );
+    }
+
+    /// Every chunk coordinate a landmark reaches into.
+    fn chunks_of(instance: &crate::landmark::LandmarkInstance) -> Vec<ChunkCoord> {
+        let edge = CHUNK_EDGE as i64;
+        let (low_x, high_x, low_z, high_z) = instance.bounds;
+        let (low_y, high_y) = instance.vertical_bounds();
+        let mut coords = Vec::new();
+        for cz in low_z.div_euclid(edge)..=high_z.div_euclid(edge) {
+            for cy in low_y.div_euclid(edge)..=high_y.div_euclid(edge) {
+                for cx in low_x.div_euclid(edge)..=high_x.div_euclid(edge) {
+                    let (Ok(x), Ok(y), Ok(z)) =
+                        (i32::try_from(cx), i32::try_from(cy), i32::try_from(cz))
+                    else {
+                        continue;
+                    };
+                    coords.push(ChunkCoord::new(x, y, z));
+                }
+            }
+        }
+        coords
+    }
+
+    #[test]
+    fn a_landmark_is_written_into_the_chunks_and_not_only_into_the_plan() {
+        let generator = TerrainGenerator::golden();
+        for instance in generator.landmarks().instances() {
+            let mut written = 0_u64;
+            for coord in chunks_of(instance) {
+                let chunk = generated(&generator, coord);
+                for id in distinct_ids(&chunk) {
+                    if LandmarkMaterial::from_voxel_id(id).is_some() {
+                        written += 1;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                written > 0,
+                "landmark {} is in the plan and in no chunk",
+                instance.index
+            );
+        }
+    }
+
+    #[test]
+    fn a_landmark_reads_the_same_from_every_chunk_that_holds_a_piece_of_it() {
+        let generator = TerrainGenerator::golden();
+        let edge = CHUNK_EDGE as i64;
+        for instance in generator.landmarks().instances() {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let (low_y, high_y) = instance.vertical_bounds();
+            let mut seen = 0_u64;
+            for coord in chunks_of(instance) {
+                let chunk = generated(&generator, coord);
+                let origin = [
+                    i64::from(coord.x) * edge,
+                    i64::from(coord.y) * edge,
+                    i64::from(coord.z) * edge,
+                ];
+                for z in low_z.max(origin[2])..=high_z.min(origin[2] + edge - 1) {
+                    for y in low_y.max(origin[1])..=high_y.min(origin[1] + edge - 1) {
+                        for x in low_x.max(origin[0])..=high_x.min(origin[0] + edge - 1) {
+                            let (Some(lx), Some(ly), Some(lz)) = (
+                                local_index(x, origin[0]),
+                                local_index(y, origin[1]),
+                                local_index(z, origin[2]),
+                            ) else {
+                                continue;
+                            };
+                            let drawn = chunk.read_local(local(lx, ly, lz));
+                            match instance.material_at(x, y, z) {
+                                Some(material) => {
+                                    assert_eq!(
+                                        drawn,
+                                        material.voxel_id(),
+                                        "landmark {} disagrees with its chunk at ({x}, {y}, {z})",
+                                        instance.index
+                                    );
+                                    seen += 1;
+                                }
+                                None => assert!(
+                                    LandmarkMaterial::from_voxel_id(drawn).is_none(),
+                                    "a landmark voxel stands outside landmark {} at ({x}, {y}, {z})",
+                                    instance.index
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(seen > 0, "landmark {} draws nothing", instance.index);
+        }
+    }
+
+    #[test]
+    fn a_landmark_rests_on_terrain_in_every_column_it_fills() {
+        // Nothing floats and nothing is buried: in each column the landmark
+        // occupies, the voxel under its lowest course is terrain, and the
+        // voxel over its highest course is air.
+        let generator = TerrainGenerator::golden();
+        let edge = CHUNK_EDGE as i64;
+        for instance in generator.landmarks().instances() {
+            let mut chunks = std::collections::HashMap::new();
+            for coord in chunks_of(instance) {
+                chunks.insert(coord, generated(&generator, coord));
+            }
+            let read = |x: i64, y: i64, z: i64| -> Option<VoxelId> {
+                let coord = ChunkCoord::new(
+                    i32::try_from(x.div_euclid(edge)).ok()?,
+                    i32::try_from(y.div_euclid(edge)).ok()?,
+                    i32::try_from(z.div_euclid(edge)).ok()?,
+                );
+                let chunk = chunks.get(&coord)?;
+                Some(chunk.read_local(local(
+                    usize::try_from(x.rem_euclid(edge)).ok()?,
+                    usize::try_from(y.rem_euclid(edge)).ok()?,
+                    usize::try_from(z.rem_euclid(edge)).ok()?,
+                )))
+            };
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let (mut columns, mut openings) = (0_u64, 0_u64);
+            for z in low_z..=high_z {
+                for x in low_x..=high_x {
+                    let Some((low, high)) = instance.column(x, z) else {
+                        continue;
+                    };
+                    columns += 1;
+                    if let Some(under) = read(x, low - 1, z) {
+                        if low <= instance.base_y {
+                            // A grounded course: the foundation reaches the
+                            // terrain, so the voxel under it is terrain.
+                            assert!(
+                                TerrainMaterial::from_voxel_id(under).is_some(),
+                                "landmark {} floats over {under:?} at ({x}, {}, {z})",
+                                instance.index,
+                                low - 1
+                            );
+                        } else {
+                            // A course that begins above the base is a lintel
+                            // over an opening, and an opening is open.
+                            assert!(
+                                under.is_air(),
+                                "landmark {} closes its own opening with {under:?} at ({x}, {}, {z})",
+                                instance.index,
+                                low - 1
+                            );
+                            openings += 1;
+                        }
+                    }
+                    if let Some(over) = read(x, high + 1, z) {
+                        assert!(
+                            over.is_air(),
+                            "landmark {} is buried under {over:?} at ({x}, {}, {z})",
+                            instance.index,
+                            high + 1
+                        );
+                    }
+                }
+            }
+            assert!(columns > 0, "landmark {} fills no column", instance.index);
+            let expected = instance.compiled.silhouette().opening_columns;
+            assert_eq!(
+                openings > 0,
+                expected > 0,
+                "landmark {} disagrees with its own silhouette about having an opening",
+                instance.index
+            );
+        }
+    }
+
+    #[test]
+    fn no_plant_stands_inside_a_landmark() {
+        // Through the one canonical world view, so this asks exactly what the
+        // chunk generator asks: no audit can believe in a tree the renderer
+        // does not draw, and no plant occupies a landmark's volume.
+        let generator = TerrainGenerator::golden();
+        let vegetation = generator.vegetation();
+        for instance in generator.landmarks().instances() {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let (low_y, high_y) = instance.vertical_bounds();
+            for z in low_z..=high_z {
+                for x in low_x..=high_x {
+                    for y in low_y..=high_y {
+                        if instance.material_at(x, y, z).is_none() {
+                            continue;
+                        }
+                        assert!(
+                            !vegetation.occupied(x, y, z),
+                            "a plant stands inside landmark {} at ({x}, {y}, {z})",
+                            instance.index
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_landmark_crossing_a_seam_is_written_identically_from_both_sides() {
+        // The same world, generated in two different orders: a landmark that
+        // spans chunks must not depend on which side was asked for first.
+        let generator = TerrainGenerator::golden();
+        for instance in generator.landmarks().instances() {
+            let coords = chunks_of(instance);
+            if coords.len() < 2 {
+                continue;
+            }
+            let forward: Vec<Chunk> = coords.iter().map(|c| generated(&generator, *c)).collect();
+            let backward: Vec<Chunk> = coords
+                .iter()
+                .rev()
+                .map(|c| generated(&generator, *c))
+                .collect();
+            for (chunk, mirrored) in forward.iter().zip(backward.iter().rev()) {
+                assert_eq!(
+                    fingerprint(chunk),
+                    fingerprint(mirrored),
+                    "landmark {} depends on generation order",
+                    instance.index
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_world_of_the_same_identity_shares_the_plan_without_deriving_it() {
+        // The explicit reuse the client needs: two generators of one world,
+        // one derivation. Same plan, same chunks, and the same handle.
+        let first = TerrainGenerator::golden();
+        let Ok(second) =
+            TerrainGenerator::with_plan(WorldIdentity::golden(), first.landmark_plan())
+        else {
+            panic!("the golden identity is valid");
+        };
+        assert!(std::sync::Arc::ptr_eq(
+            &first.landmark_plan(),
+            &second.landmark_plan()
+        ));
+        assert_eq!(first.fingerprint(), second.fingerprint());
+        let coord = chunks_of(&first.landmarks().instances()[0])[0];
+        assert_eq!(
+            fingerprint(&generated(&first, coord)),
+            fingerprint(&generated(&second, coord))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8 branch QA: oracles that do not ask the implementation about itself
+    // -----------------------------------------------------------------------
+
+    /// The same world, composed with an overlook and **no landmarks**.
+    ///
+    /// The independent baseline the QA oracles below difference against: same
+    /// identity, same terrain, same grammar, same overlook clearing, and not
+    /// one landmark voxel. Anything that differs between this world and the
+    /// golden one is something the three landmarks did.
+    /// Whether a voxel is vegetation rather than world.
+    fn is_plant(voxel: VoxelId) -> bool {
+        matches!(
+            TerrainMaterial::from_voxel_id(voxel),
+            Some(
+                TerrainMaterial::Trunk
+                    | TerrainMaterial::Foliage
+                    | TerrainMaterial::FoliageHighlight
+                    | TerrainMaterial::Shrub
+            )
+        )
+    }
+
+    fn without_landmarks() -> TerrainGenerator {
+        let identity = WorldIdentity::golden();
+        let field = TerrainField::new(&identity);
+        let vegetation = VegetationSystem::new(&identity);
+        let Ok(bare) = LandmarkPlan::bare(&identity, &field, &vegetation) else {
+            panic!("the golden world has an overlook");
+        };
+        match TerrainGenerator::with_plan(identity, Arc::new(bare)) {
+            Ok(generator) => generator,
+            Err(error) => panic!("the golden identity is valid: {error}"),
+        }
+    }
+
+    #[test]
+    fn qa_a_landmark_only_ever_replaces_air() {
+        // The strongest form of the claim, and the one that needs no trust in
+        // the writer: generate every chunk a landmark touches twice, once in a
+        // world that has landmarks and once in a world that does not, and look
+        // at every voxel that differs. A landmark may appear where there was
+        // air. A plant may vanish where a reservation covers it. Nothing else
+        // may change — no terrain, no water, no sediment, no shoreline.
+        let golden = TerrainGenerator::golden();
+        let bare = without_landmarks();
+        let mut wrote_landmark = 0_u64;
+        let mut removed_plant = 0_u64;
+        let mut examined = 0_u64;
+
+        for instance in golden.landmarks().instances() {
+            for coord in chunks_of(instance) {
+                let with = generated(&golden, coord);
+                let without = generated(&bare, coord);
+                for z in 0..CHUNK_EDGE {
+                    for y in 0..CHUNK_EDGE {
+                        for x in 0..CHUNK_EDGE {
+                            let cell = local(x, y, z);
+                            let (before, after) = (without.read_local(cell), with.read_local(cell));
+                            examined += 1;
+                            if before == after {
+                                continue;
+                            }
+                            if LandmarkMaterial::from_voxel_id(after).is_some() {
+                                // Air, or a plant this landmark's own
+                                // reservation had already removed by the time
+                                // the stone was written. Never terrain, never
+                                // water: those are the world, and a landmark
+                                // stands on the world rather than in it.
+                                assert!(
+                                    before.is_air() || is_plant(before),
+                                    "a landmark replaced {before:?} at local ({x}, {y}, {z}) of {coord:?}"
+                                );
+                                wrote_landmark += 1;
+                                continue;
+                            }
+                            // The only other legal difference is a plant the
+                            // reservation removed, which leaves air behind.
+                            assert!(
+                                after.is_air(),
+                                "the composed world put {after:?} where the bare world had {before:?}"
+                            );
+                            assert!(
+                                is_plant(before),
+                                "the composition removed {before:?}, which is not a plant"
+                            );
+                            removed_plant += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(examined > 100_000, "only {examined} voxels were compared");
+        assert!(
+            wrote_landmark > 1_000,
+            "only {wrote_landmark} landmark voxels"
+        );
+        // Branch QA measured `1,740` landmark voxels — the `1,729` the three
+        // compiled objects hold plus `11` of foundation — and `2,543` plant
+        // voxels removed, over `524,288` compared.
+        assert!(
+            removed_plant > 0,
+            "no plant was removed, so the reservations are doing nothing"
+        );
+    }
+
+    #[test]
+    fn qa_landmark_chunks_do_not_depend_on_the_order_they_are_asked_for() {
+        // Eight orders over the chunks a landmark spans, plus a generator that
+        // has produced nothing else, plus a clone. Chunk bytes must be equal
+        // in every one of them.
+        let golden = TerrainGenerator::golden();
+        let mut coords: Vec<ChunkCoord> = Vec::new();
+        for instance in golden.landmarks().instances() {
+            coords.extend(chunks_of(instance));
+        }
+        coords.sort_unstable_by_key(|coord| (coord.z, coord.y, coord.x));
+        coords.dedup();
+        assert!(coords.len() >= 6, "only {} chunks to permute", coords.len());
+
+        let reference: Vec<u64> = coords
+            .iter()
+            .map(|coord| fingerprint(&generated(&golden, *coord)))
+            .collect();
+
+        // A deterministic shuffle: stride the list by a coprime step, which
+        // gives a different order for each step and visits every element.
+        for step in [1_usize, 3, 5, 7, 11, 13] {
+            if coords.len().is_multiple_of(step) {
+                continue;
+            }
+            let shuffled = TerrainGenerator::golden();
+            let mut seen = vec![0_u64; coords.len()];
+            let mut index = 0_usize;
+            for _ in 0..coords.len() {
+                seen[index] = fingerprint(&generated(&shuffled, coords[index]));
+                index = (index + step) % coords.len();
+            }
+            assert_eq!(seen, reference, "order with step {step} changed a chunk");
+        }
+
+        // One chunk from a world that has generated nothing else at all.
+        for (slot, coord) in coords.iter().enumerate() {
+            let lonely = TerrainGenerator::golden();
+            assert_eq!(
+                fingerprint(&generated(&lonely, *coord)),
+                reference[slot],
+                "{coord:?} differs when it is the only chunk a world is asked for"
+            );
+        }
+
+        // And from a clone, which shares the plan behind its `Arc`.
+        let cloned = golden.clone();
+        for (slot, coord) in coords.iter().enumerate() {
+            assert_eq!(fingerprint(&generated(&cloned, *coord)), reference[slot]);
+        }
+    }
+
+    #[test]
+    fn qa_no_landmark_stands_on_a_shoreline() {
+        // `level_and_dry` checks water on a two-column stride, justified by
+        // water bodies being tens of columns wide. This is the exhaustive
+        // check the stride approximates, over the columns that matter.
+        let golden = TerrainGenerator::golden();
+        let field = golden.field();
+        for instance in golden.landmarks().instances() {
+            // `SITE_PAD + 3`, which is the margin `level_and_dry` samples on a
+            // two-column stride around the site it accepted. This is the same
+            // disc, every column of it.
+            let margin = 14_i64;
+            let (centre_x, centre_z) = instance.crown_column;
+            let mut wet = Vec::new();
+            for z in (centre_z - margin)..=(centre_z + margin) {
+                for x in (centre_x - margin)..=(centre_x + margin) {
+                    #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+                    let sample = field.sample(x as f64 + 0.5, z as f64 + 0.5);
+                    if sample.has_water_voxel() && wet.len() < 8 {
+                        wet.push((x, z));
+                    }
+                }
+            }
+            assert!(
+                wet.is_empty(),
+                "landmark {} has water within {margin} columns: {wet:?}",
+                instance.index
+            );
+        }
+    }
+
+    #[test]
+    fn qa_the_overlook_is_a_place_the_finished_world_lets_a_body_stand() {
+        // The overlook is chosen before the landmarks exist, so it is worth
+        // asking the finished world rather than the plan: dry, inside the
+        // region, level, no landmark on it, and no plant in the room a body
+        // needs.
+        let golden = TerrainGenerator::golden();
+        let overlook = golden.landmarks().overlook();
+        let (x, z) = overlook.column;
+        let field = golden.field();
+        #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+        let centre = field.sample(x as f64 + 0.5, z as f64 + 0.5);
+        assert!(!centre.has_water_voxel(), "the overlook is in water");
+        assert_eq!(
+            i64::from(overlook.ground_face),
+            centre.surface_y() + 1,
+            "the overlook's recorded face is not the face the field reports"
+        );
+        assert!(
+            golden.landmarks().column(x, z).is_none(),
+            "a landmark stands on the overlook"
+        );
+        let vegetation = golden.vegetation();
+        for y in centre.surface_y() + 1..=centre.surface_y() + 4 {
+            assert!(
+                !vegetation.occupied(x, y, z),
+                "a plant stands in the overlook at height {y}"
+            );
+        }
+        // And level enough to be a place to stand and look, out to the pad the
+        // plan required.
+        for dz in -4_i64..=4 {
+            for dx in -4_i64..=4 {
+                #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+                let near = field.sample((x + dx) as f64 + 0.5, (z + dz) as f64 + 0.5);
+                assert!(
+                    (near.surface_y() - centre.surface_y()).abs() <= 1,
+                    "the overlook is not level at ({dx}, {dz})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn qa_a_plant_the_grammar_proposes_inside_a_reservation_is_gone_from_the_world() {
+        // Three levels have to agree that it is gone: the composed vegetation
+        // view, the voxels the generator writes, and the visibility proxy the
+        // plan itself consults.
+        let golden = TerrainGenerator::golden();
+        let grammar = golden.vegetation_grammar();
+        let world = golden.vegetation();
+        let field = golden.field();
+        let spacing = golden.identity().config.tree_spacing;
+
+        let mut suppressed = Vec::new();
+        for instance in golden.landmarks().instances() {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let reach = 24_i64;
+            for cell_z in (low_z - reach).div_euclid(spacing)..=(high_z + reach).div_euclid(spacing)
+            {
+                for cell_x in
+                    (low_x - reach).div_euclid(spacing)..=(high_x + reach).div_euclid(spacing)
+                {
+                    let Some(tree) = grammar.tree_in_cell(field, cell_x, cell_z) else {
+                        continue;
+                    };
+                    if world.tree_in_cell(cell_x, cell_z).is_some() {
+                        continue;
+                    }
+                    suppressed.push((cell_x, cell_z, tree));
+                }
+            }
+        }
+        assert!(
+            !suppressed.is_empty(),
+            "no tree is suppressed anywhere near a landmark, so this proves nothing"
+        );
+
+        for (cell_x, cell_z, tree) in &suppressed {
+            let (low, _) = tree.bounds();
+            // Its trunk column is the part only it can own: the grammar proves
+            // a six-voxel minimum spacing, so no second trunk stands here. A
+            // neighbour's canopy may still reach over the box it used to fill,
+            // which is why this asks about the trunk and not about the box.
+            for y in low[1]..low[1] + 4 {
+                assert!(
+                    !world.occupied(tree.base_x, y, tree.base_z)
+                        || world.tree_in_cell(*cell_x, *cell_z).is_some(),
+                    "the composed world still holds the trunk from cell ({cell_x}, {cell_z})"
+                );
+            }
+            let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+            let coord = ChunkCoord::new(
+                i32::try_from(tree.base_x.div_euclid(edge)).unwrap_or_default(),
+                i32::try_from(low[1].div_euclid(edge)).unwrap_or_default(),
+                i32::try_from(tree.base_z.div_euclid(edge)).unwrap_or_default(),
+            );
+            let Some(chunk) = golden.generate(coord) else {
+                continue;
+            };
+            let (Some(lx), Some(ly), Some(lz)) = (
+                local_index(tree.base_x, i64::from(coord.x) * edge),
+                local_index(low[1], i64::from(coord.y) * edge),
+                local_index(tree.base_z, i64::from(coord.z) * edge),
+            ) else {
+                continue;
+            };
+            let drawn = chunk.read_local(local(lx, ly, lz));
+            assert!(
+                !matches!(
+                    TerrainMaterial::from_voxel_id(drawn),
+                    Some(
+                        TerrainMaterial::Trunk
+                            | TerrainMaterial::Foliage
+                            | TerrainMaterial::FoliageHighlight
+                    )
+                ),
+                "a suppressed trunk is still drawn at ({}, {}, {}): {drawn:?}",
+                tree.base_x,
+                low[1],
+                tree.base_z
+            );
+        }
     }
 }

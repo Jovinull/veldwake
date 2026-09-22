@@ -792,7 +792,10 @@ mod tests {
         fixture::NAMED_POSES,
         locomotion::{LEFT, RIGHT},
     };
-    use veldwake_procedural::{TerrainGenerator, TerrainMaterial, material::ALL_MATERIALS};
+    use veldwake_procedural::{
+        LANDMARK_ID_END, LANDMARK_ID_FIRST, LandmarkMaterial, TerrainGenerator, TerrainMaterial,
+        material::ALL_MATERIALS,
+    };
     use veldwake_voxel::VoxelId;
 
     fn generator() -> TerrainGenerator {
@@ -823,10 +826,31 @@ mod tests {
         // And the whole declared reservation is disjoint, not only what is used.
         for raw in CHARACTER_ID_FIRST..CHARACTER_ID_END {
             assert!(TerrainMaterial::from_voxel_id(VoxelId(raw)).is_none());
+            assert!(LandmarkMaterial::from_voxel_id(VoxelId(raw)).is_none());
         }
         for raw in [1_u16, 2, 7] {
             assert!(CharacterMaterial::from_voxel_id(VoxelId(raw)).is_none());
             assert!(TerrainMaterial::from_voxel_id(VoxelId(raw)).is_none());
+            assert!(LandmarkMaterial::from_voxel_id(VoxelId(raw)).is_none());
+        }
+        // M8's range is the third one the renderer's ordered lookup walks, so
+        // it has to be disjoint from both of the others over its whole span.
+        for raw in LANDMARK_ID_FIRST..LANDMARK_ID_END {
+            let id = VoxelId(raw);
+            assert!(
+                TerrainMaterial::from_voxel_id(id).is_none(),
+                "landmark identifier {raw} is also a terrain one"
+            );
+            assert!(
+                CharacterMaterial::from_voxel_id(id).is_none(),
+                "landmark identifier {raw} is also a character one"
+            );
+        }
+        for landmark in veldwake_procedural::landmark::ALL_LANDMARK_MATERIALS {
+            let id = landmark.voxel_id();
+            assert!(!id.is_air());
+            assert!(TerrainMaterial::from_voxel_id(id).is_none());
+            assert!(CharacterMaterial::from_voxel_id(id).is_none());
         }
     }
 
@@ -838,7 +862,6 @@ mod tests {
     fn the_portrait_stand_is_a_level_clearing() {
         let generator = generator();
         let ground = TerrainGround::new(&generator);
-        let field = generator.field();
         let vegetation = generator.vegetation();
         let x = super::PORTRAIT_X as i64;
         let z = super::PORTRAIT_Z as i64;
@@ -896,7 +919,7 @@ mod tests {
                 }
                 for y in base..base + 14 {
                     assert!(
-                        !vegetation.occupied(field, x + dx, y, z + dz),
+                        !vegetation.occupied(x + dx, y, z + dz),
                         "vegetation stands at ({}, {y}, {}) in the portrait clearing",
                         x + dx,
                         z + dz
@@ -1089,7 +1112,6 @@ mod tests {
     fn the_clearing_walk_stays_inside_the_clearing() {
         let generator = generator();
         let ground = TerrainGround::new(&generator);
-        let field = generator.field();
         let vegetation = generator.vegetation();
         let start = super::CLEARING_COURSE.sample(0.0);
         let Some(base) = ground.surface(f64::from(start.x), f64::from(start.z)) else {
@@ -1119,7 +1141,7 @@ mod tests {
                 for dx in -2..=2_i64 {
                     for y in base as i64..base as i64 + 14 {
                         assert!(
-                            !vegetation.occupied(field, cx + dx, y, cz + dz),
+                            !vegetation.occupied(cx + dx, y, cz + dz),
                             "vegetation stands at ({}, {y}, {}) on the clearing walk",
                             cx + dx,
                             cz + dz

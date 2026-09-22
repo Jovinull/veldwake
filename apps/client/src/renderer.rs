@@ -13,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use tracing::{debug, error, info, warn};
 use veldwake_character::{BONE_COUNT, CompiledCharacter, PosedCharacter};
 use veldwake_combat::CompiledWeapon;
-use veldwake_procedural::TerrainMaterial;
+use veldwake_procedural::{LandmarkMaterial, TerrainMaterial};
 use veldwake_streaming::LodLevel;
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord, Mesh, VoxelId};
 use wgpu::util::DeviceExt;
@@ -2035,16 +2035,19 @@ impl ChunkPresentation for Renderer {
 
 /// The colour and specular response of one voxel identifier.
 ///
-/// A terrain material answers for itself, from the one table in
+/// A terrain or landmark material answers for itself, from the one table in
 /// `veldwake-procedural`; the renderer does not keep a second palette and
-/// cannot drift from the style bible. Identifiers the material table does not
-/// claim are the M3 diagnostic fixture, which keeps its old colours so the
-/// regression view still looks like itself.
+/// cannot drift from the style bible or from `LANDMARK_STYLE.md`. Identifiers
+/// neither table claims are the M3 diagnostic fixture, which keeps its old
+/// colours so the regression view still looks like itself.
 fn voxel_appearance(voxel: VoxelId) -> ([f32; 3], f32) {
-    match TerrainMaterial::from_voxel_id(voxel) {
-        Some(material) => (material.albedo(), material.specular()),
-        None => (diagnostic_color(voxel), 0.0),
+    if let Some(material) = TerrainMaterial::from_voxel_id(voxel) {
+        return (material.albedo(), material.specular());
     }
+    if let Some(material) = LandmarkMaterial::from_voxel_id(voxel) {
+        return (material.albedo(), material.specular());
+    }
+    (diagnostic_color(voxel), 0.0)
 }
 
 fn diagnostic_color(voxel: VoxelId) -> [f32; 3] {

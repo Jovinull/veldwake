@@ -1,6 +1,6 @@
 # M7 — Traversable Region
 
-Status: **complete on `feat/m7-traversable-region`; OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS; independent branch QA complete; ready for a pull request**
+Status: **complete and merged.** [PR #11](https://github.com/Jovinull/veldwake/pull/11), merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, after OWNER PLAYTEST — TRAVERSAL EXPERIENCE: PASS, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`.
 Base: `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd`, which is `main` at merge commit `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` plus two documentation commits.
 
 M4 proved the region can look like something. M5 proved a person can stand in it. M6 proved a person can fight in it — inside a disc of `5.5` world units, at one scanned clearing. M7 has to prove that the person can *leave that disc*: exist and move continuously through the real procedural region, with streaming anchored on the body, reach an encounter placed in the world, fight, and continue the session.
