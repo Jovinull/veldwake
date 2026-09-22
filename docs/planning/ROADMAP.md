@@ -84,12 +84,21 @@ The two weapons are a sidegrade, not an upgrade — greater reach paid for with
 greater commitment — and the choice survives a defeat and its encounter reset
 while deliberately not surviving a process restart.
 
-**Implemented on `feat/m9-meaningful-reward` and stopped for the owner
-playtest. Not merged, no pull request.** Every gate is green (799 tests, clippy,
-fmt, doc tests, rustdoc, metadata, deny, audit, eight driven client runs on the
-audited host) and every historical lock is byte-identical, including
+**M9 PRODUCT GATE: FAIL — mechanical sidegrade exists, but the current encounter
+does not make weapon choice meaningfully affect play.** The implementation stays
+on `feat/m9-meaningful-reward`, not reverted, not merged, no pull request, and
+not ready for branch QA as a completed milestone.
+
+Every technical gate is green and stays green (799 tests, clippy, fmt, doc
+tests, rustdoc, metadata, deny, audit, eight driven client runs on the audited
+host); every historical lock is byte-identical, including
 `GOLDEN_ENCOUNTER_SIGNATURE`, both M6 weapon fingerprints and every world and
-traversal signature. `crates/procedural` is not modified at all.
+traversal signature; and `crates/procedural` is not modified at all. The owner
+played both weapons, **perceived the reach difference and the timing
+difference**, and reported that combat stays simple enough for neither to change
+the strategy — both weapons support the same natural approach-and-swing play.
+The failure is about what the encounter demands, not about what the weapons are
+(KI-039), and nothing was retuned in response.
 
 Proposed after M8 from the evidence M8 produced — a person chose a direction
 because of what stood at the end of it, and then had no reason to go beyond
@@ -101,7 +110,7 @@ two-handed weapon. Its durable decision is
 and its invariants are **ARM-001** and **ARM-002**. See
 [`M9_MEANINGFUL_REWARD.md`](M9_MEANINGFUL_REWARD.md).
 
-The owner gate, **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, has not been run.
+The owner gate, **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, was run on 2026-09-22 and returned **FAIL**. The next step is a focused redesign analysis of the encounter; no milestone follows M9 yet.
 
 ## Later capability groups
 

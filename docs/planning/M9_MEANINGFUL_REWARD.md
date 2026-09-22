@@ -1,14 +1,28 @@
 # M9 — Meaningful Reward
 
-Status: **implemented on `feat/m9-meaningful-reward`, stopped for the owner
-playtest.** No pull request, no merge. Base: `docs/post-m8-handoff` at
+Status: **M9 PRODUCT GATE: FAIL — mechanical sidegrade exists, but the current
+encounter does not make weapon choice meaningfully affect play.** The
+implementation stays on `feat/m9-meaningful-reward` and is not reverted, not
+merged and has no pull request. It is **not ready for branch QA as a completed
+milestone**. Base: `docs/post-m8-handoff` at
 `658ebfbd618b1d7387eee7890d11af53b5f8e045`, which is `main` at merge commit
 `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` plus one documentation commit.
 
+**The technical result and the product result are different results and both
+stand.** Every implementation claim in this document was verified and remains
+verified: the found weapon reaches further, commits longer, exposes a longer
+whiff, opens a far wider standoff band, and the exchange, the armament, ARM-001,
+the M6 locks and the untouched world all hold. What failed is the product
+hypothesis the milestone existed to test, and it failed for a reason that is
+about the *encounter* rather than about the weapons.
+
 M8 proved a person will choose a direction because of what is standing at the
 end of it. What it did not give that person was a reason to go beyond arriving.
-M9 is the first proof of **Mastery** in this project: reaching a place gives you
-something that changes how you play.
+M9 set out to be the first proof of **Mastery** in this project — reaching a
+place gives you something that changes how you play — and built the whole of it.
+The owner's session says the first half happened and the second did not: the
+thing you are given is measurably and perceptibly different, and the way you
+play is not.
 
 It is not a progression system, not loot infrastructure, not an inventory and
 not persistence.
@@ -409,6 +423,80 @@ difference is host load — the "before" set was taken immediately after a full
 reproduced by accident. The placed weapon costs exactly `106,064` bytes
 (`92,160` vertex + `13,824` index + `80` uniform) and one draw in each pass.
 
+## OWNER PLAYTEST — WEAPON CHOICE MATTERS: FAIL
+
+2026-09-22, by the repository owner, who had read the M9 architecture report
+beforehand and therefore knew what the reward was and where it stood. **No
+discovery, visibility or composition claim in this milestone is owner evidence**
+— M8 owns discovery; this gate asks only whether the choice matters.
+
+The owner played both weapons in combat.
+
+**What the owner did first, unprompted.** Approached the adversary, stood facing
+it, attacked repeatedly, and defeated it — then did essentially the same thing
+with the other weapon.
+
+**What the owner reported after a second, deliberately difference-focused
+session:**
+
+- the **difference in distance and reach was perceptible**;
+- the **difference in the attack's timing and motion was perceptible**;
+- but the combat stays simple enough that neither changes the strategy
+  significantly;
+- in the owner's own words, *"sempre só acaba acertando ele de qualquer jeito"* —
+  you just end up hitting him anyway.
+
+**The reading, stated precisely.** The two weapons are mechanically and
+perceptually distinguishable, and the owner distinguished them. The gate fails
+because **both weapons support effectively the same natural combat strategy**:
+the reward changes measurable weapon properties without yet changing the
+player's meaningful combat decisions.
+
+### What this result is not, and must never be written as
+
+Four statements would be false and are recorded here so no later document
+reaches for them:
+
+- **not** "the weapons feel identical";
+- **not** "the found weapon failed to communicate its longer reach";
+- **not** "the found weapon is universally superior";
+- **not** "the owner could not perceive the timing difference".
+
+The owner perceived the reach difference and the timing difference. The failure
+is downstream of perception.
+
+### The product hypothesis that failed
+
+> "Chegar a um lugar pode me dar algo que muda de verdade a maneira como eu
+> jogo?"
+
+**FAIL.** Reaching the place gives the player something measurably different to
+hold. It does not yet give them a different way to play, because the encounter
+does not ask them to trade anything.
+
+### The finding this produces
+
+**The current M6 encounter may be too permissive to expose a weapon sidegrade.**
+The natural strategy the owner arrived at without being taught it is: stand in
+front of the adversary, attack repeatedly, and the adversary dies. Against that
+strategy, reach, commitment, whiff exposure and dodge availability all exist
+technically and can be largely ignored.
+
+This is **not** evidence that the combat system is bad. It is evidence that this
+particular encounter does not demand the dimensions M9 traded. The distinction
+matters: M6's own gates — readability, telegraph, impact, camera — were passed by
+the same owner and are not reopened by this result. Recorded as KI-039, with no
+solution prescribed and none chosen.
+
+### What was deliberately not changed in response
+
+Nothing. No descriptor, no attack spec, no damage, reach, windup or recovery, no
+aim assist, no enemy tuning, no second verb, no second enemy, no stamina, no
+combos and no difficulty. Making the found weapon artificially weaker to
+manufacture a contrast would answer a different question than the one that
+failed. The evidence is persisted first; the redesign is a separate decision the
+owner has not yet taken.
+
 ## Accepted behaviour
 
 - The planted weapon is **non-colliding**: a body walks through it. There is no
@@ -438,8 +526,9 @@ generalized equipment system; **and no two-handed pose or second-hand contact.**
 
 ## What this agent could not verify
 
-- **Whether the two weapons feel different to a person.** That is the owner
-  gate and it has not been run. Everything above is measurement and self-QA.
+- ~~**Whether the two weapons feel different to a person.**~~ **Answered by the
+  owner gate above**: they do, in both reach and timing. What the gate found
+  instead is that the difference does not change how the encounter is played.
 - **Whether the found weapon reads as belonging in this world or as generic
   loot.** A capture can show the silhouette; it cannot answer the question.
 - **Whether the longblade's scale is imposing or absurd** at `2.50` world units
@@ -463,3 +552,6 @@ generalized equipment system; **and no two-handed pose or second-hand contact.**
   Only the closed loop landed anything. The same finding M7 and M8 recorded.
 - **The camera meets the planted weapon.** The follow camera passes through the
   object at close range, as it does through gate stone. KI-025, unchanged.
+- **KI-039: the encounter does not demand what the sidegrade trades.** The
+  owner's own session is the evidence, and it is the reason the product gate
+  failed. No solution is prescribed and none is chosen.
