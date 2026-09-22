@@ -59,6 +59,7 @@ fn main() -> ExitCode {
         "bench" => bench(&generator, &rest),
         "poses" => poses(),
         "vegetation" => vegetation(&generator),
+        "landmarks" => landmarks(&generator),
         other => Err(format!("unknown command `{other}`")),
     };
 
@@ -69,6 +70,139 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Reports the landmark plan of this world.
+///
+/// Evidence machinery: the plan is derived when the world is built, so this
+/// only reads it back. What it prints is what the chunks contain.
+fn landmarks(generator: &TerrainGenerator) -> Result<(), String> {
+    let plan = generator.landmarks();
+
+    // The derivation runs once per world, at construction. Measuring it here
+    // costs a second derivation on purpose: the number belongs in the
+    // milestone document as an observation, not as a guess.
+    let started = std::time::Instant::now();
+    let derived = veldwake_procedural::landmark::LandmarkPlan::derive(
+        generator.identity(),
+        generator.field(),
+        generator.vegetation_grammar(),
+    );
+    let elapsed = started.elapsed();
+    // A diagnostic world may have no composition; then the world was built
+    // bare, and that is what re-deriving has to reproduce.
+    let measured = match derived {
+        Ok(plan) => plan,
+        Err(reason) => {
+            println!("the composition does not fit this world: {reason}");
+            veldwake_procedural::landmark::LandmarkPlan::bare(
+                generator.identity(),
+                generator.field(),
+                generator.vegetation_grammar(),
+            )
+            .map_err(|error| format!("the plan could not be derived again: {error}"))?
+        }
+    };
+    if measured.fingerprint() != plan.fingerprint() {
+        return Err("the plan is not a pure function of the world".to_owned());
+    }
+    println!(
+        "derivation {:.0} ms  (this build profile)",
+        elapsed.as_secs_f64() * 1000.0
+    );
+
+    let overlook = plan.overlook();
+    println!(
+        "plan {:#018x}  overlook ({}, {}) ground {} clearing {}",
+        plan.fingerprint(),
+        overlook.column.0,
+        overlook.column.1,
+        overlook.ground_face,
+        overlook.clearing_radius
+    );
+    for instance in plan.instances() {
+        let silhouette = instance.compiled.silhouette();
+        let descriptor = instance.descriptor;
+        let (low, high) = instance.vertical_bounds();
+        #[expect(clippy::cast_precision_loss, reason = "region coordinates in a report")]
+        let distance = (((instance.crown_column.0 - overlook.column.0).pow(2)
+            + (instance.crown_column.1 - overlook.column.1).pow(2)) as f64)
+            .sqrt();
+        println!(
+            "  {} {:<6} at ({}, {})  {:.0} u from the overlook  base {}  top {}               footprint {}x{}  height {}  opening {} columns at {}               visible {:.1} voxels ({:.1} within 12 deg, sky {})               descriptor {:#018x}  geometry {:#018x}  revealed from {:?}",
+            instance.role.name(),
+            descriptor.class.name(),
+            instance.crown_column.0,
+            instance.crown_column.1,
+            distance,
+            low,
+            high,
+            silhouette.footprint.0,
+            silhouette.footprint.1,
+            silhouette.height,
+            silhouette.opening_columns,
+            silhouette.opening_clearance,
+            instance.visible.visible,
+            instance.visible.visible_within(12.0),
+            instance.visible.sky_backed,
+            descriptor.fingerprint(),
+            instance.compiled.geometry_fingerprint(),
+            instance.revealed_from,
+        );
+        println!(
+            "         voxels {}  stone {}  band {}  cap {}  axis {}  lean {}  seed {:#018x}",
+            instance.compiled.voxel_count(),
+            instance
+                .compiled
+                .material_count(veldwake_procedural::LandmarkMaterial::Stone),
+            instance
+                .compiled
+                .material_count(veldwake_procedural::landmark::LandmarkMaterial::Band),
+            instance
+                .compiled
+                .material_count(veldwake_procedural::landmark::LandmarkMaterial::Cap),
+            descriptor.axis.name(),
+            descriptor.lean,
+            descriptor.seed,
+        );
+    }
+
+    // How far apart the two first choices are, seen from the overlook. The
+    // one number that says whether this is a choice of direction or two
+    // things in the same direction.
+    let first: Vec<&veldwake_procedural::LandmarkInstance> = plan
+        .instances()
+        .iter()
+        .filter(|one| one.role == veldwake_procedural::LandmarkRole::FirstChoice)
+        .collect();
+    if let [left, right] = first.as_slice() {
+        let bearing = |to: (i64, i64)| {
+            #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+            let (dx, dz) = (
+                (to.0 - overlook.column.0) as f64,
+                (to.1 - overlook.column.1) as f64,
+            );
+            let degrees = dx.atan2(-dz).to_degrees();
+            if degrees < 0.0 {
+                degrees + 360.0
+            } else {
+                degrees
+            }
+        };
+        let (a, b) = (bearing(left.crown_column), bearing(right.crown_column));
+        let apart = {
+            let difference = (a - b).abs() % 360.0;
+            if difference > 180.0 {
+                360.0 - difference
+            } else {
+                difference
+            }
+        };
+        println!(
+            "  the first choice is between bearings {a:.1} and {b:.1} degrees, {apart:.1} apart"
+        );
+    }
+    Ok(())
 }
 
 /// Removes `--seed <value>` from the argument list, if present.
@@ -214,7 +348,7 @@ fn column(generator: &TerrainGenerator, rest: &[&str]) -> Result<(), String> {
     while clearance < 24
         && generator
             .vegetation()
-            .occupied(field, x, sample.surface_y() + clearance + 1, z)
+            .occupied(x, sample.surface_y() + clearance + 1, z)
     {
         clearance += 1;
     }
@@ -389,7 +523,7 @@ fn vegetation(generator: &TerrainGenerator) -> Result<(), String> {
     let mut heights = [0_usize; 12];
     for cell_z in min_z.div_euclid(spacing) - 1..=max_z.div_euclid(spacing) + 1 {
         for cell_x in min_x.div_euclid(spacing) - 1..=max_x.div_euclid(spacing) + 1 {
-            let Some(tree) = system.tree_in_cell(field, cell_x, cell_z) else {
+            let Some(tree) = system.tree_in_cell(cell_x, cell_z) else {
                 continue;
             };
             trees += 1;
@@ -426,7 +560,7 @@ fn vegetation(generator: &TerrainGenerator) -> Result<(), String> {
         for cell_x in min_x.div_euclid(TerrainConfig::golden().shrub_spacing)
             ..=max_x.div_euclid(TerrainConfig::golden().shrub_spacing)
         {
-            if system.shrub_in_cell(field, cell_x, cell_z).is_some() {
+            if system.shrub_in_cell(cell_x, cell_z).is_some() {
                 shrubs += 1;
             }
         }

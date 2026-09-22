@@ -368,7 +368,6 @@ mod tests {
     fn the_arena_is_a_level_open_clearing() {
         let generator = generator();
         let ground = TerrainGround::new(&generator);
-        let field = generator.field();
         let vegetation = generator.vegetation();
         let x = ARENA_X as i64;
         let z = ARENA_Z as i64;
@@ -433,7 +432,7 @@ mod tests {
                 }
                 for y in base..base + 16 {
                     assert!(
-                        !vegetation.occupied(field, x + dx, y, z + dz),
+                        !vegetation.occupied(x + dx, y, z + dz),
                         "vegetation stands at ({}, {y}, {}) in the arena",
                         x + dx,
                         z + dz
@@ -471,7 +470,6 @@ mod tests {
         // or inside a canopy, which is why this exists.
         let generator = generator();
         let ground = TerrainGround::new(&generator);
-        let field = generator.field();
         let vegetation = generator.vegetation();
         let Some(height) = floor(&generator) else {
             panic!("the arena is outside the region");
@@ -496,7 +494,7 @@ mod tests {
             let cell = eye as i64;
             for y in cell - 1..=cell + 1 {
                 assert!(
-                    !vegetation.occupied(field, x as i64, y, z as i64),
+                    !vegetation.occupied(x as i64, y, z as i64),
                     "{} stands inside a plant",
                     pose.name
                 );

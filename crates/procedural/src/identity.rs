@@ -102,7 +102,11 @@ pub const STYLE_CONTRACT_VERSION: u32 = 1;
 /// which invalidates cache entries without making every cache lookup generate
 /// terrain. It is not a universal multi-seed proof; general algorithm changes
 /// still require the explicit [`TERRAIN_GENERATOR_VERSION`] contract bump.
-pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x2d88_497f_a6d6_d4b5;
+///
+/// **Old** `0x2d88_497f_a6d6_d4b5`, **new** `0x2d59_3291_f052_9f23`, **why**:
+/// M8 landmarks are part of what the world generates, so the exhaustive
+/// tripwire covers them and every cached chunk of the old world is invalid.
+pub const TERRAIN_BEHAVIOR_SIGNATURE: u64 = 0x2d59_3291_f052_9f23;
 
 /// The seed a world is generated from.
 ///
@@ -155,6 +159,10 @@ pub enum StreamLabel {
     TreeShape = 9,
     ShrubPlacement = 10,
     SurfaceVariation = 11,
+    /// Where the landmark plan puts its candidate sites.
+    LandmarkPlacement = 12,
+    /// Which shape each landmark takes inside its class bands.
+    LandmarkShape = 13,
 }
 
 /// The finite extent of a generated region, in chunks, inclusive.
@@ -454,12 +462,25 @@ impl TerrainConfig {
 pub struct WorldIdentity {
     pub seed: WorldSeed,
     pub config: TerrainConfig,
+    /// The landmark composition of this world.
+    pub landmarks: crate::landmark::LandmarkControls,
 }
 
 impl WorldIdentity {
     #[must_use]
     pub const fn new(seed: WorldSeed, config: TerrainConfig) -> Self {
-        Self { seed, config }
+        Self {
+            seed,
+            config,
+            landmarks: crate::landmark::LandmarkControls::golden(),
+        }
+    }
+
+    /// The same world under another landmark composition.
+    #[must_use]
+    pub const fn with_landmarks(mut self, landmarks: crate::landmark::LandmarkControls) -> Self {
+        self.landmarks = landmarks;
+        self
     }
 
     /// Validates the descriptor before it is used to generate any chunk.
@@ -475,8 +496,8 @@ impl WorldIdentity {
 
     /// The cheap runtime fingerprint.
     ///
-    /// Hashes the seed, the generator version, the style contract version, and
-    /// the full configuration descriptor. Anything that changes what the
+    /// Hashes the seed, the generator version, the style contract version, the
+    /// full configuration descriptor, and the landmark domain's identity. Anything that changes what the
     /// generator produces must change one of those, which is what the locked
     /// behavioural test in `region` enforces.
     #[must_use]
@@ -488,6 +509,10 @@ impl WorldIdentity {
         bytes.extend_from_slice(&STYLE_CONTRACT_VERSION.to_le_bytes());
         bytes.extend_from_slice(&TERRAIN_BEHAVIOR_SIGNATURE.to_le_bytes());
         bytes.extend_from_slice(&self.config.descriptor());
+        // The landmark domain has its own versions, its own locked behaviour
+        // signature and its own controls, and all of them change what a chunk
+        // contains, so all of them belong in the cache key.
+        bytes.extend_from_slice(&self.landmarks.fingerprint().to_le_bytes());
         fnv1a64(&bytes)
     }
 }

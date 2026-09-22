@@ -78,7 +78,10 @@ impl ChunkSource for DiagnosticChunkSource {
 /// translation is between `Option<Chunk>` and [`SourceChunk`]. `None` from the
 /// generator means the region does not reach this coordinate, which is exactly
 /// what [`SourceChunk::KnownAbsent`] means to the runtime.
-#[derive(Clone, Copy, Debug)]
+/// Not `Copy` since M8: the generator it adapts carries a landmark plan
+/// behind an `Arc`, so a source is cheap to clone and never duplicated by
+/// accident.
+#[derive(Clone, Debug)]
 pub struct TerrainChunkSource {
     generator: TerrainGenerator,
 }

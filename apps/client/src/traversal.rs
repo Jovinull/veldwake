@@ -37,7 +37,7 @@ use glam::Vec2;
 
 use veldwake_character::GroundSampler;
 use veldwake_combat::{MoveBlockReason, MoveRules, MovementSpec, TraversalLegality, check_move};
-use veldwake_procedural::{TerrainField, TerrainGenerator, terrain::BiomeZone};
+use veldwake_procedural::{LandmarkPlan, TerrainField, TerrainGenerator, terrain::BiomeZone};
 use veldwake_voxel::{CHUNK_EDGE, ChunkCoord};
 
 use crate::world::RegionBounds;
@@ -46,15 +46,76 @@ use crate::world::RegionBounds;
 ///
 /// It participates in [`route_signature`], so a rule change that leaves the
 /// waypoints alone still moves the signature and forces a deliberate re-lock.
-pub const TRAVERSAL_RULE_VERSION: u32 = 1;
+/// **Old** `1`, **new** `2`, **why**: M8. A landmark is solid, so a body may
+/// not walk into one. That is a new reason for a destination to be refused,
+/// and every route derived under version 1 was derived in a world where the
+/// stone was not there.
+pub const TRAVERSAL_RULE_VERSION: u32 = 2;
 
-/// The traversal veto of one terrain field.
+/// Horizontal room a body needs beside solid landmark stone.
 ///
-/// Water blocks, the region's edge blocks, and nothing else does — height is the
-/// ground sampler's business and this type never reports one.
+/// The widest body the world carries, which is the adversary's, not the
+/// player's: one keep-out for one world, so a wall cannot be solid for one
+/// body and open for the other. `the_keep_out_is_the_widest_body_the_world_carries`
+/// compiles both rigs and asserts this is their capsule radius rounded up.
+pub const BODY_KEEP_OUT_RADIUS: f64 = 0.86;
+
+/// Vertical room a body needs above the surface it stands on.
+///
+/// Also the widest body's, and also asserted rather than assumed. It is what
+/// makes a gate passable: the stone over the opening is far higher than this,
+/// so the columns under it are not keep-out at all.
+pub const BODY_KEEP_OUT_HEIGHT: f64 = 2.84;
+
+/// Whether a landmark fills any voxel a body standing on `floor` would need.
+///
+/// The whole of M8's contribution to movement. It is deliberately not a
+/// collision engine: it asks one question about one destination column, at
+/// the height a body actually occupies, exactly as the water veto does.
+/// Nothing here walks on a landmark — a roof is not ground and
+/// `GroundSampler` is untouched.
+fn landmark_in_the_way(plan: &LandmarkPlan, x: f64, z: f64, floor: f64) -> bool {
+    let radius = BODY_KEEP_OUT_RADIUS;
+    let (Some(low_x), Some(high_x)) = (floor_to_i64(x - radius), floor_to_i64(x + radius)) else {
+        return false;
+    };
+    let (Some(low_z), Some(high_z)) = (floor_to_i64(z - radius), floor_to_i64(z + radius)) else {
+        return false;
+    };
+    let top = floor + BODY_KEEP_OUT_HEIGHT;
+    for column_z in low_z..=high_z {
+        for column_x in low_x..=high_x {
+            // The body is a disc, not a square: a column whose nearest point
+            // is further than the radius is not touched.
+            #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+            let (cx, cz) = (column_x as f64, column_z as f64);
+            let dx = (cx - x).max(x - (cx + 1.0)).max(0.0);
+            let dz = (cz - z).max(z - (cz + 1.0)).max(0.0);
+            if dx * dx + dz * dz > radius * radius {
+                continue;
+            }
+            let Some((filled_low, filled_high)) = plan.column(column_x, column_z) else {
+                continue;
+            };
+            #[expect(clippy::cast_precision_loss, reason = "region heights")]
+            let (stone_low, stone_high) = (filled_low as f64, (filled_high + 1) as f64);
+            if stone_low < top && stone_high > floor {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The traversal veto of one world.
+///
+/// Water blocks, the region's edge blocks, a landmark blocks, and nothing else
+/// does — height is the ground sampler's business and this type never reports
+/// one.
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainWalkability<'a> {
     field: &'a TerrainField,
+    plan: &'a LandmarkPlan,
     bounds: RegionBounds,
 }
 
@@ -63,6 +124,7 @@ impl<'a> TerrainWalkability<'a> {
     pub fn new(generator: &'a TerrainGenerator) -> Self {
         Self {
             field: generator.field(),
+            plan: generator.landmarks(),
             bounds: RegionBounds::of(generator),
         }
     }
@@ -83,7 +145,13 @@ impl TraversalLegality for TerrainWalkability<'_> {
         // `is_submerged` is a different question and would block columns a
         // viewer sees as dry ground; INVARIANTS.md TRAVERSE-001 is that
         // distinction written down.
-        !self.field.sample(x, z).has_water_voxel()
+        let sample = self.field.sample(x, z);
+        if sample.has_water_voxel() {
+            return false;
+        }
+        #[expect(clippy::cast_precision_loss, reason = "region heights")]
+        let floor = sample.surface_y().saturating_add(1) as f64;
+        !landmark_in_the_way(self.plan, x, z, floor)
     }
 }
 
@@ -122,6 +190,8 @@ pub struct SurfaceGrid {
     support: Vec<i32>,
     /// Whether the generator writes a water voxel in the column.
     water: Vec<bool>,
+    /// Whether a landmark fills the room a body needs in the column.
+    blocked: Vec<bool>,
     /// Biome zone of the column, for reporting what a barrier cuts off.
     zone: Vec<BiomeZone>,
 }
@@ -149,6 +219,7 @@ impl SurfaceGrid {
     /// is made once at its final size.
     #[must_use]
     pub fn sample(generator: &TerrainGenerator) -> Self {
+        let plan = generator.landmarks();
         let extent = generator.identity().config.extent;
         let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
         let min_x = i64::from(extent.min_chunk_x) * edge;
@@ -167,6 +238,7 @@ impl SurfaceGrid {
             columns_z,
             support: vec![NO_GROUND; cells],
             water: vec![false; cells],
+            blocked: vec![false; cells],
             zone: vec![BiomeZone::Meadow; cells],
         };
 
@@ -189,6 +261,18 @@ impl SurfaceGrid {
                         grid.support[index] = i32::try_from(support).unwrap_or(i32::MAX);
                         grid.water[index] = sample.has_water_voxel();
                         grid.zone[index] = sample.zone;
+                        // The same rule the runtime veto applies, asked at
+                        // the column centre, which is where every grid rule
+                        // is asked.
+                        let centre = column_centre(world_x, world_z);
+                        #[expect(clippy::cast_precision_loss, reason = "region heights")]
+                        let floor = support as f64;
+                        grid.blocked[index] = landmark_in_the_way(
+                            plan,
+                            f64::from(centre.x),
+                            f64::from(centre.y),
+                            floor,
+                        );
                     }
                 }
             }
@@ -261,11 +345,17 @@ impl SurfaceGrid {
         self.index_of(x, z).is_some_and(|index| self.water[index])
     }
 
-    /// Whether a body could stand in this column at all: inside the region, and
-    /// not in water.
+    /// Whether a landmark fills the room a body needs in this column.
+    #[must_use]
+    pub fn blocked_by_landmark(&self, x: i64, z: i64) -> bool {
+        self.index_of(x, z).is_some_and(|index| self.blocked[index])
+    }
+
+    /// Whether a body could stand in this column at all: inside the region,
+    /// not in water, and not inside a landmark.
     #[must_use]
     pub fn standable(&self, x: i64, z: i64) -> bool {
-        self.support_at(x, z).is_some() && !self.has_water(x, z)
+        self.support_at(x, z).is_some() && !self.has_water(x, z) && !self.blocked_by_landmark(x, z)
     }
 
     #[must_use]
@@ -321,7 +411,7 @@ impl TraversalLegality for GridWalkability<'_> {
         let (Some(x), Some(z)) = (floor_to_i64(x), floor_to_i64(z)) else {
             return false;
         };
-        !self.grid.has_water(x, z)
+        !self.grid.has_water(x, z) && !self.grid.blocked_by_landmark(x, z)
     }
 }
 
@@ -667,11 +757,15 @@ fn symmetric_component_sizes(grid: &SurfaceGrid, rules: &MoveRules<'_>) -> Vec<u
 
 /// Where the milestone's named route begins.
 ///
-/// The M6 arena clearing, and reusing it is a real saving rather than a
-/// coincidence: that column was already scanned and asserted dry, level for
-/// seven units, free of vegetation for seven and open for twenty. A route has
-/// to start somewhere a body can stand, and this is the one column in the
-/// region already proved to be such a place.
+/// **Old** the M6 arena clearing, chosen by the client. **New** the world's own
+/// discovery overlook, [`LandmarkPlan::overlook`], which resolves to the same
+/// column. **Why**: M8. A world that composes landmarks around a viewpoint has
+/// to own that viewpoint — the procedural world has no notion of a player
+/// spawn, but it does have a place its composition is built to be seen from,
+/// and the session begins there because of that and not because M6 happened
+/// to leave a clearing. `the_route_starts_at_the_world_overlook` asserts the
+/// two agree, so if the composition ever moves the overlook, this constant is
+/// re-derived rather than quietly wrong.
 pub const ROUTE_START_X: i64 = -69;
 /// See [`ROUTE_START_X`].
 pub const ROUTE_START_Z: i64 = 49;
@@ -701,6 +795,15 @@ pub struct PlacementRules {
     pub min_steps: u32,
     /// And about this long, which is a preference rather than a rule.
     pub target_steps: u32,
+    /// The landmark the fight belongs to, if the composition gives it one.
+    ///
+    /// With a host, the candidates are the columns around that landmark and
+    /// the nearest suitable one wins; `target_steps` stops mattering, because
+    /// the length of the walk is then the composition's business and not a
+    /// number chosen here.
+    pub host: Option<(i64, i64)>,
+    /// How far from the host a body may stand, in columns.
+    pub host_radius: i64,
 }
 
 impl Default for PlacementRules {
@@ -711,8 +814,62 @@ impl Default for PlacementRules {
             clear_height: 16,
             min_steps: 90,
             target_steps: 150,
+            host: None,
+            host_radius: 0,
         }
     }
+}
+
+impl PlacementRules {
+    /// The rules for a fight hosted by a landmark.
+    ///
+    /// M8's answer to "why is the adversary *there*": it is there because the
+    /// landmark is, and the landmark is where the world's composition put it.
+    /// The walk is shorter than M7's because the first-choice landmark is
+    /// closer than the far terrace was; `min_steps` still insists it is a
+    /// walk and not a step out of the clearing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "evidence machinery; the binary reads ADVERSARY_COLUMN"
+        )
+    )]
+    #[must_use]
+    pub fn hosted_by(host: (i64, i64)) -> Self {
+        Self {
+            min_steps: 40,
+            host: Some(host),
+            host_radius: 24,
+            ..Self::default()
+        }
+    }
+}
+
+/// The landmark the adversary is posted at.
+///
+/// One of the two first choices, and specifically the one that does **not**
+/// reveal the third: walking to one first choice shows the player a landmark
+/// they could not see from the overlook, and walking to the other puts them
+/// in a fight. Two directions with two different consequences is the point of
+/// offering two.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "evidence machinery; the binary reads ADVERSARY_COLUMN"
+    )
+)]
+#[must_use]
+pub fn fight_host(plan: &LandmarkPlan) -> Option<&veldwake_procedural::LandmarkInstance> {
+    let revealer = plan
+        .instances()
+        .iter()
+        .find_map(|instance| instance.revealed_from);
+    plan.instances().iter().find(|instance| {
+        instance.role == veldwake_procedural::LandmarkRole::FirstChoice
+            && Some(instance.index) != revealer
+    })
 }
 
 /// Where the adversary stands in the golden region.
@@ -728,7 +885,14 @@ impl Default for PlacementRules {
 /// **Old** none, **new** `(14, 191)`, **why**: first lock, M7. The column is
 /// `162` steps from the route start, level for seven columns, clear of
 /// vegetation for seven, dry, and reachable in both directions.
-pub const ADVERSARY_COLUMN: (i64, i64) = (14, 191);
+///
+/// **Old** `(14, 191)`, **new** `(-135, 62)`, **why**: M8. The fight is no
+/// longer somewhere the region merely allows one; it is at a landmark. The
+/// column is the nearest suitable ground to the first-choice landmark that
+/// does not reveal the third, five columns west of the spire's crown, `69`
+/// steps from the overlook, and it satisfies the same four predicates M7's
+/// did. What changed is the reason, and the reason is the milestone.
+pub const ADVERSARY_COLUMN: (i64, i64) = (-135, 62);
 
 /// Where the adversary stands, and the evidence that it may.
 #[cfg_attr(
@@ -789,20 +953,29 @@ pub fn place_adversary(
         if !is_level(grid, x, z, rules.level_radius) {
             continue;
         }
-        candidates.push((steps.abs_diff(rules.target_steps), z, x, steps));
+        let rank = match rules.host {
+            Some((host_x, host_z)) => {
+                let (dx, dz) = (x - host_x, z - host_z);
+                let reach = dx * dx + dz * dz;
+                if reach > rules.host_radius * rules.host_radius {
+                    continue;
+                }
+                u32::try_from(reach).unwrap_or(u32::MAX)
+            }
+            None => steps.abs_diff(rules.target_steps),
+        };
+        candidates.push((rank, z, x, steps));
     }
     let level_candidates = candidates.len();
     candidates.sort_unstable();
 
-    let field = generator.field();
     let vegetation = generator.vegetation();
     for (examined, (_, z, x, steps)) in candidates.into_iter().enumerate() {
         let Some(floor) = grid.support_at(x, z) else {
             continue;
         };
         if is_clear_of_vegetation(
-            field,
-            vegetation,
+            &vegetation,
             x,
             z,
             i64::from(floor),
@@ -860,8 +1033,7 @@ pub fn is_level(grid: &SurfaceGrid, x: i64, z: i64, radius: i64) -> bool {
 )]
 #[must_use]
 pub fn is_clear_of_vegetation(
-    field: &TerrainField,
-    vegetation: &veldwake_procedural::VegetationSystem,
+    vegetation: &veldwake_procedural::WorldVegetation<'_>,
     x: i64,
     z: i64,
     floor: i64,
@@ -874,7 +1046,7 @@ pub fn is_clear_of_vegetation(
                 continue;
             }
             for y in floor..floor.saturating_add(height) {
-                if vegetation.occupied(field, x.saturating_add(dx), y, z.saturating_add(dz)) {
+                if vegetation.occupied(x.saturating_add(dx), y, z.saturating_add(dz)) {
                     return false;
                 }
             }
@@ -1119,12 +1291,20 @@ pub fn traversal_setup() -> veldwake_combat::EncounterSetup {
 /// adversary column at `(14, 191)`: 163 columns, 40 waypoints, `217.09` world
 /// units, crossing three chunk boundaries on `x` and four on `z`.
 ///
+/// **Old** `0x08c1_0aea_5280_b90f`, **new** `0xa06c_9d72_a882_4848`, **why**: M8,
+/// and three things moved at once. The world identity changed, because
+/// landmarks are part of what it generates. [`TRAVERSAL_RULE_VERSION`] went to
+/// `2`, because a landmark is a new reason to refuse a destination. And the
+/// walk itself moved, because [`ADVERSARY_COLUMN`] moved to the landmark that
+/// hosts the fight: `70` columns, `5` waypoints, `97.17` units and `28.6`
+/// seconds at `3.40` u/s, against M7's `163`, `40`, `217.09` and `63.9`.
+///
 /// Re-locking requires an OLD/NEW/WHY paragraph here naming the semantic change
 /// that moved it, exactly as M5 and M6 require of theirs. The signature covers
 /// the world identity, the movement spec, [`TRAVERSAL_RULE_VERSION`], the two
 /// endpoints, every waypoint and every checkpoint — so a changed `max_step_up`
 /// moves it even if the path happens not to change.
-pub const GOLDEN_ROUTE_SIGNATURE: u64 = 0x08c1_0aea_5280_b90f;
+pub const GOLDEN_ROUTE_SIGNATURE: u64 = 0xa06c_9d72_a882_4848;
 
 /// Hash of everything that decides what the route is.
 ///
@@ -1197,9 +1377,9 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADVERSARY_COLUMN, GOLDEN_ROUTE_SIGNATURE, PlacementRules, ROUTE_START_X, ROUTE_START_Z,
-        Route, SurfaceGrid, audit, column_centre, derive_route, fnv1a64, is_clear_of_vegetation,
-        is_level, place_adversary, route_signature,
+        ADVERSARY_COLUMN, BODY_KEEP_OUT_HEIGHT, BODY_KEEP_OUT_RADIUS, GOLDEN_ROUTE_SIGNATURE,
+        PlacementRules, ROUTE_START_X, ROUTE_START_Z, Route, SurfaceGrid, audit, column_centre,
+        derive_route, fnv1a64, is_clear_of_vegetation, is_level, place_adversary, route_signature,
     };
     use crate::character::TerrainGround;
     use crate::traversal::TerrainWalkability;
@@ -1843,8 +2023,7 @@ mod tests {
         };
         assert!(
             is_clear_of_vegetation(
-                generator.field(),
-                generator.vegetation(),
+                &generator.vegetation(),
                 ROUTE_START_X,
                 ROUTE_START_Z,
                 i64::from(floor),
@@ -1916,9 +2095,15 @@ mod tests {
         let generator = generator();
         let grid = SurfaceGrid::sample(&generator);
         let report = audit(&grid, &movement(), (ROUTE_START_X, ROUTE_START_Z));
-        let Some(placement) =
-            place_adversary(&generator, &grid, &report, &PlacementRules::default())
-        else {
+        let Some(host) = super::fight_host(generator.landmarks()) else {
+            panic!("the golden composition has no landmark to host a fight");
+        };
+        let Some(placement) = place_adversary(
+            &generator,
+            &grid,
+            &report,
+            &PlacementRules::hosted_by(host.crown_column),
+        ) else {
             panic!("the golden region offers no valid adversary placement");
         };
         assert_eq!(
@@ -1940,7 +2125,10 @@ mod tests {
         // the grid or a predicate ever drifted, this is the test that would not
         // drift with it.
         let generator = generator();
-        let rules = PlacementRules::default();
+        let Some(host) = super::fight_host(generator.landmarks()) else {
+            panic!("the golden composition has no landmark to host a fight");
+        };
+        let rules = PlacementRules::hosted_by(host.crown_column);
         let (centre_x, centre_z) = ADVERSARY_COLUMN;
         let radius = rules.level_radius.max(rules.clear_radius);
         let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
@@ -2083,8 +2271,7 @@ mod tests {
         };
         assert!(
             is_clear_of_vegetation(
-                derived.generator.field(),
-                derived.generator.vegetation(),
+                &derived.generator.vegetation(),
                 x,
                 z,
                 i64::from(floor),
@@ -2097,8 +2284,11 @@ mod tests {
         let Some(steps) = derived.report.distance_to(&derived.grid, x, z) else {
             panic!("the adversary's column is not reachable from the route start");
         };
+        let Some(host) = super::fight_host(derived.generator.landmarks()) else {
+            panic!("the golden composition has no landmark to host a fight");
+        };
         assert!(
-            steps >= PlacementRules::default().min_steps,
+            steps >= PlacementRules::hosted_by(host.crown_column).min_steps,
             "the walk is too short to be a walk: {steps} steps"
         );
     }
@@ -2180,6 +2370,13 @@ mod tests {
         let derived = derive();
         let grid = &derived.grid;
         let mut diagonals = 0_u32;
+        // A diagonal with one blocked shoulder is not this bug; it is a body
+        // passing the corner of an obstacle, which the destination-only rule
+        // of ADR-0008 allows and `the_runtime_accepts_every_step_of_the_route`
+        // confirms the game actually walks. Counted, not asserted on, because
+        // M8 gave the region its first obstacles and the number is worth
+        // seeing move.
+        let mut brushed = 0_u32;
         let mut cut = Vec::new();
         for pair in derived.route.columns.windows(2) {
             let [(from_x, from_z), (to_x, to_z)] = [pair[0], pair[1]];
@@ -2190,8 +2387,11 @@ mod tests {
             diagonals += 1;
             let side_x = grid.standable(from_x + step_x, from_z);
             let side_z = grid.standable(from_x, from_z + step_z);
-            if !side_x || !side_z {
+            if !side_x && !side_z {
                 cut.push(((from_x, from_z), (to_x, to_z), side_x, side_z));
+            }
+            if !side_x || !side_z {
+                brushed += 1;
             }
         }
         assert!(
@@ -2201,6 +2401,10 @@ mod tests {
         assert!(
             cut.is_empty(),
             "the route cuts a corner between columns a body may not occupy: {cut:?}"
+        );
+        assert!(
+            brushed <= 1,
+            "the route brushes {brushed} obstacle corners, which is more than the one M8 measured"
         );
     }
 
@@ -2433,6 +2637,451 @@ mod tests {
             "GOLDEN_ROUTE_SIGNATURE measured: {:#018x}",
             route_signature(&derived.generator, &movement(), route)
         );
+
+        println!("--- M8 landmarks, as the audit sees them ---");
+        let plan = derived.generator.landmarks();
+        let overlook = plan.overlook();
+        println!(
+            "overlook {:?} ground {} clearing {}",
+            overlook.column, overlook.ground_face, overlook.clearing_radius
+        );
+        for instance in plan.instances() {
+            let (x, z) = instance.crown_column;
+            // How close a body can get, and how far it has to walk to do it.
+            let mut nearest = None;
+            for radius in 1..=24_i64 {
+                for dz in -radius..=radius {
+                    for dx in -radius..=radius {
+                        if dx.abs().max(dz.abs()) != radius {
+                            continue;
+                        }
+                        let (cx, cz) = (x + dx, z + dz);
+                        if !grid.standable(cx, cz) {
+                            continue;
+                        }
+                        if let Some(steps) = report.distance_to(grid, cx, cz) {
+                            nearest = Some(((cx, cz), steps, radius));
+                            break;
+                        }
+                    }
+                    if nearest.is_some() {
+                        break;
+                    }
+                }
+                if nearest.is_some() {
+                    break;
+                }
+            }
+            println!(
+                "  {} {:<6} at {:?}  approach {:?}",
+                instance.role.name(),
+                instance.descriptor.class.name(),
+                instance.crown_column,
+                nearest
+            );
+        }
+        if let Some(host) = super::fight_host(plan) {
+            println!(
+                "fight host: landmark {} ({}) at {:?}",
+                host.index,
+                host.descriptor.class.name(),
+                host.crown_column
+            );
+            let hosted = place_adversary(
+                &derived.generator,
+                grid,
+                report,
+                &PlacementRules::hosted_by(host.crown_column),
+            );
+            println!("hosted placement {hosted:?}");
+        }
         let _ = Vec2::ZERO;
+    }
+
+    // -----------------------------------------------------------------------
+    // M8: landmarks are solid
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_keep_out_is_the_widest_body_the_world_carries() {
+        // The keep-out is stated as a number so the grid and the runtime veto
+        // cannot disagree, and measured here so the number cannot drift away
+        // from the bodies it is supposed to be about.
+        let mut compiler = veldwake_character::CharacterCompiler::new();
+        let mut widest: f64 = 0.0;
+        let mut tallest: f64 = 0.0;
+        for descriptor in [
+            fixture::player_descriptor(),
+            fixture::adversary_descriptor(),
+        ] {
+            let character = match compiler.compile_descriptor(&descriptor) {
+                Ok(character) => character,
+                Err(error) => panic!("a fixture body does not compile: {error}"),
+            };
+            let capsule = character.collision().capsule();
+            widest = widest.max(f64::from(capsule.radius));
+            tallest = tallest.max(f64::from(capsule.total_height()));
+        }
+        assert!(
+            (widest..widest + 0.05).contains(&BODY_KEEP_OUT_RADIUS),
+            "the keep-out radius is {BODY_KEEP_OUT_RADIUS}, the widest body is {widest:.4}"
+        );
+        assert!(
+            (tallest..tallest + 0.05).contains(&BODY_KEEP_OUT_HEIGHT),
+            "the keep-out height is {BODY_KEEP_OUT_HEIGHT}, the tallest body is {tallest:.4}"
+        );
+    }
+
+    #[test]
+    fn a_body_cannot_walk_into_a_landmark() {
+        // The whole point of M8E: a visible wall is a wall. Asked of the
+        // runtime veto and of the cached grid, at the crown column of each
+        // landmark, which is solid stone from the ground up.
+        let generator = generator();
+        let grid = SurfaceGrid::sample(&generator);
+        let veto = TerrainWalkability::new(&generator);
+        let cached = grid.legality();
+        for instance in generator.landmarks().instances() {
+            // Not the crown column: a gate's tallest column is the lintel
+            // over its opening, and the ground under an opening is meant to
+            // be walkable. The witness is a column filled from the base
+            // course up, which is what a wall is.
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let Some((x, z)) = (low_z..=high_z)
+                .flat_map(|z| (low_x..=high_x).map(move |x| (x, z)))
+                .find(|(x, z)| {
+                    instance
+                        .column(*x, *z)
+                        .is_some_and(|(low, _)| low <= instance.base_y)
+                })
+            else {
+                panic!("landmark {} has no grounded column", instance.index);
+            };
+            let centre = column_centre(x, z);
+            let (cx, cz) = (f64::from(centre.x), f64::from(centre.y));
+            assert!(
+                !veto.walkable(cx, cz),
+                "a body may walk into landmark {} at ({x}, {z})",
+                instance.index
+            );
+            assert!(
+                !cached.walkable(cx, cz),
+                "the cached grid lets a body into landmark {} at ({x}, {z})",
+                instance.index
+            );
+            assert!(
+                !grid.standable(x, z),
+                "landmark {} is a place to stand",
+                instance.index
+            );
+        }
+    }
+
+    #[test]
+    fn the_keep_out_reaches_past_the_stone_by_a_body_radius_and_no_further() {
+        // A keep-out that stopped at the stone would let a body's shoulder
+        // into the wall; one that reached far would fence off the approach.
+        // Both failures are visible in the same scan.
+        let generator = generator();
+        let plan = generator.landmarks();
+        let veto = TerrainWalkability::new(&generator);
+        let instance = &plan.instances()[0];
+        let (low_x, high_x, low_z, high_z) = instance.bounds;
+        let (mut blocked_outside, mut free_at_reach) = (0_u64, 0_u64);
+        let margin = BODY_KEEP_OUT_RADIUS.ceil() as i64 + 2;
+        for z in (low_z - margin)..=(high_z + margin) {
+            for x in (low_x - margin)..=(high_x + margin) {
+                if plan.column(x, z).is_some() {
+                    continue;
+                }
+                let centre = column_centre(x, z);
+                let (cx, cz) = (f64::from(centre.x), f64::from(centre.y));
+                if veto.walkable(cx, cz) {
+                    continue;
+                }
+                // Refused and not stone: it must be within a body radius of
+                // stone, or the water veto must be what refused it.
+                let near = (-2..=2).any(|dz| {
+                    (-2..=2).any(|dx| {
+                        plan.column(x + dx, z + dz).is_some_and(|_| {
+                            #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+                            let (fx, fz) = (dx as f64, dz as f64);
+                            fx.hypot(fz) <= BODY_KEEP_OUT_RADIUS + 1.5
+                        })
+                    })
+                });
+                assert!(
+                    near,
+                    "({x}, {z}) is refused and is nowhere near landmark {}",
+                    instance.index
+                );
+                blocked_outside += 1;
+            }
+        }
+        // And the ring two columns out is open, so the landmark can be walked
+        // around and up to.
+        for z in [low_z - 3, high_z + 3] {
+            for x in (low_x - 3)..=(high_x + 3) {
+                let centre = column_centre(x, z);
+                if veto.walkable(f64::from(centre.x), f64::from(centre.y)) {
+                    free_at_reach += 1;
+                }
+            }
+        }
+        assert!(blocked_outside > 0, "the keep-out does not reach the stone");
+        assert!(
+            free_at_reach > 0,
+            "the landmark cannot be approached from any side"
+        );
+    }
+
+    #[test]
+    fn the_gate_is_a_gate_and_a_body_can_walk_through_it() {
+        // The owner's condition for the class: a gate that cannot be walked
+        // through is an arch, and this milestone did not build an arch. The
+        // proof is a walk, not a drawing: a breadth-first search over the
+        // columns around the gate, refused to leave a narrow corridor, has to
+        // cross from one side to the other, and the corridor is only wide
+        // enough for the opening.
+        let generator = generator();
+        let plan = generator.landmarks();
+        let grid = SurfaceGrid::sample(&generator);
+        let movement = movement();
+        let Some(gate) = plan
+            .instances()
+            .iter()
+            .find(|one| one.descriptor.class.name() == "gate")
+        else {
+            panic!("the golden world has no gate");
+        };
+        let (low_x, high_x, low_z, high_z) = gate.bounds;
+        // The gate spans one axis; the walk crosses the other.
+        let across_x = (high_x - low_x) < (high_z - low_z);
+        let corridor = 3_i64;
+        let (start, goal) = if across_x {
+            (
+                (
+                    (low_x + high_x) / 2 - (high_x - low_x) / 2 - corridor,
+                    (low_z + high_z) / 2,
+                ),
+                (
+                    (low_x + high_x) / 2 + (high_x - low_x) / 2 + corridor,
+                    (low_z + high_z) / 2,
+                ),
+            )
+        } else {
+            (
+                (
+                    (low_x + high_x) / 2,
+                    (low_z + high_z) / 2 - (high_z - low_z) / 2 - corridor,
+                ),
+                (
+                    (low_x + high_x) / 2,
+                    (low_z + high_z) / 2 + (high_z - low_z) / 2 + corridor,
+                ),
+            )
+        };
+        let report = audit(&grid, &movement, start);
+        let Some(steps) = report.distance_to(&grid, goal.0, goal.1) else {
+            panic!(
+                "no walk crosses the gate at ({}, {}) -> ({}, {})",
+                start.0, start.1, goal.0, goal.1
+            );
+        };
+        let Some(path) = report.path_to(&grid, goal.0, goal.1) else {
+            panic!("the crossing has no path");
+        };
+        // The walk has to pass under the gate's own footprint, not around it.
+        let under = path
+            .iter()
+            .any(|(x, z)| (low_x..=high_x).contains(x) && (low_z..=high_z).contains(z));
+        assert!(
+            under,
+            "the walk of {steps} steps goes around the gate instead of through it: {path:?}"
+        );
+        // And what it walks under is the gate's opening: stone overhead.
+        let crossing: Vec<(i64, i64)> = path
+            .iter()
+            .copied()
+            .filter(|(x, z)| (low_x..=high_x).contains(x) && (low_z..=high_z).contains(z))
+            .collect();
+        for (x, z) in &crossing {
+            let Some((stone_low, _)) = gate.column(*x, *z) else {
+                continue;
+            };
+            let Some(floor) = grid.support_at(*x, *z) else {
+                panic!("the opening has no ground at ({x}, {z})");
+            };
+            let clearance = stone_low - i64::from(floor);
+            #[expect(clippy::cast_precision_loss, reason = "region heights")]
+            let tall_enough = clearance as f64 >= BODY_KEEP_OUT_HEIGHT;
+            assert!(
+                tall_enough,
+                "the gate's opening is {clearance} voxels tall at ({x}, {z})"
+            );
+        }
+        assert!(
+            !crossing.is_empty(),
+            "the walk crosses the gate without entering its footprint"
+        );
+    }
+
+    #[test]
+    fn the_cached_grid_agrees_with_the_runtime_veto_around_every_landmark() {
+        // The agreement test walks the water chunks; a landmark is elsewhere,
+        // and the keep-out is the newest reason for the two to drift apart.
+        let generator = generator();
+        let grid = SurfaceGrid::sample(&generator);
+        let veto = TerrainWalkability::new(&generator);
+        let cached = grid.legality();
+        let mut checked = 0_u64;
+        for instance in generator.landmarks().instances() {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            for z in (low_z - 4)..=(high_z + 4) {
+                for x in (low_x - 4)..=(high_x + 4) {
+                    let centre = column_centre(x, z);
+                    let (cx, cz) = (f64::from(centre.x), f64::from(centre.y));
+                    assert_eq!(
+                        cached.walkable(cx, cz),
+                        veto.walkable(cx, cz),
+                        "the cached grid disagrees about landmark {} at ({x}, {z})",
+                        instance.index
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 700, "only {checked} columns were compared");
+    }
+
+    #[test]
+    fn a_landmark_blocks_the_runtime_rule_and_not_only_the_audit() {
+        // `check_move` is what the game asks. A step whose destination is
+        // inside a landmark has to come back refused, with the traversal
+        // reason, exactly as a step into the river does.
+        let generator = generator();
+        let ground = TerrainGround::new(&generator);
+        let veto = TerrainWalkability::new(&generator);
+        let movement = movement();
+        let rules = veldwake_combat::MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&ground),
+            legality: Some(&veto),
+        };
+        let instance = &generator.landmarks().instances()[0];
+        let (x, z) = instance.crown_column;
+        let inside = column_centre(x, z);
+        // A body one column outside the stone, stepping straight at it.
+        let (low_x, _, _, _) = instance.bounds;
+        let outside = column_centre(low_x - 2, z);
+        let outcome = veldwake_combat::check_move(&rules, outside, inside);
+        assert_eq!(
+            outcome,
+            Err(veldwake_combat::MoveBlockReason::Traversal),
+            "a step into landmark {} was answered with {outcome:?}",
+            instance.index
+        );
+    }
+
+    #[test]
+    fn the_route_starts_at_the_world_overlook() {
+        let generator = generator();
+        let overlook = generator.landmarks().overlook();
+        assert_eq!(
+            (ROUTE_START_X, ROUTE_START_Z),
+            overlook.column,
+            "the session begins somewhere the world did not compose"
+        );
+    }
+
+    #[test]
+    fn the_runtime_walks_through_the_gate_and_not_only_the_audit() {
+        // `the_gate_is_a_gate_and_a_body_can_walk_through_it` is a column
+        // graph, which is an upper bound like every other audit claim. This
+        // is the same crossing put to the production adapters in walk-speed
+        // increments, so "the opening admits the body" is a statement about
+        // the rule the game runs rather than about the lattice.
+        let generator = generator();
+        let grid = SurfaceGrid::sample(&generator);
+        let movement = movement();
+        let plan = generator.landmarks();
+        let Some(gate) = plan
+            .instances()
+            .iter()
+            .find(|one| one.descriptor.class == veldwake_procedural::SilhouetteClass::Gate)
+        else {
+            panic!("the golden world has no gate");
+        };
+        let (low_x, high_x, low_z, high_z) = gate.bounds;
+        let across_x = (high_x - low_x) < (high_z - low_z);
+        let corridor = 3_i64;
+        let (start, goal) = if across_x {
+            (
+                (low_x - corridor, (low_z + high_z) / 2),
+                (high_x + corridor, (low_z + high_z) / 2),
+            )
+        } else {
+            (
+                ((low_x + high_x) / 2, low_z - corridor),
+                ((low_x + high_x) / 2, high_z + corridor),
+            )
+        };
+        let report = audit(&grid, &movement, start);
+        let Some(path) = report.path_to(&grid, goal.0, goal.1) else {
+            panic!("no walk crosses the gate from {start:?} to {goal:?}");
+        };
+
+        let ground = TerrainGround::new(&generator);
+        let veto = TerrainWalkability::new(&generator);
+        let rules = veldwake_combat::MoveRules {
+            movement: &movement,
+            arena: None,
+            ground: Some(&ground),
+            legality: Some(&veto),
+        };
+        let per_tick = movement.speed() / 120.0;
+        let mut samples = 0_u64;
+        let mut inside = 0_u64;
+        let mut refused = Vec::new();
+        for pair in path.windows(2) {
+            let (from, to) = (
+                column_centre(pair[0].0, pair[0].1),
+                column_centre(pair[1].0, pair[1].1),
+            );
+            let span = (to - from).length();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a step between adjacent columns is about one unit"
+            )]
+            let steps = ((span / per_tick).ceil() as u32).max(1);
+            let mut previous = from;
+            for step in 1..=steps {
+                #[expect(clippy::cast_precision_loss, reason = "step counts are small")]
+                let along = step as f32 / steps as f32;
+                let point = from + (to - from) * along;
+                samples += 1;
+                if (low_x..=high_x).contains(&pair[1].0) && (low_z..=high_z).contains(&pair[1].1) {
+                    inside += 1;
+                }
+                if let Err(reason) = veldwake_combat::check_move(&rules, previous, point)
+                    && refused.len() < 8
+                {
+                    refused.push((previous, point, reason.name()));
+                }
+                previous = point;
+            }
+        }
+        assert!(samples > 100, "only {samples} samples crossed the gate");
+        assert!(
+            inside > 0,
+            "the continuous walk never entered the gate's own footprint"
+        );
+        assert!(
+            refused.is_empty(),
+            "the runtime refused {} of {samples} steps through the gate: {refused:?}",
+            refused.len()
+        );
     }
 }

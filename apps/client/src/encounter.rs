@@ -675,8 +675,12 @@ mod tests {
             "a session that resets on victory is not a session"
         );
         let separation = (setup.starts[0] - setup.starts[1]).length();
+        // M7 asked for a hundred units, because it placed the adversary at a
+        // distance it chose. M8 places it at a landmark, so the distance is
+        // the composition's and not this test's: what still has to be true is
+        // that the fight is a walk away and not across the clearing.
         assert!(
-            separation > 100.0,
+            separation > 50.0,
             "the two bodies start {separation} apart, which is not a traversal"
         );
         // And the armed fixture is untouched: M6 keeps its disc and its reset.

@@ -167,7 +167,12 @@ pub const SIGNATURE_CHUNKS: &[ChunkCoord] = &[
 ///
 /// Update this deliberately, in the same change that alters generation, and say
 /// in the milestone document what moved and why.
-pub const GOLDEN_REGION_SIGNATURE: u64 = 0x1285_7799_1516_4f6a;
+///
+/// **Old** `0x1285_7799_1516_4f6a`, **new** `0x0cd9_5da6_1656_b11b`, **why**:
+/// M8 writes three landmarks into the world, and two of the fixture chunks
+/// hold part of one. Terrain, water and vegetation are unchanged outside the
+/// landmark reservations; what moved is the content of those chunks.
+pub const GOLDEN_REGION_SIGNATURE: u64 = 0x0cd9_5da6_1656_b11b;
 
 /// Exhaustive signature of every present chunk in the finite canonical golden
 /// region. Unlike [`GOLDEN_REGION_SIGNATURE`], which is a compact spread-out
@@ -176,7 +181,13 @@ pub const GOLDEN_REGION_SIGNATURE: u64 = 0x1285_7799_1516_4f6a;
 /// fingerprinting cost. It does not prove output equivalence for arbitrary
 /// seeds; an intentional general algorithm change still bumps
 /// `TERRAIN_GENERATOR_VERSION`.
-pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x2d88_497f_a6d6_d4b5;
+///
+/// **Old** `0x2d88_497f_a6d6_d4b5`, **new** `0x2d59_3291_f052_9f23`, **why**:
+/// M8 adds landmark voxels and removes the plants their reservations
+/// suppress. The terrain field itself did not move — `TERRAIN_GENERATOR_VERSION`
+/// is deliberately unchanged, because bumping it would reseed every stream and
+/// regenerate the whole valley.
+pub const GOLDEN_WORLD_BEHAVIOR_SIGNATURE: u64 = 0x2d59_3291_f052_9f23;
 
 /// Folds the locked chunks into one value.
 ///
@@ -469,7 +480,7 @@ mod tests {
             let z = pose.position[2] as i64;
             for offset in -1..=1 {
                 assert!(
-                    !generator.vegetation().occupied(field, x, y + offset, z),
+                    !generator.vegetation().occupied(x, y + offset, z),
                     "{} stands inside a plant",
                     pose.name
                 );
