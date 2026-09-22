@@ -4,21 +4,21 @@ Last updated: 2026-09-22
 
 ## Current position
 
-**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks`, the owner's discovery playtest passed on 2026-09-22, and independent branch QA has run.** Nothing is merged and no pull request is open. The branch state is at the end of this section, because a head written down here goes stale the moment anything else lands.
-
-**OWNER DISCOVERY PLAYTEST WITHOUT NAVIGATION INSTRUCTIONS: PASS.** The wording is exact and the exactness matters: during the session the owner was given no coordinate, direction, waypoint or route, but had read the implementation report beforehand, so the session was *uninstructed* rather than literally blind. Told only to play and explore normally, the owner noticed two structures with no navigation interface of any kind, read them as two different destinations — one a tower, one a broken construction — chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked it. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
-
-**That is the whole point of the milestone, so it is worth stating against M7.** M7: walking the world works, and the owner found nothing in it. M8: the owner immediately noticed two different destinations, chose one, explored toward it, and found the adversary.
-
-**Be exact about what is owner evidence and what is not.** The owner gave no distance measurement, no contrast judgement, no judgement of the third landmark, no clear-versus-overcast comparison, no judgement of the gate's passability and no judgement of KI-032. All of those are technical and self-QA evidence, and promoting any of them to owner judgement is the same mistake M7's handoff exists to prevent.
-
-**Branch QA has been done and found one defect**, now fixed: `CompiledMonolith::new` accepted a descriptor it could not compile — `band_period = 0` divided by zero and negative dimensions compiled into an empty landmark — because it trusted a convention the type system did not enforce. It now validates and returns `DescriptorError`, and `PlanError::Descriptor` carries it. QA also added eight oracles that judge the landmarks from the drawn voxels rather than from the plan, re-derived every number the milestone claims, walked a body through the gate in the authoritative loop, and corrected three numbers in the documentation.
-
-Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved, the owner's session, the branch QA section, and what nobody could verify.
-
-**M7 — Traversable Region is complete and merged. M1 through M7 are all in `main`.** It landed through [PR #11](https://github.com/Jovinull/veldwake/pull/11) at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, whose parents are `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` and `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, after the owner's playtest, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run on the merge commit ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The remote branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, which is the head where the 699 tests and every gate were run. The branch was based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd` deliberately, so the two post-M6 documentation commits travelled into the same pull request.
+**M8 — Discoverable Landmarks is complete and merged. M1 through M8 are all in `main`.** It landed through [PR #12](https://github.com/Jovinull/veldwake/pull/12) at merge commit `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`, whose parents are `0c81c069bb95a8caf3b6a5252b89b023c6334ae1` and `d5e200bbd18d7c5aee167151509b89be260b85e2`, after the owner's discovery playtest, independent branch QA, a green pull-request CI run ([run 35732875867](https://github.com/Jovinull/veldwake/actions/runs/35732875867)) and a green post-merge CI run on the merge commit ([run 35735467195](https://github.com/Jovinull/veldwake/actions/runs/35735467195)). The remote branch `feat/m8-discoverable-landmarks` is preserved at `d5e200bbd18d7c5aee167151509b89be260b85e2`, the head where the 755 tests and every gate were run. The workspace has **755 tests**, three of them `#[ignore]`d; all **758** pass when the ignored ones are run explicitly.
 
 **There is no next milestone.** That is deliberate and it is the first thing to understand before doing anything else.
+
+**What M8 proved, and it is a product result rather than a technical one.** M7: walking the world worked, and the owner found nothing in it. M8: the owner noticed two different destinations without any navigation instruction, chose one, explored toward it, and found the adversary. That is the change the milestone existed to make.
+
+**OWNER DISCOVERY PLAYTEST WITHOUT NAVIGATION INSTRUCTIONS: PASS**, 2026-09-22. The wording is exact and the exactness matters. During the session the owner received no coordinate, no direction, no waypoint, no route and no navigation UI; the owner had read the implementation report beforehand, so the session was *uninstructed* rather than literally blind. The owner noticed two structures naturally, perceived them as two different destinations, read one as a tower and the other as a broken construction or ruin, chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked the result. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs (KI-036).
+
+**What M8 did not prove.** The owner gave no distance measurement, no contrast judgement, no judgement of the third landmark, no clear-versus-overcast comparison, no judgement of the gate's mechanical passage and no judgement of KI-032 — all of those are technical and QA evidence and must never be promoted to owner judgement. Nothing was shown about whether the architecture has an identity of its own, whether the overlook clearing reads as natural, or anything at all about persistence, progression, a second kind of content or a world beyond this region. The three landmarks are stones with no history behind them.
+
+**Independent branch QA reviewed the whole branch and passed it**, after finding and fixing one real defect: `CompiledMonolith::new` trusted an informal precondition that its descriptor had been validated, so `band_period = 0` could panic during compilation and negative dimensions could silently compile an empty landmark. It now validates and returns `DescriptorError`, and `PlanError::Descriptor` propagates it. QA also added eight oracles that judge the landmarks from the voxels the generator draws rather than from the plan — no terrain or water overwrite, chunk-order independence, drawn solids against traversal occupancy, a body walked through the gate and stopped by a pillar in the authoritative loop, reservation suppression against raw voxels, no landmark on a water margin, a valid overlook in the finished world, and all thirteen landmark controls moving the world fingerprint — re-derived every number the milestone claims, and corrected three of them.
+
+Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) before touching anything M8 built. Its durable decision is [ADR-0009](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — two-level visibility and an eagerly derived world plan — and its two invariants are **LAND-001** (a landmark is written, never carved) and **LAND-002** (a visible wall refuses a body, and an opening does not), both in [`../engineering/INVARIANTS.md`](../engineering/INVARIANTS.md).
+
+**M7 — Traversable Region is complete and merged.** It landed through [PR #11](https://github.com/Jovinull/veldwake/pull/11) at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, whose parents are `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` and `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, after the owner's playtest, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run on the merge commit ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The remote branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, which is the head where the 699 tests and every gate were run. The branch was based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd` deliberately, so the two post-M6 documentation commits travelled into the same pull request.
 
 **Two gates closed M7, and they are not the same gate. Do not conflate them.**
 
@@ -56,24 +56,28 @@ Read these before changing anything. They are the whole truth of the project; no
 10. [`../engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — what is tested and why, and the current test count
 11. [`../engineering/OBSERVABILITY.md`](../engineering/OBSERVABILITY.md) — what the client and the probes report
 12. [`../procedural/PROCEDURAL_PHILOSOPHY.md`](../procedural/PROCEDURAL_PHILOSOPHY.md) — how generated content is expected to be built and justified
-13. [`../procedural/WORLD_GENERATION.md`](../procedural/WORLD_GENERATION.md) — the proposed world pipeline and how little of it M4 implemented
-14. [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md) — the aesthetic direction
-15. [`../audiovisual/STYLE_BIBLE.md`](../audiovisual/STYLE_BIBLE.md) — the versioned, checkable constraints M4 was held to, and what they explicitly do not cover
-16. [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) — the versioned, checkable constraints M5 was held to, and how they relate to the style bible
-17. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
-18. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
-19. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the most recent milestone: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
-20. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
-21. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
-22. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
-23. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
-24. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
-25. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
-26. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
-27. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
-28. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
-29. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
-30. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
+13. [`../procedural/CONTENT_DOMAINS.md`](../procedural/CONTENT_DOMAINS.md) — each procedural content domain, and which parts of it are real
+14. [`../procedural/WORLD_GENERATION.md`](../procedural/WORLD_GENERATION.md) — the proposed world pipeline and how little of it M4 implemented
+15. [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md) — the aesthetic direction
+16. [`../audiovisual/STYLE_BIBLE.md`](../audiovisual/STYLE_BIBLE.md) — the versioned, checkable constraints M4 was held to, and what they explicitly do not cover
+17. [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) — the versioned, checkable constraints M5 was held to, and how they relate to the style bible
+18. [`../audiovisual/LANDMARK_STYLE.md`](../audiovisual/LANDMARK_STYLE.md) — the versioned, checkable constraints M8's one landmark family is held to, and what the implementation moved
+19. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
+20. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
+21. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the most recent milestone: the composition, the owner's session, the branch QA section, and what nobody could verify
+22. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone before it: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
+23. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
+24. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
+25. [`../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md`](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — why landmark visibility is answered at two levels and why the world plan is derived eagerly and typed
+26. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
+27. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
+28. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
+29. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
+30. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
+31. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
+32. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
+33. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
+34. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
 
 Then, as needed: [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md), the rest of the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
@@ -92,49 +96,68 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M8 is reviewed and the next step is the pull request
+## Continue here — nothing has been chosen to follow M8
 
-**The single next step is opening the pull request**, and it is the owner's call to make, not an agent's. Both gates that precede it are closed: the owner's discovery playtest passed on 2026-09-22, and independent branch QA has reviewed the whole of `main...HEAD`, fixed one defect, added eight independent oracles and reconciled the documentation. After the pull request the sequence is the usual one — CI on the exact head, merge commit, post-merge CI, handoff branch — and none of it happens without the owner asking.
+**Do not start a milestone. Propose one.**
 
-**What a reviewer of the pull request should look at first**, because these are the places the branch decided something rather than derived it:
+[`../planning/ROADMAP.md`](../planning/ROADMAP.md) lists *later capability groups* — persistence and world editing, aggregate and local world simulation, settlements, history and economy, richer procedural assets, audio and music, multiplayer transport, WASM modding. **That list is not a queue and nothing in it has been chosen.** No name is reserved, no branch exists, and "the next one on the list" is not a decision. M7 and M8 were both proposed from the state of the repository and both were renamed by the owner before they were accepted.
 
-- **the two-level visibility split** ([ADR-0009](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md)). The world proxy does occlusion and no framing; the client oracle does framing and no raycasting. Only one test compares them, and it can only prove one direction. Try to find a landmark the proxy likes and the camera cannot see;
-- **the keep-out**. `0.86` by `2.84` is the adversary's capsule rounded up, applied to a destination only. Try to get a body inside stone, and try to get it refused somewhere the drawn voxels are open;
-- **the plan's composition rules**, especially the straight-line water test, which is a world rule that correlates with reachability without consulting the movement rules. Try to break the claim that it is a composition rule and not a smuggled reachability check;
-- **the relocks**. Six locked values moved. Re-derive each one rather than trusting the OLD/NEW/WHY paragraph beside it;
-- **the numbers in the milestone document**. Every one of them should be reproducible from the probe, the ignored report or a capture.
+The next session's job is to read what now exists, weigh it against those groups *and against the evidence M8 produced*, and propose one milestone — its scope, its exit criteria, and what it deliberately will not build — for the owner to accept before any code is written.
 
-**The composition, for reference.** Three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points:
+**M8 produced new facts that should change how that proposal is reasoned about.** They are the point of writing them down here:
 
-- the crown of a first choice is **above the default camera frame** at 62 units (KI-032) — a deliberate, captured choice against a complete-but-tiny silhouette at 96 units. The owner read the gate as a broken construction rather than as a gate, which is consistent with its lintel being off-frame, though the owner said nothing about why;
-- the overlook's `r = 40` vegetation reservation is a composition control nobody has judged on sight yet;
-- the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all;
-- the family still reads close to familiar voxel-RPG architecture (KI-036), which is art direction for a later milestone and not a defect in this one.
+- **A direction can now mean something, and a person acted on it.** Told nothing, the owner saw two destinations, chose one and walked to it. Discovery through world content works at the smallest possible scale: three stones, one family, no interface.
+- **The content is thin and the owner said so.** "Simple, but good and sufficient for the current objective", and still close to the visual language of familiar voxel RPGs (KI-036). That is an observation about art direction, not a work item, and it must not become a milestone by default.
+- **There is no reason for anything to be anywhere.** The landmarks are composed to be seen and walked to. No history produced them, no culture built them, nothing else in the world refers to them. `docs/procedural/WORLD_GENERATION.md` calls this out: M8 occupies the "ruins" position in the candidate stage list without any of the history that is supposed to produce them.
+- **One adversary is still the whole of what a player finds.** Walking to a landmark ends in a fight or in a reveal, and nothing else in the world responds to the player at all.
+- **The world costs more to build than it did.** Deriving the landmark plan is `316`–`409` ms in release and about `1.5` s in debug per world (KI-035), paid eagerly, and `cargo nextest` pays it once per test process.
+- **The camera met its first man-made occluder.** Walking close past a shaft puts it inside the stone (KI-025). Harmless for navigation today; a milestone that puts a player among structures inherits it.
+- **Everything M7 recorded still stands**: the region splits into two components with the session in the smaller one (KI-027), water blocks with no cue (KI-028), a teleport is a thirty-second streaming discontinuity (KI-030), and every column-shaped claim is exact only at column centres (KI-031).
 
-**Branch state at the end of QA.** `feat/m8-discoverable-landmarks`: **twelve commits ahead of `main`** (`0c81c069bb95a8caf3b6a5252b89b023c6334ae1`) and **eleven after `docs/post-m7-handoff`** (`08081b8a15be3ea70de82e03cb0b113d71c7c8d9`) — the milestone plan, the implementation, its documentation, the owner's session, then QA's defect fix, its oracles, its documentation corrections and this count. Working tree clean, local equal to origin, no pull request open.
+To play what exists:
 
-The head itself is deliberately not written here: a commit cannot name its own hash, and the last two times one was copied into this file it was stale within a day. Read it with `git rev-parse HEAD`, and count against a named base with `git rev-list --count main..HEAD` rather than from how many commits a session happened to make — an earlier report said "two commits" for a branch that was four ahead.
+```text
+VELDWAKE_ENCOUNTER=traverse VELDWAKE_PROFILE=m4-golden cargo run --release -p veldwake-client
+```
 
-### What M7 left, and what it still means
+The session begins at the discovery overlook `(-69, 49)`. Two landmarks are visible from it about `160` degrees apart — a spire `62` units away and a gate `63` — and a third, a broken monolith, is hidden from there and shows itself from the gate at `149`. The adversary stands at the spire, five columns from its crown. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F3` toggles the weather, `F4` detaches the camera.
 
+### Where the code is, and in what order to read it
 
-**M7 produced new facts that should change how that proposal is reasoned about.** They are the point of writing them down here:
+- `crates/procedural/src/landmark/` — `material.rs`, `descriptor.rs`, `compile.rs`, `visibility.rs`, `plan.rs`. Read `plan.rs` last: it is the composition, and the rest is what it composes.
+- `crates/procedural/src/generator.rs` — where the plan is derived, and where landmark voxels are written into air after vegetation.
+- `crates/procedural/src/vegetation.rs` — `WorldVegetation`, the one composed answer about plants.
+- `apps/client/src/traversal.rs` — the keep-out, the surface grid, the audit, the route and the adversary's placement.
+- `apps/client/src/landmark.rs` — the presentation oracle and the capture poses.
+- `crates/procedural/src/bin/terrain-probe.rs` — `landmarks` prints the plan, re-derives it and refuses to print if the two disagree.
+
+### What is proven, and by whom
+
+| claim | evidence | whose |
+|---|---|---|
+| **two destinations are noticeable without an interface** | played and judged | **the owner** |
+| **a person chooses one and walks to it** | played and judged | **the owner** |
+| **exploration reaches the adversary** | played and judged | **the owner** |
+| the landmarks are where the plan says, deterministically | `the_golden_composition_is_locked`, `the_plan_is_a_pure_function_of_the_world`, the probe's own re-derivation | tests |
+| no landmark replaces terrain or water | `qa_a_landmark_only_ever_replaces_air`, differencing against a landmark-free world of the same identity | QA oracle |
+| a visible wall refuses a body | `qa_the_keep_out_agrees_with_the_voxels_a_viewer_can_see`, the drawn solids against the veto | QA oracle |
+| the gate's opening admits one | `qa_a_real_encounter_walks_a_body_through_the_gate_and_into_its_pillars`, the authoritative tick loop | QA oracle |
+| the three landmarks are reachable on foot | the whole-region audit: `65`, `61` and `211` steps | tests, `#[ignore]`d report |
+| it looks like something | eleven driven client runs, every capture opened and read | QA, real client — **not the owner** |
+
+## History — what M7 left behind, kept because its answers still bind
+
+**These were M7's new facts, and they remain true of the merged world.** M8 answered the third of them and left the rest standing:
 
 - **Traversal is enjoyable enough at this scope**, judged by a person, and running was deliberately not added. `63.9` seconds of walking was not experienced as dead time.
 - **Locomotion reads as stiff and raw.** The owner's words, recorded as an observation and not acted on. Nothing about walk speed, turn rate, gait, acceleration, animation or the camera was changed in response, and nothing should be until a milestone takes movement feel as its subject.
-- **Nothing in the world points at anything.** One adversary, `800 x 800` columns, no minimap, compass, marker, waypoint or landmark — and the owner walked the region and never found it (KI-029). Any milestone that places a second thing worth finding has to decide about discovery first.
+- **Nothing in the world points at anything** — the fact M8 was built to answer, and did. One adversary, `800 x 800` columns and no affordance of any kind; the owner walked the region and never found it. KI-029 is closed by the M8 session, and the affordance that closed it is world content rather than an interface.
 - **The region is not one place.** Under the accepted movement bounds it splits into two large components, `314,861` and `307,144` standable columns, and a session begins in the **smaller** one (KI-027). Barrier attribution: water `2,464`, step-up `44,495`, max-drop `1,273`.
 - **Water blocks and says nothing.** No wading, no splash, no shoreline cue; the body stops dead and slides along the shore (KI-028).
 - **A teleport is a streaming discontinuity.** A player-defeat reset moves the anchor `164.5` units in one tick and the far field takes about `30` s to resolve (KI-030). Anything with fast travel, a second encounter elsewhere, or a load between places inherits this.
 - **The runtime samples continuously; every audited claim is column-shaped.** Exact at column centres, up to `2` voxels apart away from them, and the water veto disagrees with itself in a one-column band along the waterline (KI-031). This is why the reachability audit is an upper bound.
 
-To play what exists:
-
-```text
-VELDWAKE_ENCOUNTER=traverse cargo run --release -p veldwake-client
-```
-
-The world takes about a minute to settle — `time_to_idle_ms` was measured at `63,032`. The body starts at the route start `(-69, 49)`; the adversary stands `162` steps away at `(14, 191)`, dormant until you come within `14` world units of it. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F4` detaches the camera. The named route is `217.09` world units and `63.9` seconds of walking.
+**M7's own numbers, kept because they are what M8 moved.** Its route ran from `(-69, 49)` to an adversary `162` steps away at `(14, 191)`, `217.09` world units and `63.9` seconds of walking. M8 re-derived the adversary's placement against a landmark and the route with it: `(-135, 62)`, `69` steps, `97.17` units. The world still takes about a minute to settle — `time_to_idle_ms` was measured at `63,032`. `WASD` walks relative to the camera, the mouse looks, `J` or left mouse attacks, `K` or `Space` dodges once the adversary is awake, `F4` detaches the camera. The named route is `217.09` world units and `63.9` seconds of walking.
 
 ### What is proven, and by whom
 
@@ -232,15 +255,16 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M8 has its owner gate and not its QA.** Do not merge it, do not open a pull request for it, and do not start another milestone on top of it until an independent pass over `main...HEAD` has run.
+- **There is no active milestone, and that is the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue.
 - **The owner judged discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
 - **The visual-simplicity and Cube-World observations are recorded, not actioned.** The owner said the structures are simple but sufficient, and that they still read close to familiar voxel-RPG architecture (KI-036). Neither is a work item on this branch: no props, no decoration, no second family, no second material system, no particles, no lights, no interiors.
-- **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `248-272 ms` in release and `1,108 ms` in debug per world. `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
+- **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `316`–`409` ms in release and about `1.5` s in debug per world (KI-035). `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
 - **`LANDMARK_BEHAVIOR_SIGNATURE` is the golden plan's own fingerprint** and is folded into the world fingerprint. Any change to placement, the compiler, the descriptor or the controls moves it, invalidates every cached chunk, and needs an OLD/NEW/WHY paragraph — as do `TERRAIN_BEHAVIOR_SIGNATURE`, `GOLDEN_REGION_SIGNATURE`, `GOLDEN_ROUTE_SIGNATURE` and `ADVERSARY_COLUMN`, all of which M8 moved once.
 - **`TERRAIN_GENERATOR_VERSION` must not be bumped for landmark work.** `WorldSeed::stream` folds it into every stream, so bumping it reseeds the valley and regenerates a world nobody asked to change.
 - **Visibility has two levels and neither is the whole answer.** The world proxy in `veldwake-procedural` answers occlusion and knows nothing about cameras; the oracle in `apps/client/src/landmark.rs` answers framing and legibility and does no raycasting. A landmark is visible when both agree, and `the_world_proxy_and_the_presentation_agree_about_what_is_visible` is what keeps the placement honest.
 - **A landmark keep-out is a refusal, never a surface.** `GroundSampler` is untouched, nothing walks on a landmark, and the keep-out is the widest body's capsule — `0.86` by `2.84`, measured from the compiled rigs — applied to a destination only, exactly like the water veto.
-- **There is no active milestone after M8, and that will again be the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue. The last three milestones were all proposed from the state of the repository rather than from the order of that list.
+- **The last three milestones were all proposed from the state of the repository** rather than from the order of the roadmap's list, and two of the three were renamed by the owner before they were accepted.
+- **A descriptor reaches the landmark compiler only through `CompiledMonolith::new`, which validates it.** Branch QA made that constructor fallible because the informal precondition it trusted was reachable: a `band_period` of zero panicked and negative dimensions compiled an empty landmark. Do not add a second path into the compiler that skips the check.
 - **Owner evidence and QA evidence are different things and M7 is where they diverge.** The owner judged the traversal and never reached the encounter. Every claim about exploration reaching combat, about a victory, and about the session continuing past one is branch-QA evidence from the real client. Do not promote it.
 - **A smoothed presentation value must never decide an authoritative rule** (MOVE-001). `base_height` is the filtered pelvis height; at `tau = 0.12 s` a body climbing at gradient `g` carries about `0.42 g` of lag, and with `max_step_up` exactly one voxel *any* lag makes a legal step illegal.
 - **`movement::check_move` is the only implementation of movement legality**, it returns `MoveBlockReason`, and the reachability audit calls it. Do not write a second copy to answer "why did that fail".
