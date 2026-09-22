@@ -4,9 +4,15 @@ Last updated: 2026-09-21
 
 ## Current position
 
-**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks` and stopped, deliberately, one step before its exit gate.** Nothing is merged, no pull request is open, and no part of it is accepted. The exit gate is a **blind owner playtest**: the owner is told only to play and explore normally — no coordinates, no directions, no screenshot, no route, and no hint about which landmark hosts the adversary. Until that judgement exists, every claim about M8 in this repository is a measurement or a capture read by an agent, never an owner's verdict.
+**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks`, and its blind owner playtest passed on 2026-09-22.** Nothing is merged and no pull request is open. Branch head `d987ec6301460336b4214d1ee704d3ea77b936d7`: **four commits ahead of `main`**, **three after `docs/post-m7-handoff`** — plan, implementation, documentation.
 
-Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved and, in the last section, what this agent could **not** verify.
+**OWNER PLAYTEST — DISCOVERABLE LANDMARKS: PASS.** Told only to play and explore normally, the owner noticed two structures with no navigation interface of any kind, read them as two different destinations — one a tower, one a broken construction — chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked it. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
+
+**That is the whole point of the milestone, so it is worth stating against M7.** M7: walking the world works, and the owner found nothing in it. M8: the owner immediately noticed two different destinations, chose one, explored toward it, and found the adversary.
+
+**Be exact about what is owner evidence and what is not.** The owner gave no distance measurement, no contrast judgement, no judgement of the third landmark, no clear-versus-overcast comparison, no judgement of the gate's passability and no judgement of KI-032. All of those are technical and self-QA evidence, and promoting any of them to owner judgement is the same mistake M7's handoff exists to prevent.
+
+Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved, the owner's session, and what this agent could **not** verify.
 
 **M7 — Traversable Region is complete and merged. M1 through M7 are all in `main`.** It landed through [PR #11](https://github.com/Jovinull/veldwake/pull/11) at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, whose parents are `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` and `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, after the owner's playtest, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run on the merge commit ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The remote branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, which is the head where the 699 tests and every gate were run. The branch was based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd` deliberately, so the two post-M6 documentation commits travelled into the same pull request.
 
@@ -84,23 +90,24 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M8 waits for one judgement and nothing else
+## Continue here — M8 needs independent branch QA and nothing else
 
-**The single next step is the blind owner playtest.** Not a pull request, not a merge, not M9, and not more landmark work. If the playtest passes, the branch goes through the usual sequence: PR, CI on the exact head, merge commit, post-merge CI, handoff branch. If it fails, the failure is the milestone's evidence and the composition is reworked with it in hand.
+**The single next step is an independent review of `main...HEAD`.** Not a pull request, not a merge, not M9, and not more landmark work: the owner gate is closed, and what is missing is the pass an agent may not perform on its own work. After QA the branch goes through the usual sequence — PR, CI on the exact head, merge commit, post-merge CI, handoff branch.
 
-To put the owner in front of it, and **say nothing else**:
+**Where a reviewer should push hardest**, because these are the places this branch decided something rather than derived it:
 
-```text
-VELDWAKE_ENCOUNTER=traverse VELDWAKE_PROFILE=m4-golden cargo run --release -p veldwake-client
-```
+- **the two-level visibility split** ([ADR-0009](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md)). The world proxy does occlusion and no framing; the client oracle does framing and no raycasting. Only one test compares them, and it can only prove one direction. Try to find a landmark the proxy likes and the camera cannot see;
+- **the keep-out**. `0.86` by `2.84` is the adversary's capsule rounded up, applied to a destination only. Try to get a body inside stone, and try to get it refused somewhere the drawn voxels are open;
+- **the plan's composition rules**, especially the straight-line water test, which is a world rule that correlates with reachability without consulting the movement rules. Try to break the claim that it is a composition rule and not a smuggled reachability check;
+- **the relocks**. Six locked values moved. Re-derive each one rather than trusting the OLD/NEW/WHY paragraph beside it;
+- **the numbers in the milestone document**. Every one of them should be reproducible from the probe, the ignored report or a capture.
 
-Do not name a landmark, a direction, a distance or where the adversary is. The whole milestone is the question of whether a person, told nothing, sees something and decides to walk to it.
+**The composition, for reference.** Three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points:
 
-**What to have ready when the verdict comes back.** The composition is three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points, in the order they are most likely to be what the owner reacts to:
-
-- the crown of a first choice is **above the default camera frame** at 62 units — a deliberate, captured choice against a complete-but-tiny silhouette at 96 units;
-- the overlook's `r = 40` vegetation reservation is a composition control the owner reserved the right to reject on sight as artificial;
-- the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all.
+- the crown of a first choice is **above the default camera frame** at 62 units (KI-032) — a deliberate, captured choice against a complete-but-tiny silhouette at 96 units. The owner read the gate as a broken construction rather than as a gate, which is consistent with its lintel being off-frame, though the owner said nothing about why;
+- the overlook's `r = 40` vegetation reservation is a composition control nobody has judged on sight yet;
+- the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all;
+- the family still reads close to familiar voxel-RPG architecture (KI-036), which is art direction for a later milestone and not a defect in this one.
 
 ### What M7 left, and what it still means
 
@@ -219,8 +226,9 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M8 is implemented and unjudged. Do not merge it, do not open a pull request for it, and do not start another milestone on top of it.** The blind playtest is the gate, and an agent may not perform it.
-- **Do not tell the owner where anything is.** A hint invalidates the only evidence this milestone is waiting for. That includes a screenshot, a coordinate, a compass direction, a walking time or which landmark has the fight.
+- **M8 has its owner gate and not its QA.** Do not merge it, do not open a pull request for it, and do not start another milestone on top of it until an independent pass over `main...HEAD` has run.
+- **The owner judged discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
+- **The visual-simplicity and Cube-World observations are recorded, not actioned.** The owner said the structures are simple but sufficient, and that they still read close to familiar voxel-RPG architecture (KI-036). Neither is a work item on this branch: no props, no decoration, no second family, no second material system, no particles, no lights, no interiors.
 - **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `248-272 ms` in release and `1,108 ms` in debug per world. `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
 - **`LANDMARK_BEHAVIOR_SIGNATURE` is the golden plan's own fingerprint** and is folded into the world fingerprint. Any change to placement, the compiler, the descriptor or the controls moves it, invalidates every cached chunk, and needs an OLD/NEW/WHY paragraph — as do `TERRAIN_BEHAVIOR_SIGNATURE`, `GOLDEN_REGION_SIGNATURE`, `GOLDEN_ROUTE_SIGNATURE` and `ADVERSARY_COLUMN`, all of which M8 moved once.
 - **`TERRAIN_GENERATOR_VERSION` must not be bumped for landmark work.** `WorldSeed::stream` folds it into every stream, so bumping it reseeds the valley and regenerates a world nobody asked to change.

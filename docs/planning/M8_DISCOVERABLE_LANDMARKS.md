@@ -1,7 +1,8 @@
 # M8 — Discoverable Landmarks
 
-Status: **implemented on `feat/m8-discoverable-landmarks`, waiting for the blind owner playtest.** Every phase below is complete, every gate in the gate table ran, and the one thing left is the judgement this agent may not make.
+Status: **implemented on `feat/m8-discoverable-landmarks`, and the owner's blind playtest passed on 2026-09-22.** Every phase below is complete, every gate in the gate table ran, and the core product gate is closed. What is left is independent branch QA; the branch is not merged and no pull request is open.
 Base: `docs/post-m7-handoff` at `08081b8a15be3ea70de82e03cb0b113d71c7c8d9`, which is `main` at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1` plus one documentation commit.
+Branch state at the owner gate: head `d987ec6301460336b4214d1ee704d3ea77b936d7`, **four commits ahead of `main`** and **three after `docs/post-m7-handoff`** — the milestone plan, the implementation, and the documentation of it. A report that said "two commits" was counting one session's own commits, not the branch.
 
 M7 proved a person can walk the whole region. It also proved, by accident and in the owner's own playtest, that walking a beautiful empty region is a walk and not a game: the owner crossed it, enjoyed crossing it, and never found the one thing standing in it. Today no two directions in Veldwake mean different things. M8 builds the first spatial choice: from a discovery overlook the player sees, in the world itself, more than one destination, chooses one with no navigation interface of any kind, walks to it, and finds the place the silhouette promised.
 
@@ -210,14 +211,54 @@ The capture at the overlook reported `59.9` FPS, `render = 2,197` demanded again
 | `cargo deny check` | PASS — advisories, bans, licenses, sources |
 | `cargo audit` | PASS — no vulnerabilities in 226 dependencies |
 | driven capture smoke on the audited host | PASS — eight driven release runs, every capture `1920 x 991` and every run exit `0`; the five read in writing are in the table above |
-| blind owner playtest | **NOT YET APPLICABLE** — this branch stops here, by instruction |
+| blind owner playtest | **PASS** — 2026-09-22, see the owner section below |
+| independent branch QA | **NOT YET APPLICABLE** — the next step, and not this agent's to perform |
+
+## OWNER PLAYTEST — DISCOVERABLE LANDMARKS: PASS
+
+2026-09-22, by the repository owner, played blind: the owner was told only to play and explore normally, with no coordinates, no direction, no screenshot, no route and no hint about which landmark hosts the adversary.
+
+**What the owner observed, in the owner's own terms:**
+
+- noticed **two** structures nearby, without any navigation interface;
+- read them as **two different destinations**;
+- read one of them as **a tower**;
+- read the other as **a broken construction, an abandoned ruin**;
+- **chose deliberately** to go to the tower;
+- **found the adversary while exploring**;
+- liked the result;
+- judged the structures **simple, but good and sufficient for the current objective**;
+- observed that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
+
+**This closes the milestone's core product gate.** The hypothesis M8 existed to test — that directions in this world now mean different enough things to provoke a spatial choice — is the thing the owner's session demonstrates, and it demonstrates it in the only way that counts: a person who was told nothing looked at the world, saw two things, decided between them, and went.
+
+### The product change, stated plainly
+
+| | what a person did |
+|---|---|
+| **M7** | walking the world works, and the owner found nothing in it |
+| **M8** | the owner immediately noticed two different destinations, chose one, explored toward it, and found the adversary |
+
+### What the owner did *not* judge
+
+Everything else in this document is technical or self-QA evidence and stays that way. The owner gave no measurement of distance, no formal contrast judgement, no judgement of the third landmark, no systematic clear-versus-overcast comparison, no judgement of whether the gate can be walked through, and no judgement of the cropped crown recorded as KI-032. Nothing in this repository may attribute any of those to the owner.
+
+### Two observations to carry forward, neither of them a blocker
+
+**"The landmarks still read as visually simple, but are acceptable for the M8 discovery slice."** Recorded as the owner's words and deliberately not answered with work: no props, no loot, no interiors, no decoration, no second material system, no second family, no particles, no banners, no lights, no extra ruins. M8 asked one question and the question is answered.
+
+**The family can still read somewhat close to the visual language of Cube World and familiar voxel-RPG architecture.** Not an M8 defect and not something to correct on this branch. It is evidence for a future decision about architectural art direction, a stronger Veldwake-specific shape grammar, and a procedural built-world identity — recorded in [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) as KI-036 alongside the other product and art limitations that milestone kept rather than hid.
+
+**One reading is worth separating from both of those, because it is about this composition rather than about the art direction.** The two landmarks visible from the overlook are the Spire and the **Gate**, and the owner read the second one as a broken construction. The style contract's one-sentence test asks that a person can name the broad gate as a gate; the distinctness half of that test passed and the naming half did not. What this agent can add is a mechanism, not a judgement, and it is an inference rather than anything the owner said: from the overlook the gate's lintel is above the frame (KI-032), so what a viewer sees at rest is two shafts and the sky between them — which is what a fallen frame looks like. The owner was not asked and did not comment on it.
 
 ## What this agent could not verify
 
-- Whether the composition **works**, which is the owner's judgement and the point of the blind playtest. Everything above says the landmarks exist, are visible, are solid, are reachable and are drawn; none of it says a person wants to walk to one.
-- Whether the overlook clearing reads as artificial. The owner reserved the right to reject `r = 40` on sight, and a capture taken from inside the clearing cannot answer that question honestly.
+Written before the playtest and kept as written, with what the owner's session did and did not settle.
+
+- Whether the composition **works**. **Settled by the owner**: two destinations were noticed, read as different, and one was chosen and walked to.
+- Whether the overlook clearing reads as artificial. **Still unsettled.** The owner did not comment on the clearing, and a capture taken from inside it cannot answer that honestly.
 - Motion evidence beyond the at-rest captures: the harness's injected mouse-look did not reach the client in a static camera pose, so the "look up at the crown" frame is a measurement — `19.9` degrees against a frame edge at `13.75` — rather than a photograph.
-- Whether the two directions read as *different* rather than as two of the same thing. The spire and the gate are 160 degrees apart and belong to different silhouette classes, and one of them has a fight at the end of it; whether a player experiences that as a choice is exactly what the playtest is for.
+- Whether the two directions read as *different* rather than as two of the same thing. **Settled by the owner**, who read one as a tower and the other as a broken construction and chose between them — though the second reading is not the class the compiler built, which the owner section records.
 
 ## Non-goals
 
