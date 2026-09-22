@@ -42,6 +42,8 @@
 //! | [`combatant`] | who is fighting, and what state are they in? |
 //! | [`hit`] | did the blade touch the body? |
 //! | [`movement`] | may this body be where it is trying to go? |
+//! | [`reach`] | how far does this body's blade get while it can connect? |
+//! | [`armament`] | which of the two exchangeable weapons is the player holding? |
 //! | [`adversary`] | what does the enemy want to do? |
 //! | [`event`] | what did this tick do that presentation may react to? |
 //! | [`encounter`] | all of the above, once per tick, in a stated order |
@@ -53,6 +55,7 @@
 mod hash;
 
 pub mod adversary;
+pub mod armament;
 pub mod combatant;
 pub mod encounter;
 pub mod event;
@@ -61,12 +64,14 @@ pub mod hit;
 pub mod hurt;
 pub mod material;
 pub mod movement;
+pub mod reach;
 pub mod script;
 pub mod spec;
 pub mod tick;
 pub mod weapon;
 
 pub use adversary::{AdversaryBrain, AdversaryState};
+pub use armament::{ArmamentState, RewardSetup, WeaponVariant};
 pub use combatant::{Action, AttackPhase, Combatant, Health, Intent, SIDES, Side, SwingId};
 pub use encounter::{
     CombatCounters, CountingGround, Encounter, EncounterError, EncounterSetup, PlayerVictoryPolicy,
@@ -80,6 +85,7 @@ pub use material::{
     WeaponScheme,
 };
 pub use movement::{MoveBlockReason, MoveRules, TraversalLegality, check_move};
+pub use reach::{AttackEnvelope, attack_envelope};
 pub use script::{
     EncounterScript, MomentKind, NAMED_MOMENTS, NamedMoment, ScriptRunner, at_moment,
 };

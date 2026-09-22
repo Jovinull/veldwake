@@ -358,6 +358,7 @@ pub struct Intent {
     move_world: Vec2,
     attack: bool,
     dodge: bool,
+    interact: bool,
     face_foe: bool,
 }
 
@@ -373,23 +374,43 @@ impl Intent {
     /// The direction is sanitised here rather than trusted: a client that hands
     /// over a `NaN` axis or an over-long vector gets a clamped intent, not a
     /// body that teleports.
+    ///
+    /// M9's interact verb is deliberately **not** a fourth parameter here.
+    /// Every M6, M7 and M8 call site means "no interact", and widening this
+    /// constructor would have made sixty of them say so out loud for no gain;
+    /// [`Intent::interacting`] adds the verb to an intent that already exists.
     #[must_use]
     pub fn player(move_world: Vec2, attack: bool, dodge: bool) -> Self {
         Self {
             move_world: sanitise(move_world),
             attack,
             dodge,
+            interact: false,
             face_foe: false,
         }
     }
 
+    /// The same intent, also asking to use the exchange site.
+    ///
+    /// Chained rather than passed, so the verb is visible at the call sites
+    /// that actually use it and absent from every one that does not.
+    #[must_use]
+    pub const fn interacting(mut self, interact: bool) -> Self {
+        self.interact = interact;
+        self
+    }
+
     /// What the adversary's brain produces.
+    ///
+    /// It never interacts: the exchange is the player's, and the adversary is
+    /// outside the pair entirely.
     #[must_use]
     pub(crate) fn adversary(move_world: Vec2, attack: bool) -> Self {
         Self {
             move_world: sanitise(move_world),
             attack,
             dodge: false,
+            interact: false,
             face_foe: true,
         }
     }
@@ -407,6 +428,11 @@ impl Intent {
     #[must_use]
     pub const fn dodge(&self) -> bool {
         self.dodge
+    }
+
+    #[must_use]
+    pub const fn interact(&self) -> bool {
+        self.interact
     }
 
     #[must_use]

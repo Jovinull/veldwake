@@ -13,6 +13,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::armament::WeaponVariant;
 use crate::combatant::{SIDES, Side, SwingId};
 
 /// Most events one tick can publish.
@@ -51,7 +52,21 @@ pub enum CombatEvent {
     /// A body ran out of health.
     Defeated { side: Side },
     /// The encounter returned to its starting state.
+    ///
+    /// **Not the armament.** A reset restores bodies, health, actions and the
+    /// adversary's brain; the weapon the player is carrying is session state
+    /// and survives it (ARM-001).
     EncounterReset,
+    /// The player exchanged weapons with the fixed site.
+    ///
+    /// The only thing that ever changes an armament, and it is published once
+    /// per accepted exchange rather than once per tick the player stands in
+    /// range. A refused interact publishes nothing at all.
+    ArmamentSwapped {
+        /// What the player is holding *after* the exchange. The site holds the
+        /// other one; it is never stored twice.
+        now: WeaponVariant,
+    },
 }
 
 impl CombatEvent {
@@ -66,6 +81,7 @@ impl CombatEvent {
             | Self::Staggered { side }
             | Self::Defeated { side } => Some(*side),
             Self::Hit { attacker, .. } => Some(*attacker),
+            Self::ArmamentSwapped { .. } => Some(Side::Player),
             Self::EncounterReset => None,
         }
     }
@@ -81,6 +97,7 @@ impl CombatEvent {
             Self::Staggered { .. } => "staggered",
             Self::Defeated { .. } => "defeated",
             Self::EncounterReset => "encounter-reset",
+            Self::ArmamentSwapped { .. } => "armament-swapped",
         }
     }
 }
