@@ -4,6 +4,10 @@ Last updated: 2026-09-21
 
 ## Current position
 
+**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks` and stopped, deliberately, one step before its exit gate.** Nothing is merged, no pull request is open, and no part of it is accepted. The exit gate is a **blind owner playtest**: the owner is told only to play and explore normally — no coordinates, no directions, no screenshot, no route, and no hint about which landmark hosts the adversary. Until that judgement exists, every claim about M8 in this repository is a measurement or a capture read by an agent, never an owner's verdict.
+
+Read [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) first if you are continuing that work: it carries the composition, the numbers, the locks it moved and, in the last section, what this agent could **not** verify.
+
 **M7 — Traversable Region is complete and merged. M1 through M7 are all in `main`.** It landed through [PR #11](https://github.com/Jovinull/veldwake/pull/11) at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1`, whose parents are `f840ff7880e1857e86b3a74c4d3f66ceaf82a922` and `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, after the owner's playtest, independent branch QA, a green pull-request CI run ([run 35630288272](https://github.com/Jovinull/veldwake/actions/runs/35630288272)) and a green post-merge CI run on the merge commit ([run 35632133251](https://github.com/Jovinull/veldwake/actions/runs/35632133251)). The remote branch `feat/m7-traversable-region` is preserved at `2a747d859fe03db4a84e6f57d32035dd8e1feb4a`, which is the head where the 699 tests and every gate were run. The branch was based on `docs/post-m6-handoff` at `aac3ec55519d93e44397af549eb18089c7dcdfcd` deliberately, so the two post-M6 documentation commits travelled into the same pull request.
 
 **There is no next milestone.** That is deliberate and it is the first thing to understand before doing anything else.
@@ -80,13 +84,26 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — nothing has been chosen to follow M7
+## Continue here — M8 waits for one judgement and nothing else
 
-**Do not start a milestone. Propose one.**
+**The single next step is the blind owner playtest.** Not a pull request, not a merge, not M9, and not more landmark work. If the playtest passes, the branch goes through the usual sequence: PR, CI on the exact head, merge commit, post-merge CI, handoff branch. If it fails, the failure is the milestone's evidence and the composition is reworked with it in hand.
 
-[`../planning/ROADMAP.md`](../planning/ROADMAP.md) lists *later capability groups* — persistence and world editing, aggregate and local world simulation, settlements, history and economy, richer procedural assets, audio and music, multiplayer transport, WASM modding. **That list is not a queue and nothing in it has been chosen.** No name is reserved, no branch exists, and "the next one on the list" is not a decision.
+To put the owner in front of it, and **say nothing else**:
 
-The next session's job is to read what now exists, weigh it against those groups *and against the evidence M7 produced*, and propose one milestone — its scope, its exit criteria, and what it deliberately will not build — for the owner to accept before any code is written.
+```text
+VELDWAKE_ENCOUNTER=traverse VELDWAKE_PROFILE=m4-golden cargo run --release -p veldwake-client
+```
+
+Do not name a landmark, a direction, a distance or where the adversary is. The whole milestone is the question of whether a person, told nothing, sees something and decides to walk to it.
+
+**What to have ready when the verdict comes back.** The composition is three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points, in the order they are most likely to be what the owner reacts to:
+
+- the crown of a first choice is **above the default camera frame** at 62 units — a deliberate, captured choice against a complete-but-tiny silhouette at 96 units;
+- the overlook's `r = 40` vegetation reservation is a composition control the owner reserved the right to reject on sight as artificial;
+- the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all.
+
+### What M7 left, and what it still means
+
 
 **M7 produced new facts that should change how that proposal is reasoned about.** They are the point of writing them down here:
 
@@ -202,7 +219,14 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **There is no active milestone, and that is the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue. The last two milestones were both proposed from the state of the repository rather than from the order of that list, and both were renamed by the owner before they were accepted.
+- **M8 is implemented and unjudged. Do not merge it, do not open a pull request for it, and do not start another milestone on top of it.** The blind playtest is the gate, and an agent may not perform it.
+- **Do not tell the owner where anything is.** A hint invalidates the only evidence this milestone is waiting for. That includes a screenshot, a coordinate, a compass direction, a walking time or which landmark has the fight.
+- **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `248-272 ms` in release and `1,108 ms` in debug per world. `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
+- **`LANDMARK_BEHAVIOR_SIGNATURE` is the golden plan's own fingerprint** and is folded into the world fingerprint. Any change to placement, the compiler, the descriptor or the controls moves it, invalidates every cached chunk, and needs an OLD/NEW/WHY paragraph — as do `TERRAIN_BEHAVIOR_SIGNATURE`, `GOLDEN_REGION_SIGNATURE`, `GOLDEN_ROUTE_SIGNATURE` and `ADVERSARY_COLUMN`, all of which M8 moved once.
+- **`TERRAIN_GENERATOR_VERSION` must not be bumped for landmark work.** `WorldSeed::stream` folds it into every stream, so bumping it reseeds the valley and regenerates a world nobody asked to change.
+- **Visibility has two levels and neither is the whole answer.** The world proxy in `veldwake-procedural` answers occlusion and knows nothing about cameras; the oracle in `apps/client/src/landmark.rs` answers framing and legibility and does no raycasting. A landmark is visible when both agree, and `the_world_proxy_and_the_presentation_agree_about_what_is_visible` is what keeps the placement honest.
+- **A landmark keep-out is a refusal, never a surface.** `GroundSampler` is untouched, nothing walks on a landmark, and the keep-out is the widest body's capsule — `0.86` by `2.84`, measured from the compiled rigs — applied to a destination only, exactly like the water veto.
+- **There is no active milestone after M8, and that will again be the state, not an omission.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch, and do not treat the roadmap's capability groups as a queue. The last three milestones were all proposed from the state of the repository rather than from the order of that list.
 - **Owner evidence and QA evidence are different things and M7 is where they diverge.** The owner judged the traversal and never reached the encounter. Every claim about exploration reaching combat, about a victory, and about the session continuing past one is branch-QA evidence from the real client. Do not promote it.
 - **A smoothed presentation value must never decide an authoritative rule** (MOVE-001). `base_height` is the filtered pelvis height; at `tau = 0.12 s` a body climbing at gradient `g` carries about `0.42 g` of lag, and with `max_step_up` exactly one voxel *any* lag makes a legal step illegal.
 - **`movement::check_move` is the only implementation of movement legality**, it returns `MoveBlockReason`, and the reachability audit calls it. Do not write a second copy to answer "why did that fail".

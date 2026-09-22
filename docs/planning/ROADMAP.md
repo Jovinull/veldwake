@@ -64,11 +64,19 @@ One player-controlled body moving continuously through the real procedural regio
 
 The owner decisions and the mandatory design corrections are recorded in [`M7_TRAVERSABLE_REGION.md`](M7_TRAVERSABLE_REGION.md), including the two that matter most to anything built later: a smoothed pelvis height is presentation and must never decide movement legality, and the reachability audit is a topological upper bound whose only proof of runtime traversal is a tick-by-tick simulation of the named route. A fresh owner playtest was an exit gate and the M6 one did not transfer; it is closed.
 
+## M8 — Discoverable Landmarks
+
+From a discovery overlook the player sees, in the world itself, more than one destination, chooses one with no navigation interface of any kind, walks to it, and finds the place the silhouette promised. One procedural family, three silhouette classes, three instances, generated rather than authored, and solid enough that a visible wall refuses a body while a gate's opening admits one.
+
+**Implemented on `feat/m8-discoverable-landmarks` and waiting for a blind owner playtest.** Not merged, no pull request open, nothing accepted. Every gate is green — 746 tests by default and 749 with the ignored fixtures, clippy, fmt, doc tests, deny, audit and a driven capture smoke on the audited host — and the composition, the numbers, the locks it moved and the three things this agent could not verify are in [`M8_DISCOVERABLE_LANDMARKS.md`](M8_DISCOVERABLE_LANDMARKS.md).
+
+Proposed after M7 from the evidence M7 produced rather than from the list below — in particular KI-029, the owner walking an 800 x 800 region and never finding the one thing standing in it — and named by the owner. M8 is deliberately **not** persistence, **not** world editing, **not** a navigation system and **not** a physics engine.
+
 ## Later capability groups
 
 Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
 
-**This still holds after M7, and the list is not a queue.** The order above is the order it was written in, not a decision. M7 was chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
+**This still holds after M8, and the list is not a queue.** The order above is the order it was written in, not a decision. M7 and M8 were both chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
 
 ## Milestone exit rule
 

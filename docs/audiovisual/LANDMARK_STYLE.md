@@ -4,7 +4,7 @@ Status: **Accepted for M8**. `LANDMARK_STYLE_VERSION = 1`.
 
 This document is a constraint set for the one landmark family M8 generates, in the same spirit as [`STYLE_BIBLE.md`](STYLE_BIBLE.md) and [`CHARACTER_STYLE.md`](CHARACTER_STYLE.md): every rule is a number, a ratio, a relation or a rejection criterion that the compiler, a test or a capture can be checked against. The style bible deliberately does not cover architecture, and this document exists so that it still does not — terrain rules stay in the terrain contract, landmark rules live here.
 
-Where a number below has not yet been confirmed by a compiled fixture or a capture it is a **hypothesis**, and the M8 milestone document records which ones moved and why.
+Every number below has now been confirmed by a compiled fixture, a test or a capture; the last section says which ones the implementation moved and why, and the M8 milestone document carries the measurements.
 
 No lore. No culture, civilization or history. These are "ancient, unknown standing stones" only to the extent a viewer needs to read them as deliberate and old rather than as terrain or as a building.
 
@@ -70,12 +70,12 @@ Three materials, in the landmark range `224..=255`. Linear RGB, authored for the
 ## Value relationship and skyline readability
 
 - **The crown is dark and the sky is light.** The style bible puts sky at `0.62` to `0.90`; the band material that forms every landmark's top is at most `0.23`, so an unfogged top is at least `0.39` darker than the palest sky.
-- **After fog, from the discovery overlook**, the top of each initially visible landmark must be at least `0.20` darker than the sky directly behind it, measured in a capture by the client visibility oracle. This is a presentation measurement and lives in the client, not in the world generator.
+- **After fog, from the discovery overlook**, the top of each initially visible landmark must be at least `0.20` darker than the sky directly behind it. This is a presentation measurement and lives in the client, not in the world generator: `a_crown_stays_darker_than_the_sky_behind_it_after_the_fog` composes the band material's own luminance with the fog that survives at the real distance, using the same `Lighting` table the renderer uploads, and compares it against the palest sky in that table.
 - **Sky-backed.** The two landmarks visible from the overlook are placed so that the world proxy finds open sky behind their upper silhouette; a landmark seen against a grey cliff loses its outline.
 
 ## Recognition distance
 
-A landmark must remain recognisable at **150 world units** in clear weather: at least 3 degrees of visible height and 0.9 degrees of visible width in the real follow-camera frame. This is a hypothesis to be confirmed by capture, and the M8 document records the measured value.
+A landmark must remain recognisable at **150 world units** in clear weather: at least 3 degrees of visible height and 0.9 degrees of visible width in the real follow-camera frame. Confirmed: the revealed monolith stands 149 units from the landmark that reveals it and subtends `8.4` by `6.5` degrees, and a capture from that viewpoint shows it as a distinct pale vertical above the tree line.
 
 ## Relation to vegetation
 
@@ -109,6 +109,18 @@ It is a **mass, not a room**: wider at the foot than at the top, with no enclose
 ## Style contract version
 
 `LANDMARK_STYLE_VERSION = 1`. It participates in the world fingerprint beside `LANDMARK_SCHEMA_VERSION`, `LANDMARK_COMPILER_VERSION` and `LANDMARK_PLAN_VERSION`. Changing a rule here that moves a voxel requires bumping it, which invalidates cached chunks.
+
+## What the implementation confirmed, and what it changed
+
+Written after M8 compiled the family and photographed it, so the hypotheses above stop being hypotheses.
+
+- **Every proportion, taper, support, asymmetry and mass rule in this document is asserted by a test against a compiled monolith**, not by inspection. The golden world's three are a spire 28 voxels tall on a 7 x 7 footprint, a gate 28 tall and 13 wide with a 21-column opening and stone starting 23 voxels up, and a broken shaft 22 tall on a 4 x 17 spread.
+- **Two rules moved because the compiler proved them wrong.** A spire's lean may not be zero: a symmetric spire is its own mirror, which defeats the asymmetry rule rather than satisfying it, so the lean is always one voxel one way or the other. And the "second mass" ratio is measured over **connected components of grounded columns**, not over columns: measured column-wise, a gate's opening columns carry only its lintel and the ratio reads `0.77` for a gate that is plainly two equal shafts.
+- **Erosion runs top-down and never removes a cell that carries another.** Removing outer-ring voxels in place left a corner voxel resting on nothing — a floating voxel is the one thing a weathered edge may not produce.
+- **The recognition rule holds with room to spare, and the number is measured.** The revealed monolith stands `149` units from the landmark that reveals it and shows `22.0` voxels of silhouette across a `17`-column span: `8.4` degrees of visible height and `6.5` of width, against the rule's `3` and `0.9`. The two first choices, at 62 and 63 units, show `19.0` by `6.4` and `19.2` by `11.7` degrees.
+- **The crown-against-sky rule is implemented where the document said it belongs** — in the client, over the real fog and the real sky table — and all three landmarks pass it at the distances the composition chose.
+- **The palette reads in both weather states.** A capture under overcast keeps the silhouette and the band contrast; the stone is still darker than lit grass and lighter than nothing else in the frame.
+- **A first choice does not fit inside the default camera frame at the distance the composition chose**, and that was accepted deliberately after capturing the alternative (KI-032). This document's recognition rules are about the silhouette, not about the frame; the framing decision lives in the milestone document with the two captures that settled it.
 
 ## What this document does not cover
 

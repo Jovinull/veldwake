@@ -255,3 +255,32 @@ Independent runs, 2026-09-21, release, `m4-golden`, golden seed, `1920 x 991` cl
 | `+30.1` s | 0 | 0 | 0 | 2,579 | 2,197 |
 
 Drained in `30.2` s, sampled at 1 Hz against a report published every five, so the true figure is somewhere in `(25.7, 30.1]` s. `render` never moved: the resident set was not lost, the far field was missing. KI-030. **Nothing was changed in response** — the rail's answer to KI-017 for a *walking* body, measured above, is unaffected by this, and prefetching around a teleport is a milestone's decision.
+
+## M8 discoverable landmarks, measured on the audited host
+
+Release unless stated, Intel Core i5-1335U / Intel Iris Xe / D3D12, `m4-golden` profile, golden seed. One-host observations, never targets.
+
+### Building a world now derives a plan
+
+| measure | value |
+|---|---|
+| `LandmarkPlan::derive`, release | `248`–`272` ms |
+| `LandmarkPlan::derive`, debug | `1,108` ms |
+| when it runs | once per `TerrainGenerator`, eagerly, before any chunk is generated |
+| what it costs the suite | `veldwake-procedural` 60 s → 94 s, `veldwake-client` 114 s → 142 s, one process per test |
+
+The first working derivation cost `3.2 s` in release. Five changes took it to `248` ms: a five-point pre-filter before the full level-and-dry disc, a cached water lookup, reservations that rebuild without discarding the terrain cache, solving the visible band in one pass instead of a nineteen-step binary search, and a straight-line dry test that prunes wet sites before any sight line is cast. The remaining cost is dominated by `level_and_dry` over the candidate lattice and by the sight lines themselves.
+
+No in-process cache was added. `cargo nextest` runs one process per test, so a memo cannot help the suite; the reuse that helps is one process building the same world once, which `WorldSelection::build` and `TerrainGenerator::with_plan` make explicit.
+
+### What the landmarks cost the world
+
+| measure | before M8 | after M8 |
+|---|---|---|
+| standable columns in the region | 622,023 | 621,798 |
+| steps refused for a traversal reason, whole-region audit | 2,464 | 2,840 |
+| symmetric components | `[314861, 307144, 16, 2]` | `[314861, 306919, 16, 2]` |
+| voxels written by the three landmarks | — | 1,729 |
+
+Nothing measurable changed in streaming or rendering. A capture run at the overlook, `m4-golden`, twenty-six seconds after the window opened: `59.9` FPS at `16.69` ms average wall frame, `render = 2,197` demanded, `cpu_resident = 444`, `presented = 334`, `gpu_active = 193`, `gpu_quads = 343,812`, and `gaps_closed`, `upload_failures` and `commit_invariant_failures` all zero. The run had **not** reached idle coverage at that point — KI-017's minute to settle is unchanged — and the landmarks were drawn anyway, because at 62 and 63 units they are inside the first chunks to arrive. The three of them contribute 1,729 voxels to chunks that were already resident.
+

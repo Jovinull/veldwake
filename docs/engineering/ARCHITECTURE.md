@@ -61,9 +61,10 @@ client ----------------------> commands/intents to authority
 | `64..=127` | terrain (`64..=74` used today) | `procedural::material::FIRST_TERRAIN_ID` |
 | `128..=191` | characters (`128..=137` used today) | `character::material::CHARACTER_ID_FIRST` |
 | `192..=223` | weapons (`192..=197` used today) | `combat::material::FIRST_WEAPON_ID` |
-| `224..=65535` | unallocated | — |
+| `224..=255` | landmarks (`224..=226` used today) | `procedural::landmark::LANDMARK_ID_FIRST` |
+| `256..=65535` | unallocated | — |
 
-`veldwake-character` proves its own range is disjoint from terrain's, `veldwake-combat` proves the weapon range `192..224` is disjoint from both, and `apps/client` — the one place all four lookups are visible at once — proves the renderer's ordered lookup cannot be ambiguous. A new domain takes the next free range and adds its own round-trip and disjointness tests; it never extends somebody else's enum.
+`veldwake-character` proves its own range is disjoint from terrain's, `veldwake-combat` proves the weapon range `192..224` is disjoint from both, `veldwake-procedural` proves the landmark range `224..256` is disjoint from terrain's, and `apps/client` — the one place all five lookups are visible at once — proves the renderer's ordered lookup cannot be ambiguous. Landmarks did **not** extend `TerrainMaterial`: they are a separate table in a separate range, because a landmark is not a kind of ground. A new domain takes the next free range and adds its own round-trip and disjointness tests; it never extends somebody else's enum.
 
 ## Current physical structure
 
@@ -96,3 +97,20 @@ Three seams M6 added, each one deliberate:
 - **`veldwake-combat` → `veldwake-character`, never the reverse.** Combat produces an `ActionOverlay` naming which action and how far through it is; the character crate turns that into sixteen joint transforms with its own curves, its own blending and its own joint clamps. Combat never computes an angle and the character crate never learns what a hit is.
 - **The domain is the only authority and the client only reads it.** The client's frame advances whole ticks, hands in an `Intent`, and reacts to the `CombatEvent`s that come back. Every presentation response — damage, stagger, knockback, hitstop, the reaction pose, the impact chips, the sound and the camera impulse — originates from one event, so presentation cannot invent a hit the rules did not produce.
 - **Audio is a pure synth behind a thin device.** `apps/client/src/synth.rs` has no cpal, no threads and no I/O; `apps/client/src/audio.rs` is the only code in the repository that knows cpal exists, and the two communicate through a lock-free single-producer ring of atomics. That split is what makes every claim about the sound testable headlessly, and it is [ADR-0007](../adr/0007-procedural-impact-audio-boundary.md).
+
+## The landmark boundaries
+
+M8 added world content that has to be visible, solid and drawn, which touches three domains at once. The boundaries it drew are the reason it did not become a fourth crate.
+
+**Landmarks live inside `veldwake-procedural`**, in a `landmark` module, because they fail all three parts of the crate test: same owner as terrain, same lifecycle — a pure function of a coordinate and an identity — and no build-isolation need, since every consumer of the crate needs landmarks in its chunks. A separate crate would also invert the dependency, because placement reads the terrain field and the chunk generator writes the result.
+
+**The plan is derived when a world is built, never when a chunk is generated.** `TerrainGenerator::new` returns `Result<Self, WorldError>` and holds an `Arc<LandmarkPlan>`; `generate(coord) -> Option<Chunk>` has no channel for a planning failure and must not acquire one. The generator lost `Copy` and kept a cheap `Clone`. Reuse is explicit: `TerrainGenerator::with_plan` shares a derived plan, and `WorldSelection::build` is how the client gets one world instead of three.
+
+**Visibility has two levels and they may not merge.** `procedural::landmark::visibility` is a *world* proxy: observer column, eye height as a composition control, terrain, water, canopy, silhouette, distance, geometric clearance. It contains no field of view, no pixel, no camera, no renderer and no fog. `apps/client/src/landmark.rs` is the *presentation* oracle: the real follow camera, the real projection, the real fog table, normalised device coordinates. Placement may only use the first; evidence uses both, and a test asserts they do not contradict each other.
+
+**The world owns no player.** The plan produces a `DiscoveryOverlook`, which is a compositional property — the place the composition is built to be seen from. The client chooses to start a session there, and `the_route_starts_at_the_world_overlook` keeps `ROUTE_START_*` honest about where that is.
+
+**No character dimension enters the world.** The plan exposes exact solid geometry, column by column. The client, which owns `CollisionRepresentation`, turns the widest body's capsule into a `TraversalLegality` veto and a `SurfaceGrid` flag. `GroundSampler` is untouched: a landmark is a refusal, never a surface, and nothing walks on one.
+
+**One vegetation truth.** Once a landmark suppresses plants, the raw grammar no longer describes the world. `WorldVegetation` — grammar, field and plan — is the only thing that answers "is a plant actually here?", and chunk generation composes exactly it.
+

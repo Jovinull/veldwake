@@ -46,6 +46,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`audiovisual/STYLE_BIBLE.md`](audiovisual/STYLE_BIBLE.md): the versioned, checkable constraint set the M4 generator and shaders are held to
 - [`audiovisual/CHARACTER_STYLE.md`](audiovisual/CHARACTER_STYLE.md): the versioned, checkable constraint set the M5 character compiler and locomotion are held to
 - [`audiovisual/COMBAT_STYLE.md`](audiovisual/COMBAT_STYLE.md): the versioned constraint set the M6 weapon, action motion, effects, readout and camera response are held to, and why it is a separate version from the character's
+- [`audiovisual/LANDMARK_STYLE.md`](audiovisual/LANDMARK_STYLE.md): the versioned constraint set the M8 landmark family is held to — silhouette classes, proportions, palette and what a landmark may never look like
 - [`audiovisual/RENDERING_VISION.md`](audiovisual/RENDERING_VISION.md)
 - [`audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md`](audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md)
 
@@ -78,6 +79,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M5_PROCEDURAL_CHARACTER.md`](planning/M5_PROCEDURAL_CHARACTER.md)
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
+- [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the active milestone, implemented and waiting for a blind owner playtest
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)

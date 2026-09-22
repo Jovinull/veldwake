@@ -1,11 +1,11 @@
 # M8 — Discoverable Landmarks
 
-Status: **in progress on `feat/m8-discoverable-landmarks`.**
+Status: **implemented on `feat/m8-discoverable-landmarks`, waiting for the blind owner playtest.** Every phase below is complete, every gate in the gate table ran, and the one thing left is the judgement this agent may not make.
 Base: `docs/post-m7-handoff` at `08081b8a15be3ea70de82e03cb0b113d71c7c8d9`, which is `main` at merge commit `0c81c069bb95a8caf3b6a5252b89b023c6334ae1` plus one documentation commit.
 
 M7 proved a person can walk the whole region. It also proved, by accident and in the owner's own playtest, that walking a beautiful empty region is a walk and not a game: the owner crossed it, enjoyed crossing it, and never found the one thing standing in it. Today no two directions in Veldwake mean different things. M8 builds the first spatial choice: from a discovery overlook the player sees, in the world itself, more than one destination, chooses one with no navigation interface of any kind, walks to it, and finds the place the silhouette promised.
 
-This document is written as the milestone lands, phase by phase. Anything not yet measured is not claimed, and every number in the design sections below is a hypothesis until a compiled fixture or a capture confirms it.
+This document was written as the milestone landed, phase by phase. The design sections below are kept as they were written, including the predictions, and the implementation sections after them say what was actually measured — including the two places the measurement contradicted the design and what was chosen instead.
 
 ## Scope, as accepted by the owner
 
@@ -44,12 +44,12 @@ These were imposed on the approved design before any code was written. Each is a
 | phase | contents | status |
 |---|---|---|
 | M8A | this document, `LANDMARK_STYLE.md` v1, owner decisions, scope and non-goals, the two-level visibility split, overlook semantics | complete |
-| M8B | the pure Monolith family: materials, descriptor, canonicalization, compiler, occupancy, silhouette, identity | not started |
-| M8C | the immutable world plan: `DiscoveryOverlook`, site placement, world visibility proxy, three sites, vegetation reservation, typed construction errors, determinism, cost | not started |
-| M8D | chunk integration: suppressed vegetation, landmark voxels, identity and cache fingerprint, the global `VoxelId` lookup, order independence | not started |
-| M8E | traversal integration: plan-aware world vegetation, keep-out from the real body radius, `SurfaceGrid`, audit, route, enemy host, gate passage, continuous route | not started |
-| M8F | presentation and evidence: the client visibility oracle, real rendering, captures, motion, weather, performance | not started |
-| M8G | technical self-QA: full regression, the real game, fresh captures, documentation. Then stop for the blind owner playtest | not started |
+| M8B | the pure Monolith family: materials, descriptor, canonicalization, compiler, occupancy, silhouette, identity | complete |
+| M8C | the immutable world plan: `DiscoveryOverlook`, site placement, world visibility proxy, three sites, vegetation reservation, typed construction errors, determinism, cost | complete |
+| M8D | chunk integration: suppressed vegetation, landmark voxels, identity and cache fingerprint, the global `VoxelId` lookup, order independence | complete |
+| M8E | traversal integration: plan-aware world vegetation, keep-out from the real body radius, `SurfaceGrid`, audit, route, enemy host, gate passage, continuous route | complete |
+| M8F | presentation and evidence: the client visibility oracle, real rendering, captures, motion, weather, performance | complete |
+| M8G | technical self-QA: full regression, the real game, fresh captures, documentation. Then stop for the blind owner playtest | complete |
 
 ## The feasibility result this milestone starts from
 
@@ -67,6 +67,157 @@ The design round measured the golden world from outside the repository, through 
 | 32 | 98% | 98% | 100% |
 
 - The occluder model was checked against five real frames from the arrival with the camera pose read from the client's own report: median error between predicted and measured sky boundary `0, 0, 0, 10, 0` pixels, and the model is conservative — it treats canopy as solid, the frames show gaps.
+
+## What the branch implements
+
+| part | where | what it is |
+|---|---|---|
+| materials | `crates/procedural/src/landmark/material.rs` | `LandmarkMaterial::{Stone, Band, Cap}` over the declared `VoxelId` range `224..256`, with albedo, specular and the palette rules of `LANDMARK_STYLE.md` |
+| descriptor | `landmark/descriptor.rs` | `MonolithDescriptor`: class, height, widths, opening, lintel, rise, break, rubble, band period, lean, span axis. Drawn from a seed, canonicalised, validated, fingerprinted |
+| compiler | `landmark/compile.rs` | descriptor to voxels: `CompiledMonolith`, per-column spans, top-down erosion, the `Silhouette` measurements the style rules are checked against |
+| world proxy | `landmark/visibility.rs` | `WorldOccluders` and `VisibleBand`: how much silhouette a point in the world sees past terrain, water and canopy. No camera, no pixels, no fog |
+| plan | `landmark/plan.rs` | `LandmarkPlan::derive`: the overlook, three sites, three instances, the vegetation reservations, and typed failure when the world cannot carry the composition |
+| world | `procedural/src/generator.rs` | the plan is derived when the world is built; `generate` writes landmark voxels into air after vegetation; `WorldVegetation` is the one composed answer about plants |
+| keep-out | `apps/client/src/traversal.rs` | the widest body's capsule turned into a `TraversalLegality` veto and a `SurfaceGrid` flag |
+| presentation oracle | `apps/client/src/landmark.rs` | the real camera, the real projection and the real fog, used to check what the placement claims |
+| renderer | `apps/client/src/renderer.rs` | one ordered lookup: terrain table, then landmark table, then the M3 diagnostic palette |
+
+## The composition the golden world produced
+
+`LANDMARK_BEHAVIOR_SIGNATURE = 0xe97b_ee8f_8573_7e95`, which is the plan's own fingerprint.
+
+| | class | column | from the overlook | base → top | footprint | voxels | silhouette seen | sky |
+|---|---|---|---|---|---|---|---|---|
+| first choice | Spire | `(-130, 62)` | 62 u | 18 → 45 | 7 × 7 | 716 (465 stone, 202 band, 49 cap) | 21.3 voxels, 17.1 of them under 12° | yes |
+| first choice | Gate | `(-7, 58)` | 63 u | 19 → 46 | 3 × 13 | 547 (270, 259, 18) | 22.0 voxels, 16.9 under 12° | yes |
+| revealed | Broken | `(142, 71)` | 212 u | 18 → 40 | 4 × 17 | 466 (304, 130, 32) | 22.0 voxels from the gate at 149 u, all under 12° | yes |
+
+The overlook resolved to `(-69, 49)`, ground face `19`, clearing radius `40` — the same column M5 stood its portrait in, M6 fought in and M7 started its route from, now derived from the world's own composition rather than chosen by the client. The two first choices stand at bearings `258.0` and `98.3` degrees from it, `159.7` apart — the probe prints the three numbers, so it is a measurement rather than a claim — which is the concrete meaning of "two directions that mean different things": the player cannot see both without turning around.
+
+The gate's opening is `21` columns of ground with stone beginning `23` voxels up.
+
+## Evidence
+
+### The plan is a function of the world
+
+`the_plan_is_a_pure_function_of_the_world` derives twice and compares fingerprints, origins, base courses, crown columns and compiled geometry. `terrain-probe landmarks` re-derives at runtime and refuses to print if the second plan disagrees with the one the world was built with. Chunk order independence is checked by `a_landmark_crossing_a_seam_is_written_identically_from_both_sides` and by M4's own order test.
+
+### Derivation cost, measured on the audited host
+
+| profile | cost of `LandmarkPlan::derive` for the golden world |
+|---|---|
+| release | **248–272 ms** |
+| debug | **1,108 ms** |
+
+The owner's instruction was to measure before choosing a reuse strategy. The measurement says two things. First, `cargo nextest` runs **one process per test**, so no in-process cache — `OnceLock` or otherwise — can help the suite at all; the only levers are the derivation's own cost and the number of tests that build a world. Second, the reuse that does matter is two worlds of the same identity inside one process, which the client had three of: `World::source()`, `World::generator()` and `World::fingerprint()` each built one. `WorldSelection::build` now derives once and shares the plan behind its `Arc`, and `TerrainGenerator::with_plan` is the explicit way to say so. No hidden cache, no lazy first call.
+
+Suite cost, `cargo nextest run`, this host:
+
+| crate | before M8 | after M8 |
+|---|---|---|
+| `veldwake-procedural` | 60 s, 69 tests | 94 s, 97 tests |
+| `veldwake-client` | 114 s, 171 tests | 142 s, 178 tests |
+| workspace | 84 s, 699 tests | 746 tests, all passing |
+
+Five optimisations took the derivation from `3.2 s` to `248 ms` in release: a five-point pre-filter before the full level-and-dry disc, a cached water lookup, `with_reservations` that keeps the terrain cache when the world's reservations change, solving the visible band in one pass instead of a nineteen-step binary search, and a straight-line dry test that prunes wet sites before any sight line is cast.
+
+### The world after landmarks, from the reachability audit
+
+Same audit as M7, re-run on the branch. Everything not listed is identical.
+
+| measure | M7 | M8 | reading |
+|---|---|---|---|
+| standable columns | 622,023 | **621,798** | the keep-out removes 225 columns |
+| reachable from the overlook | 307,162 | 306,937 | the same 225 |
+| bidirectional | 307,144 | 306,919 | the same 225 |
+| symmetric components | `[314861, 307144, 16, 2]` | `[314861, 306919, 16, 2]` | **no landmark cuts anything off** |
+| barrier: traversal | 2,464 | **2,840** | +376 steps now refused by stone rather than water |
+| barrier: step-up | 44,495 | 44,495 | unchanged |
+| barrier: drop | 1,273 | 1,273 | unchanged |
+| highland reachable | 243,333 | 243,333 | unchanged |
+
+Every landmark can be walked to: the nearest standable column is 4 columns from the spire at **65 steps**, 1 column from the gate at **61 steps**, and 1 column from the broken monolith at **211 steps**.
+
+### The fight is at a landmark
+
+`fight_host` picks the first choice that does **not** reveal the third, so one direction ends in a reveal and the other in a fight — the two directions differ in what they mean, not only in what they look like. In the golden world that is the spire, and `place_adversary` with `PlacementRules::hosted_by` puts the adversary at `(-135, 62)`: five columns west of the crown, `69` steps from the overlook, first candidate examined of 475 level ones, level for seven columns, clear of vegetation for seven, dry and reachable both ways.
+
+The route therefore moved with it: `(-69, 49) → (-135, 62)`, **70 columns, 5 waypoints, 97.17 units, 28.6 s at 3.40 u/s**, crossing two chunk boundaries on each axis, against M7's 163 columns and 217.09 units.
+
+### A landmark is solid, and a gate is not
+
+`BODY_KEEP_OUT_RADIUS = 0.86` and `BODY_KEEP_OUT_HEIGHT = 2.84` are the widest and tallest body the world carries — the adversary's capsule, radius `0.8274`, height `2.8303` — measured from the compiled rigs by `the_keep_out_is_the_widest_body_the_world_carries` rather than copied. Neither number exists in `veldwake-procedural`.
+
+- `a_body_cannot_walk_into_a_landmark`: the runtime veto, the cached grid and `standable` all refuse a grounded column of every landmark.
+- `a_landmark_blocks_the_runtime_rule_and_not_only_the_audit`: `check_move` answers `MoveBlockReason::Traversal` for a step into stone, the same answer the river gets.
+- `the_gate_is_a_gate_and_a_body_can_walk_through_it`: a breadth-first walk from one side of the gate to the other, over the real `SurfaceGrid` with the real `MovementSpec`, crosses **through the footprint**, and every column it crosses has stone at least `BODY_KEEP_OUT_HEIGHT` above the floor.
+- `the_runtime_walks_through_the_gate_and_not_only_the_audit` takes that crossing and puts every walk-speed increment of it to `check_move` with the production `TerrainGround` and `TerrainWalkability`, because a column graph is an upper bound and the owner's condition was about the body, not the lattice. None of the steps is refused.
+- `the_cached_grid_agrees_with_the_runtime_veto_around_every_landmark` compares 771 columns around the three landmarks; the M7 agreement test still compares its 6,144 water columns.
+
+`GroundSampler` is untouched. Nothing walks on a landmark: the keep-out is a refusal, never a surface.
+
+### What it looks like
+
+Five captures on the audited host, `1920 x 991`, release client, `m4-golden` profile, exit code `0`.
+
+| capture | what it shows |
+|---|---|
+| the spire from the overlook, clear | the monolith stands clear of the canopy, banded, darker than the valley wall behind it, unmistakably made |
+| the gate from the overlook, clear | two banded shafts and the sky between them, read as one object at 63 units |
+| the gate at ten units | the opening reads as a passage: ground continues through it, and the shafts carry the style's value break |
+| the broken monolith from the gate | framed between the gate's own shafts at 149 units, a pale vertical against the tree line |
+| the spire, overcast | the silhouette survives the second weather state: lower contrast, same read |
+| **the real session**, `VELDWAKE_ENCOUNTER=traverse` | the shot the milestone is about: the player's body in the overlook clearing with its sword and health readout, and the spire standing over the tree line ahead of it. Nothing in the frame points at the spire; the spire is the thing that points |
+
+The session the owner will run was started too, on the audited host, and it reports what it should: `encounter ready mode="traverse"` with `player_start=[-68.5, 49.5]` and `adversary_start=[-134.5, 62.5]` — the adversary at the spire — followed by `traversal route ready rule_version=2 start=(-69, 49) goal=(-135, 62) columns=70 waypoints=5 length_units=97.17 walk_seconds=28.58 signature=0xa06c9d72a8824848 locked=0xa06c9d72a8824848 matches_locked=true reachable_columns=306937 standable_columns=621798 highland_reachable=true`, its four checkpoints, and an audio device open with no errors. No panic, no validation error, exit `0`.
+
+The capture at the overlook reported `59.9` FPS, `render = 2,197` demanded against `presented = 334` and `gpu_quads = 343,812`, with `gaps_closed`, `upload_failures` and `commit_invariant_failures` all zero — and it had **not** reached idle coverage twenty-six seconds in, which is KI-017 unchanged. The landmarks are drawn regardless, because at 62 and 63 units they are inside the first chunks to arrive. That is worth knowing for the playtest: the far valley fills in for about a minute, and the things this milestone is about are there from the start.
+
+**The crown of a first choice sits above the default camera frame.** At 62 units the spire's top is `19.9` degrees above the camera and the frame's top edge is `13.75`, so a player at rest sees a tower leaving the top of the screen and looks up to see its cap. This was measured, then tested against the alternative: requiring the whole silhouette inside the frame pushes the pair out to 87 and 96 units, where the canopy leaves **8.3 and 11.5 visible voxels instead of 21.3 and 22.0**. Both compositions were captured before choosing. The near one is a tower; the far one is a sliver. `the_crown_of_a_first_choice_stands_above_the_default_frame` locks the choice so the next agent reads it as a decision.
+
+## Accepted behaviour
+
+- A first choice is framed from the overlook but not framed *entirely*: the crown is above the default pitch until the player looks up or walks closer.
+- The revealed landmark is exempt from the crown rule the first pair is not required to satisfy either, and for a measured reason: of 111 candidate sites far enough from the first two to be a third landmark, the forest leaves **2** visible from a landmark at all, and neither is far enough for its crown to clear the frame.
+- A diagonal step of the golden route brushes one corner of the spire's keep-out. The runtime accepts it — legality is destination-only under ADR-0008, and `the_runtime_accepts_every_step_of_the_route_it_walks_continuously` walks it — and the corner test now counts brushes rather than forbidding them, because its own name says "between **two** blocked columns" and one blocked shoulder is a body passing an obstacle.
+- A diagnostic world under an arbitrary seed may not carry the golden composition. Two of five seeds tried do; the other three fail with a named reason and are built **without landmarks** rather than with a landmark placed where the composition does not hold. Only the golden world is required to carry all three, and a test says so.
+
+## Locks moved in this branch
+
+| lock | old | new | why |
+|---|---|---|---|
+| `LANDMARK_BEHAVIOR_SIGNATURE` | none | `0xe97b_ee8f_8573_7e95` | first lock; the golden plan's own fingerprint |
+| `TERRAIN_BEHAVIOR_SIGNATURE` | `0x2d88_497f_a6d6_d4b5` | `0x2d59_3291_f052_9f23` | landmark voxels and suppressed plants change what the world generates |
+| `GOLDEN_WORLD_BEHAVIOR_SIGNATURE` | `0x2d88_497f_a6d6_d4b5` | `0x2d59_3291_f052_9f23` | the same value, exhaustively re-derived |
+| `GOLDEN_REGION_SIGNATURE` | `0x1285_7799_1516_4f6a` | `0x0cd9_5da6_1656_b11b` | two fixture chunks hold part of a landmark |
+| `TRAVERSAL_RULE_VERSION` | `1` | `2` | a landmark is a new reason to refuse a destination |
+| `ADVERSARY_COLUMN` | `(14, 191)` | `(-135, 62)` | the fight is hosted by a landmark |
+| `GOLDEN_ROUTE_SIGNATURE` | `0x08c1_0aea_5280_b90f` | `0xa06c_9d72_a882_4848` | world identity, rule version and destination all moved |
+
+`TERRAIN_GENERATOR_VERSION` is deliberately **not** bumped: `WorldSeed::stream` folds it into every stream, so bumping it would reseed the valley and regenerate a world nobody asked to change. M5's and M6's domain signatures are byte-identical; the character, the weapon, the encounter and the audio were not touched.
+
+## Gates
+
+| gate | result |
+|---|---|
+| `cargo fmt --check` | PASS |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo build --workspace --all-features` | PASS |
+| `cargo nextest run --workspace` | PASS — `746 tests run: 746 passed, 3 skipped` |
+| `cargo nextest run --workspace --run-ignored all` | PASS — `749 tests run: 749 passed, 0 skipped`, so every `#[ignore]`d fixture was run deliberately |
+| `cargo test --workspace --doc` | PASS |
+| `cargo metadata --format-version 1 --no-deps` | PASS |
+| `cargo deny check` | PASS — advisories, bans, licenses, sources |
+| `cargo audit` | PASS — no vulnerabilities in 226 dependencies |
+| driven capture smoke on the audited host | PASS — eight driven release runs, every capture `1920 x 991` and every run exit `0`; the five read in writing are in the table above |
+| blind owner playtest | **NOT YET APPLICABLE** — this branch stops here, by instruction |
+
+## What this agent could not verify
+
+- Whether the composition **works**, which is the owner's judgement and the point of the blind playtest. Everything above says the landmarks exist, are visible, are solid, are reachable and are drawn; none of it says a person wants to walk to one.
+- Whether the overlook clearing reads as artificial. The owner reserved the right to reject `r = 40` on sight, and a capture taken from inside the clearing cannot answer that question honestly.
+- Motion evidence beyond the at-rest captures: the harness's injected mouse-look did not reach the client in a static camera pose, so the "look up at the crown" frame is a measurement — `19.9` degrees against a frame edge at `13.75` — rather than a photograph.
+- Whether the two directions read as *different* rather than as two of the same thing. The spire and the gate are 160 degrees apart and belong to different silhouette classes, and one of them has a fight at the end of it; whether a player experiences that as a choice is exactly what the playtest is for.
 
 ## Non-goals
 
