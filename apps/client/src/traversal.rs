@@ -1277,6 +1277,10 @@ pub fn traversal_setup() -> veldwake_combat::EncounterSetup {
     setup.arena = None;
     // The session continues past the fight, which is the whole milestone.
     setup.player_victory = veldwake_combat::PlayerVictoryPolicy::Remain;
+    // M9: the gate holds a weapon the player can take. Where the site is, is
+    // the client's answer through `reward::site`; what the exchange *is* is
+    // combat's, and this is where the two are joined.
+    setup.reward = Some(veldwake_combat::fixture::reward_setup());
     setup
 }
 
@@ -1363,7 +1367,7 @@ pub fn route_signature(
 /// client is nobody's dependency, and the function is pinned against the
 /// published vectors by `fnv1a_matches_the_published_vectors`.
 #[must_use]
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;

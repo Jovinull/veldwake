@@ -18,7 +18,7 @@ use winit::{
 };
 
 use veldwake_character::GroundSampler;
-use veldwake_combat::{CombatEvent, SIDES, Side, TraversalLegality, WorldContact};
+use veldwake_combat::{CombatEvent, SIDES, Side, TraversalLegality, WeaponVariant, WorldContact};
 
 use crate::{
     arena,
@@ -27,16 +27,24 @@ use crate::{
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
     debug::{DebugMode, combat_primitives, debug_primitives},
     encounter::{EncounterMode, EncounterScene},
-    input::{CameraAction, CombatAction, InputState},
+    input::{CameraAction, CombatAction, CombatLatches, InputState},
     lighting::Weather,
     readout::{self, READOUT_INSTANCES},
     renderer::{RenderOutcome, Renderer, VfxFrameWork},
+    reward,
     streaming::{ChunkPresentation, FrameStreamingReport, StreamingBridge, UploadBudget},
     synth::{VoiceKind, VoiceParams},
     traversal::{self, TerrainWalkability},
     vfx::{MAX_VFX_INSTANCES, VfxInstance, VfxKind, VfxPool},
     world::{WorldSelection, requested_pose, resolve_pose},
 };
+
+/// The world matrix of each weapon, as it stands planted at the exchange site.
+#[derive(Clone, Copy, Debug)]
+struct SiteMatrices {
+    original: glam::Mat4,
+    found: glam::Mat4,
+}
 
 const FRAME_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -134,6 +142,12 @@ struct App {
     last_character_report: Instant,
     /// The fight, its clock, and what drives it. `None` when the encounter is off.
     encounter: Option<EncounterScene>,
+    /// Where each weapon stands when it is the one left at the exchange site.
+    ///
+    /// Two matrices rather than one, because the site holds whichever weapon
+    /// the player is not carrying and the two are different objects with
+    /// different proportions. Solved once at startup: the site never moves.
+    site_matrices: Option<SiteMatrices>,
     /// The third-person camera, when one is following the player.
     follow: Option<FollowController>,
     /// Whether `F4` has detached the camera for a look around.
@@ -157,6 +171,7 @@ impl Default for App {
         Self {
             renderer: None,
             streaming: None,
+            site_matrices: None,
             camera: spawn_camera(),
             controller: CameraController::default(),
             input: InputState::default(),
@@ -273,11 +288,52 @@ impl App {
                 renderer
                     .upload_actor(
                         scene.encounter().character(side),
+                        // Both actors carry the **original** weapon's mesh.
+                        // Which mesh is in the player's hand and which is in
+                        // the ground is decided per frame by the matrices, not
+                        // by a re-upload: geometry uploads once.
                         Some(scene.encounter().weapon()),
                     )
                     .map_err(|error| {
                         AppRunError(format!("{} did not upload: {error}", side.name()))
                     })?;
+            }
+            // The found weapon, if this session offers an exchange. It is a
+            // third weapon instance in the world: the exchange pair belongs to
+            // the player and the site, and the adversary's is outside it.
+            if let (Some(found), Some(site)) =
+                (scene.encounter().found_weapon(), scene.exchange_site())
+            {
+                renderer.upload_placed_weapon(found).map_err(|error| {
+                    AppRunError(format!("the found weapon did not upload: {error}"))
+                })?;
+                let Some(resolved) = self.terrain.as_ref().and_then(reward::site) else {
+                    return Err(AppRunError(
+                        "the exchange site resolved for the encounter and not for the renderer"
+                            .to_owned(),
+                    ));
+                };
+                self.site_matrices = Some(SiteMatrices {
+                    original: reward::site_matrix(&resolved, scene.encounter().weapon()),
+                    found: reward::site_matrix(&resolved, found),
+                });
+                info!(
+                    column = ?resolved.column,
+                    position = ?site.to_array(),
+                    ground = resolved.ground,
+                    interact_radius = ?scene.encounter().interact_radius(),
+                    signature = format_args!(
+                        "{:#018x}",
+                        reward::reward_signature(
+                            self.terrain.as_ref().unwrap_or(&veldwake_procedural::TerrainGenerator::golden()),
+                            &resolved,
+                            &veldwake_combat::fixture::reward_setup(),
+                            &veldwake_combat::fixture::weapon_descriptor(),
+                        )
+                    ),
+                    locked = format_args!("{:#018x}", reward::REWARD_BEHAVIOR_SIGNATURE),
+                    "weapon exchange ready"
+                );
             }
             let stats = renderer.character_stats();
             let player = scene.encounter().combatant(Side::Player);
@@ -632,24 +688,51 @@ impl App {
         let ground = self.terrain.as_ref().map(TerrainGround::new);
         let sampler = ground.as_ref().map(|ground| ground as &dyn GroundSampler);
         let walkability = self.terrain.as_ref().map(TerrainWalkability::new);
+        // Where the exchange stands, when this session offers one. Only this
+        // constructor can make a swap possible, so every other path in the
+        // client — the M6 arena, the scripted runs, the frozen moments — is
+        // unable to reach the rule at all.
+        let exchange_site = self
+            .encounter
+            .as_ref()
+            .and_then(EncounterScene::exchange_site);
         let world = match (
             sampler,
             walkability
                 .as_ref()
                 .map(|veto| veto as &dyn TraversalLegality),
         ) {
-            (Some(ground), Some(legality)) => WorldContact::terrain(ground, legality),
+            (Some(ground), Some(legality)) => match exchange_site {
+                Some(site) => WorldContact::terrain_with_weapon_exchange(ground, legality, site),
+                None => WorldContact::terrain(ground, legality),
+            },
             (ground, _) => WorldContact::from_ground(ground),
         };
         if let Some(scene) = self.encounter.as_mut() {
             let outcome = scene.update(elapsed, &mut self.input, &self.camera, world);
+            // Which mesh goes where. Actor zero and actor one both hold the
+            // original weapon's geometry, and the placed slot holds the found
+            // one; the armament decides which of the two gets the player's hand
+            // matrix and which gets the fixed site's. Nothing is re-uploaded and
+            // nothing is hidden: both meshes draw every frame, in two places.
+            let armament = scene.encounter().armament();
+            let player_hand = scene.encounter().weapon_matrix(Side::Player);
             for side in SIDES {
                 let combatant = scene.encounter().combatant(side);
-                renderer.set_actor_pose(
-                    side.index(),
-                    combatant.posed(),
-                    Some(scene.encounter().weapon_matrix(side)),
-                );
+                let matrix = match (side, armament.player(), self.site_matrices) {
+                    // The player left the original weapon at the site.
+                    (Side::Player, WeaponVariant::Found, Some(sites)) => sites.original,
+                    _ => scene.encounter().weapon_matrix(side),
+                };
+                renderer.set_actor_pose(side.index(), combatant.posed(), Some(matrix));
+            }
+            if let Some(sites) = self.site_matrices {
+                renderer.set_placed_weapon(match armament.player() {
+                    // The found weapon is still in the ground.
+                    WeaponVariant::Original => sites.found,
+                    // The player took it, so it follows the hand.
+                    WeaponVariant::Found => player_hand,
+                });
             }
             // A confirmed hit is the only thing that moves the camera. A miss, a
             // successful dodge and the start of a swing all reach here and all
@@ -742,7 +825,7 @@ impl App {
             self.frame_stats.record_combat(outcome, scene.events());
             if now.saturating_duration_since(self.last_combat_report) >= COMBAT_REPORT_INTERVAL {
                 self.last_combat_report = now;
-                let (attack_latched, dodge_latched) = self.input.combat_latches();
+                let latches = self.input.combat_latches();
                 report_combat(
                     scene,
                     &self.camera,
@@ -754,7 +837,7 @@ impl App {
                         vfx_work: renderer.vfx_frame_work(),
                         audio: self.audio.as_ref(),
                     },
-                    (attack_latched, dodge_latched),
+                    latches,
                 );
             }
         }
@@ -958,7 +1041,7 @@ fn report_combat(
     camera_detached: bool,
     stats: &FrameStats,
     presentation: PresentationReport<'_>,
-    latches: (bool, bool),
+    latches: CombatLatches,
 ) {
     let PresentationReport {
         shake,
@@ -966,8 +1049,7 @@ fn report_combat(
         vfx_work,
         audio,
     } = presentation;
-    let (attack_latched, dodge_latched) = latches;
-    let input_latched = attack_latched || dodge_latched;
+    let input_latched = latches.any();
     let encounter = scene.encounter();
     let counters = encounter.counters();
     let player = encounter.combatant(Side::Player);
@@ -981,12 +1063,22 @@ fn report_combat(
         scene_ticks = scene.ticks(),
         events_this_frame = scene.events().len(),
         input_latched,
-        input_attack_latched = attack_latched,
-        input_dodge_latched = dodge_latched,
+        input_attack_latched = latches.attack,
+        input_dodge_latched = latches.dodge,
+        input_interact_latched = latches.interact,
         // A press waiting for a tick. It should clear within a frame or two; a
         // value that stays set across report intervals is a stuck input.
-        input_held_attack = scene.held_input().0,
-        input_held_dodge = scene.held_input().1,
+        input_held_attack = scene.held_input().attack,
+        input_held_dodge = scene.held_input().dodge,
+        input_held_interact = scene.held_input().interact,
+        // Which weapon is in the hand and which is at the site. The exchange is
+        // session state: an encounter reset restores the bodies and leaves this
+        // alone (ARM-001), which is exactly what a log has to be able to show.
+        player_weapon = encounter.armament().player().name(),
+        site_weapon = encounter.armament().site().name(),
+        exchange_site = ?scene.exchange_site().map(|site| site.to_array()),
+        interacts = counters.interacts[Side::Player.index()],
+        interacts_refused = counters.interacts_refused[Side::Player.index()],
         distance = scene.distance(),
         player_action = player.action().label(encounter.attack_spec(Side::Player)),
         player_elapsed = player.action().elapsed(),
@@ -1150,6 +1242,7 @@ const fn combat_action(key: KeyCode) -> Option<CombatAction> {
     match key {
         KeyCode::KeyJ => Some(CombatAction::Attack),
         KeyCode::KeyK | KeyCode::Space => Some(CombatAction::Dodge),
+        KeyCode::KeyE => Some(CombatAction::Interact),
         _ => None,
     }
 }
@@ -1569,6 +1662,29 @@ mod tests {
         assert_eq!(combat_action(KeyCode::KeyJ), Some(CombatAction::Attack));
         assert_eq!(combat_action(KeyCode::KeyK), Some(CombatAction::Dodge));
         assert_eq!(combat_action(KeyCode::Space), Some(CombatAction::Dodge));
+        // M9's exchange verb, and the only key that reaches it.
+        assert_eq!(combat_action(KeyCode::KeyE), Some(CombatAction::Interact));
+        assert_eq!(camera_action(KeyCode::KeyE), None);
+        assert_eq!(debug_action(KeyCode::KeyE), None);
+        for key in [
+            KeyCode::KeyJ,
+            KeyCode::KeyK,
+            KeyCode::Space,
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::F1,
+            KeyCode::F2,
+            KeyCode::F3,
+            KeyCode::F4,
+        ] {
+            assert_ne!(
+                combat_action(key),
+                Some(CombatAction::Interact),
+                "a second key reaches the exchange verb"
+            );
+        }
         assert_eq!(combat_action(KeyCode::KeyW), None);
         assert_eq!(combat_action(KeyCode::F1), None);
         // `Space` is the one key with two meanings: the free-fly camera's rise and

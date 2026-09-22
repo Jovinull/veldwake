@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use tracing::{info, warn};
 
 use veldwake_character::GroundSampler;
@@ -36,7 +36,8 @@ use veldwake_procedural::TerrainGenerator;
 
 use crate::arena;
 use crate::camera::Camera;
-use crate::input::InputState;
+use crate::input::{CombatLatches, InputState};
+use crate::reward;
 use crate::traversal;
 
 /// Environment variable selecting what the encounter does.
@@ -256,9 +257,16 @@ pub struct EncounterScene {
     /// the input latches on such a frame and then not stepping would throw the
     /// press away. Holding it here until a tick consumes it is what makes "a
     /// press between two ticks is not lost" true rather than intended.
-    held: (bool, bool),
+    held: CombatLatches,
     events: FrameEvents,
     ticks: u64,
+    /// Where the fixed weapon-exchange site stands in this world, when the
+    /// session offers one.
+    ///
+    /// Resolved once, from the gate the world already composed. The client owns
+    /// it because a world position is a client fact; the rule that uses it is
+    /// the domain's and is not reachable from here.
+    exchange_site: Option<Vec2>,
     /// Dodge requests refused because the adversary was still dormant.
     ///
     /// A dodge outside combat is an explicit M7 non-goal, so the request is
@@ -310,7 +318,14 @@ impl EncounterScene {
             fixture::setup(arena::centre(), arena::ARENA_RADIUS)
         };
         let encounter = Encounter::new(&setup, ground)?;
-        let _ = generator;
+        // The exchange site is a world position and therefore the client's to
+        // resolve. A world that composed no gate simply has no exchange, and
+        // the rule refuses every press rather than inventing a place.
+        let exchange_site = if mode.is_traversal() {
+            reward::site(generator).map(|site| site.position)
+        } else {
+            None
+        };
         let mut scene = Self {
             mode,
             encounter,
@@ -318,7 +333,8 @@ impl EncounterScene {
             runner: None,
             frozen: false,
             pending: 0,
-            held: (false, false),
+            held: CombatLatches::NONE,
+            exchange_site,
             moment_found: None,
             events: FrameEvents::new(),
             ticks: 0,
@@ -430,8 +446,14 @@ impl EncounterScene {
     /// Reported rather than inspected: a latch that is still set several report
     /// intervals later is a stuck input, and the report is how that is seen.
     #[must_use]
-    pub const fn held_input(&self) -> (bool, bool) {
+    pub const fn held_input(&self) -> CombatLatches {
         self.held
+    }
+
+    /// Where this session's exchange site stands, if it has one.
+    #[must_use]
+    pub const fn exchange_site(&self) -> Option<Vec2> {
+        self.exchange_site
     }
 
     /// Ticks still owed to a named moment's offset.
@@ -505,7 +527,7 @@ impl EncounterScene {
                         }
                         intent
                     }
-                    None => Intent::player(glam::Vec2::ZERO, false, false),
+                    None => Intent::player(Vec2::ZERO, false, false),
                 };
                 let events = self.encounter.step(intent, world);
                 self.ticks += 1;
@@ -526,7 +548,7 @@ impl EncounterScene {
             // report line's `input_latched` permanently true, which is how this
             // was noticed in the first real run.
             let _ = input.take_combat_latches();
-            self.held = (false, false);
+            self.held = CombatLatches::NONE;
             return FrameOutcome::default();
         }
         let before = self.clock.dropped();
@@ -534,10 +556,14 @@ impl EncounterScene {
         // Whatever was pressed since the last tick, plus whatever is still held
         // over from frames that ran none.
         let taken = input.take_combat_latches();
-        self.held = (self.held.0 || taken.0, self.held.1 || taken.1);
+        self.held = CombatLatches {
+            attack: self.held.attack || taken.attack,
+            dodge: self.held.dodge || taken.dodge,
+            interact: self.held.interact || taken.interact,
+        };
         let mut latches = self.held;
         if due > 0 {
-            self.held = (false, false);
+            self.held = CombatLatches::NONE;
         }
 
         for _ in 0..due {
@@ -562,7 +588,7 @@ impl EncounterScene {
                     // depend on how the frames happened to be cut, which is the
                     // one thing the integer clock exists to prevent.
                     let dodge = if self.mode.is_traversal() && self.adversary_is_dormant() {
-                        if latches.1 {
+                        if latches.dodge {
                             // Consumed, not held: a press kept here would fire
                             // the instant the adversary woke, which is the stuck
                             // latch the first played M6 run produced.
@@ -570,14 +596,25 @@ impl EncounterScene {
                         }
                         false
                     } else {
-                        latches.1
+                        latches.dodge
                     };
-                    let intent = Intent::player(planar, latches.0, dodge);
-                    latches = (false, false);
+                    // **Interact is not suppressed while the adversary sleeps.**
+                    // A dodge outside combat is an M7 non-goal; visiting the
+                    // gate and taking the weapon before any fight is the whole
+                    // point of M9, and a player who has not woken anything must
+                    // be able to do it.
+                    let intent =
+                        Intent::player(planar, latches.attack, dodge).interacting(latches.interact);
+                    latches = CombatLatches::NONE;
                     // A playable encounter arms itself the moment the player does
                     // something, so the settle is not a fight nobody watched.
+                    // Interact counts: a session whose first input is the
+                    // exchange must advance, not swallow the press.
                     if !self.encounter.is_armed()
-                        && (planar.length_squared() > 0.0 || intent.attack() || intent.dodge())
+                        && (planar.length_squared() > 0.0
+                            || intent.attack()
+                            || intent.dodge()
+                            || intent.interact())
                     {
                         self.encounter.arm();
                         info!("encounter armed by the first input");
@@ -610,7 +647,7 @@ mod tests {
     use super::{EncounterMode, EncounterScene, FrameEvents, MAX_FRAME_EVENTS};
     use crate::camera::Camera;
     use crate::character::TerrainGround;
-    use crate::input::{CameraAction, CombatAction, InputState};
+    use crate::input::{CameraAction, CombatAction, CombatLatches, InputState};
     use std::time::Duration;
     use veldwake_character::ground::FlatGround;
     use veldwake_combat::MAX_TICKS_PER_FRAME;
@@ -732,7 +769,7 @@ mod tests {
         assert_eq!(scene.dodges_suppressed(), 1, "the dodge was not refused");
         assert_eq!(
             scene.held_input(),
-            (false, false),
+            CombatLatches::NONE,
             "a refused press must be consumed, or it fires the moment the enemy wakes"
         );
         assert!(
@@ -1125,7 +1162,10 @@ mod tests {
         assert_eq!(outcome.ticks, 0, "a tenth of a millisecond produced a tick");
         assert_eq!(
             scene.held_input(),
-            (true, false),
+            CombatLatches {
+                attack: true,
+                ..CombatLatches::NONE
+            },
             "the press was thrown away on a frame that ran no ticks"
         );
 
@@ -1139,7 +1179,13 @@ mod tests {
             );
             assert_eq!(outcome.ticks, 0);
         }
-        assert_eq!(scene.held_input(), (true, false));
+        assert_eq!(
+            scene.held_input(),
+            CombatLatches {
+                attack: true,
+                ..CombatLatches::NONE
+            }
+        );
 
         // Now a frame long enough to tick. The press is consumed exactly once,
         // and the swing it started is the only one.
@@ -1152,7 +1198,7 @@ mod tests {
         assert!(outcome.ticks > 0, "forty milliseconds produced no tick");
         assert_eq!(
             scene.held_input(),
-            (false, false),
+            CombatLatches::NONE,
             "the press was not consumed"
         );
         let swings: usize = scene
@@ -1307,5 +1353,124 @@ mod tests {
             MAX_FRAME_EVENTS,
             veldwake_combat::MAX_TICKS_PER_FRAME as usize * veldwake_combat::MAX_EVENTS_PER_TICK
         );
+    }
+
+    #[test]
+    fn a_traversal_session_resolves_its_exchange_site_from_the_gate() {
+        let generator = TerrainGenerator::golden();
+        let scene = traversal_scene(&generator);
+        let Some(site) = scene.exchange_site() else {
+            panic!("a traversal session must offer the exchange");
+        };
+        let Some(expected) = crate::reward::site(&generator) else {
+            panic!("the golden world must resolve a site");
+        };
+        assert!((site - expected.position).length() < 1.0e-4);
+        assert!(scene.encounter().has_reward());
+        assert_eq!(
+            scene.encounter().armament(),
+            veldwake_combat::ArmamentState::initial()
+        );
+    }
+
+    #[test]
+    fn an_interact_only_first_input_arms_the_session_and_is_not_swallowed() {
+        // A player who walks nowhere, swings at nothing and presses only the
+        // exchange verb must still advance the authoritative session. The
+        // paused state exists so a fight is not over before anybody sees it,
+        // not so a first press disappears.
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let mut scene = traversal_scene(&generator);
+        let Some(site) = scene.exchange_site() else {
+            panic!("a traversal session must offer the exchange");
+        };
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &veto, site);
+        let mut input = InputState::default();
+        let camera = Camera::default();
+
+        assert!(!scene.encounter().is_armed(), "a session starts paused");
+        input.set_combat_action(CombatAction::Interact, true);
+        input.set_combat_action(CombatAction::Interact, false);
+        let outcome = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert!(outcome.ticks > 0, "an interact-only frame ran no ticks");
+        assert!(
+            scene.encounter().is_armed(),
+            "an interact-only first input did not arm the session"
+        );
+        assert_eq!(
+            scene.held_input(),
+            CombatLatches::NONE,
+            "the press was not consumed"
+        );
+        // The player starts far from the gate, so the press is refused rather
+        // than accepted. What matters here is that it reached the rules.
+        assert_eq!(
+            scene.encounter().counters().interacts_refused[Side::Player.index()],
+            1,
+            "the interact never reached the authoritative rule"
+        );
+    }
+
+    #[test]
+    fn an_interact_is_not_suppressed_while_the_adversary_sleeps() {
+        // Unlike a dodge, which M7 gates on the adversary being awake. Visiting
+        // the gate before any fight is the whole of M9's product question, so
+        // the verb must work in a world where nothing has woken up.
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let veto = crate::traversal::TerrainWalkability::new(&generator);
+        let mut scene = traversal_scene(&generator);
+        let Some(site) = scene.exchange_site() else {
+            panic!("a traversal session must offer the exchange");
+        };
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &veto, site);
+        let mut input = InputState::default();
+        let camera = Camera::default();
+        assert!(scene.adversary_is_dormant());
+
+        for _ in 0..4 {
+            input.set_combat_action(CombatAction::Interact, true);
+            input.set_combat_action(CombatAction::Interact, false);
+            let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        }
+        assert_eq!(
+            scene.dodges_suppressed(),
+            0,
+            "an interact was counted as a suppressed dodge"
+        );
+        assert_eq!(
+            scene.encounter().counters().interacts_refused[Side::Player.index()],
+            4,
+            "an interact was swallowed while the adversary slept"
+        );
+    }
+
+    #[test]
+    fn a_held_exchange_key_latches_once_per_press() {
+        let mut input = InputState::default();
+        assert_eq!(input.combat_latches(), CombatLatches::NONE);
+        input.set_combat_action(CombatAction::Interact, true);
+        // A key repeat: `winit` sends these and they must not re-latch.
+        input.set_combat_action(CombatAction::Interact, true);
+        input.set_combat_action(CombatAction::Interact, true);
+        let taken = input.take_combat_latches();
+        assert_eq!(
+            taken,
+            CombatLatches {
+                interact: true,
+                ..CombatLatches::NONE
+            }
+        );
+        assert_eq!(
+            input.take_combat_latches(),
+            CombatLatches::NONE,
+            "the latch was not cleared by the tick that consumed it"
+        );
+        // Releasing and pressing again is a second press.
+        input.set_combat_action(CombatAction::Interact, false);
+        input.set_combat_action(CombatAction::Interact, true);
+        assert!(input.take_combat_latches().interact);
     }
 }

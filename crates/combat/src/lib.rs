@@ -95,5 +95,6 @@ pub use spec::{
 };
 pub use tick::{COMBAT_TICK_HZ, CombatClock, MAX_TICKS_PER_FRAME, Ticks};
 pub use weapon::{
-    COMBAT_STYLE_VERSION, CompiledWeapon, WeaponCompiler, WeaponDescriptor, WeaponError, WeaponSeed,
+    COMBAT_STYLE_VERSION, CompiledWeapon, WeaponCompiler, WeaponDescriptor, WeaponError,
+    WeaponIdentity, WeaponSeed,
 };

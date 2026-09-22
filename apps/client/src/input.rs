@@ -10,6 +10,10 @@
 pub enum CombatAction {
     Attack,
     Dodge,
+    /// M9's exchange verb. Latched exactly like the other two, because a frame
+    /// can run no ticks or four and a sampled flag would be lost in the first
+    /// case and repeated in the second.
+    Interact,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +33,33 @@ pub struct MovementAxes {
     pub up: f32,
 }
 
+/// The combat presses waiting for a tick.
+///
+/// A named record rather than a tuple, because M9 makes it three booleans of
+/// the same type and a positional triple is one transposition away from a swing
+/// that swaps weapons.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CombatLatches {
+    pub attack: bool,
+    pub dodge: bool,
+    pub interact: bool,
+}
+
+impl CombatLatches {
+    /// Nothing pressed.
+    pub const NONE: Self = Self {
+        attack: false,
+        dodge: false,
+        interact: false,
+    };
+
+    /// Whether any verb is waiting, for the report line.
+    #[must_use]
+    pub const fn any(&self) -> bool {
+        self.attack || self.dodge || self.interact
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct InputState {
     forward: bool,
@@ -42,9 +73,11 @@ pub struct InputState {
     /// Set on a key-down edge, cleared by the combat tick that consumes it.
     attack_latched: bool,
     dodge_latched: bool,
+    interact_latched: bool,
     /// Whether the key is currently held, so a repeat event cannot re-latch.
     attack_held: bool,
     dodge_held: bool,
+    interact_held: bool,
 }
 
 impl InputState {
@@ -85,6 +118,12 @@ impl InputState {
                 }
                 self.dodge_held = pressed;
             }
+            CombatAction::Interact => {
+                if pressed && !self.interact_held {
+                    self.interact_latched = true;
+                }
+                self.interact_held = pressed;
+            }
         }
     }
 
@@ -92,10 +131,15 @@ impl InputState {
     ///
     /// Called by the first combat tick of a frame. A frame that runs no tick does
     /// not call it, so the press waits rather than disappearing.
-    pub fn take_combat_latches(&mut self) -> (bool, bool) {
-        let latched = (self.attack_latched, self.dodge_latched);
+    pub fn take_combat_latches(&mut self) -> CombatLatches {
+        let latched = CombatLatches {
+            attack: self.attack_latched,
+            dodge: self.dodge_latched,
+            interact: self.interact_latched,
+        };
         self.attack_latched = false;
         self.dodge_latched = false;
+        self.interact_latched = false;
         latched
     }
 
@@ -103,8 +147,12 @@ impl InputState {
     ///
     /// Reported separately because a latch that is stuck has to name itself: the
     /// first real run showed one set and the two flags are what told us which.
-    pub const fn combat_latches(&self) -> (bool, bool) {
-        (self.attack_latched, self.dodge_latched)
+    pub const fn combat_latches(&self) -> CombatLatches {
+        CombatLatches {
+            attack: self.attack_latched,
+            dodge: self.dodge_latched,
+            interact: self.interact_latched,
+        }
     }
 
     pub fn set_look_active(&mut self, active: bool) {
