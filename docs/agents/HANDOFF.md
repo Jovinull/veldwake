@@ -111,7 +111,7 @@ The shapes worth holding while reading: the domain is authoritative and headless
 - the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all;
 - the family still reads close to familiar voxel-RPG architecture (KI-036), which is art direction for a later milestone and not a defect in this one.
 
-**Branch state at the end of QA.** `feat/m8-discoverable-landmarks`: **eight commits ahead of `main`** (`0c81c069bb95a8caf3b6a5252b89b023c6334ae1`) and **seven after `docs/post-m7-handoff`** (`08081b8a15be3ea70de82e03cb0b113d71c7c8d9`) — the milestone plan, the implementation, its documentation, the owner's session, then QA's defect fix, its oracles and this reconciliation. Working tree clean, local equal to origin, no pull request open.
+**Branch state at the end of QA.** `feat/m8-discoverable-landmarks`: **ten commits ahead of `main`** (`0c81c069bb95a8caf3b6a5252b89b023c6334ae1`) and **nine after `docs/post-m7-handoff`** (`08081b8a15be3ea70de82e03cb0b113d71c7c8d9`) — the milestone plan, the implementation, its documentation, the owner's session, then QA's defect fix, its oracles, two documentation corrections and this count. Working tree clean, local equal to origin, no pull request open.
 
 The head itself is deliberately not written here: a commit cannot name its own hash, and the last two times one was copied into this file it was stale within a day. Read it with `git rev-parse HEAD`, and count against a named base with `git rev-list --count main..HEAD` rather than from how many commits a session happened to make — an earlier report said "two commits" for a branch that was four ahead.
 
