@@ -1,9 +1,13 @@
 //! The **world** visibility proxy: can a silhouette be seen from a point in
 //! the world, given only the world?
 //!
-//! This is placement machinery, not evidence. It knows terrain, vegetation,
-//! landmark reservations, distance and geometry, and it deliberately knows
-//! nothing about field of view, viewport size, fog, lighting or the camera.
+//! This is placement machinery, not evidence. It knows terrain, water, the
+//! **canopy** — trees, which are the only plants tall enough to hide a
+//! silhouette from an eye three and a half voxels up; a shrub can at most
+//! cover a landmark's lowest course, so ignoring shrubs makes this slightly
+//! generous about a base and never about a crown — landmark reservations,
+//! distance and geometry. It deliberately knows nothing about field of view,
+//! viewport size, fog, lighting or the camera.
 //! The question it answers is "is there a conservative geometric band of
 //! silhouette that the world does not hide?".
 //!
