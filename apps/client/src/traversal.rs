@@ -2402,9 +2402,11 @@ mod tests {
             cut.is_empty(),
             "the route cuts a corner between columns a body may not occupy: {cut:?}"
         );
+        // Branch QA re-derived it: 68 diagonal steps, exactly one of which
+        // passes a blocked shoulder, and none with both shoulders blocked.
         assert!(
             brushed <= 1,
-            "the route brushes {brushed} obstacle corners, which is more than the one M8 measured"
+            "the route brushes {brushed} of {diagonals} obstacle corners, which is more than the one M8 measured"
         );
     }
 
@@ -3083,5 +3085,257 @@ mod tests {
             "the runtime refused {} of {samples} steps through the gate: {refused:?}",
             refused.len()
         );
+    }
+
+    #[test]
+    fn qa_the_keep_out_agrees_with_the_voxels_a_viewer_can_see() {
+        // An oracle built from the drawn chunks rather than from the plan:
+        // read every landmark voxel out of the generated world, and ask the
+        // two questions that matter in both directions. A body may never
+        // stand where its own volume would hold stone, and the veto may never
+        // refuse ground that is further from stone than a body is wide.
+        let generator = generator();
+        let veto = TerrainWalkability::new(&generator);
+        let field = generator.field();
+        let edge = i64::from(u32::try_from(CHUNK_EDGE).unwrap_or(u32::MAX));
+
+        for instance in generator.landmarks().instances() {
+            let (low_x, high_x, low_z, high_z) = instance.bounds;
+            let (low_y, high_y) = instance.vertical_bounds();
+
+            // The solid set, read out of the chunks the renderer draws.
+            let mut solid: HashSet<(i64, i64, i64)> = HashSet::new();
+            for chunk_z in low_z.div_euclid(edge)..=high_z.div_euclid(edge) {
+                for chunk_y in low_y.div_euclid(edge)..=high_y.div_euclid(edge) {
+                    for chunk_x in low_x.div_euclid(edge)..=high_x.div_euclid(edge) {
+                        let (Ok(cx), Ok(cy), Ok(cz)) = (
+                            i32::try_from(chunk_x),
+                            i32::try_from(chunk_y),
+                            i32::try_from(chunk_z),
+                        ) else {
+                            continue;
+                        };
+                        let Some(chunk) = generator.generate(ChunkCoord::new(cx, cy, cz)) else {
+                            continue;
+                        };
+                        for lz in 0..CHUNK_EDGE {
+                            for ly in 0..CHUNK_EDGE {
+                                for lx in 0..CHUNK_EDGE {
+                                    let Ok(cell) = veldwake_voxel::LocalCoord::new(lx, ly, lz)
+                                    else {
+                                        continue;
+                                    };
+                                    let id = chunk.read_local(cell);
+                                    if veldwake_procedural::LandmarkMaterial::from_voxel_id(id)
+                                        .is_none()
+                                    {
+                                        continue;
+                                    }
+                                    solid.insert((
+                                        chunk_x * edge + i64::try_from(lx).unwrap_or_default(),
+                                        chunk_y * edge + i64::try_from(ly).unwrap_or_default(),
+                                        chunk_z * edge + i64::try_from(lz).unwrap_or_default(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(
+                solid.len() > 100,
+                "landmark {} drew only {} voxels",
+                instance.index,
+                solid.len()
+            );
+
+            // Sampled at quarter columns, including negative coordinates and
+            // positions that are nowhere near a column centre.
+            let mut refused_with_stone = 0_u64;
+            let mut allowed = 0_u64;
+            let reach = 4_i64;
+            for step_z in ((low_z - reach) * 4)..=((high_z + reach) * 4) {
+                for step_x in ((low_x - reach) * 4)..=((high_x + reach) * 4) {
+                    #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+                    let (x, z) = (step_x as f64 / 4.0, step_z as f64 / 4.0);
+                    let walkable = veto.walkable(x, z);
+                    let floor = field.sample(x, z).surface_y().saturating_add(1);
+                    #[expect(clippy::cast_precision_loss, reason = "region heights")]
+                    let floor_f = floor as f64;
+
+                    // Does the body's own volume hold drawn stone here?
+                    let mut holds_stone = false;
+                    let radius = BODY_KEEP_OUT_RADIUS;
+                    let top = floor_f + BODY_KEEP_OUT_HEIGHT;
+                    for column_z in (z - radius).floor() as i64..=(z + radius).floor() as i64 {
+                        for column_x in (x - radius).floor() as i64..=(x + radius).floor() as i64 {
+                            #[expect(clippy::cast_precision_loss, reason = "region coordinates")]
+                            let (cx, cz) = (column_x as f64, column_z as f64);
+                            let dx = (cx - x).max(x - (cx + 1.0)).max(0.0);
+                            let dz = (cz - z).max(z - (cz + 1.0)).max(0.0);
+                            if dx * dx + dz * dz > radius * radius {
+                                continue;
+                            }
+                            for y in floor..=(floor + 3) {
+                                #[expect(clippy::cast_precision_loss, reason = "region heights")]
+                                let (voxel_low, voxel_high) = (y as f64, (y + 1) as f64);
+                                if voxel_low < top
+                                    && voxel_high > floor_f
+                                    && solid.contains(&(column_x, y, column_z))
+                                {
+                                    holds_stone = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if holds_stone {
+                        assert!(
+                            !walkable,
+                            "a body at ({x}, {z}) would hold drawn stone and traversal allows it"
+                        );
+                        refused_with_stone += 1;
+                    } else if walkable {
+                        allowed += 1;
+                    }
+                }
+            }
+            assert!(
+                refused_with_stone > 100,
+                "landmark {} produced only {refused_with_stone} refusals against drawn stone",
+                instance.index
+            );
+            assert!(
+                allowed > 100,
+                "landmark {} fences off everything around it: only {allowed} free samples",
+                instance.index
+            );
+        }
+    }
+
+    #[test]
+    fn qa_a_real_encounter_walks_a_body_through_the_gate_and_into_its_pillars() {
+        // The owner's condition for the class, put to the authoritative loop
+        // rather than to a column graph or to `check_move` alone: an encounter
+        // with the real ground, the real veto, the real pelvis filter and the
+        // real capsule, driven tick by tick with nothing but a walk intent.
+        // It has to come out the other side of the opening, and it has to fail
+        // to come out the other side of a pillar.
+        let generator = generator();
+        let ground = TerrainGround::new(&generator);
+        let veto = TerrainWalkability::new(&generator);
+        let world = WorldContact::terrain(&ground, &veto);
+        let plan = generator.landmarks();
+        let Some(gate) = plan
+            .instances()
+            .iter()
+            .find(|one| one.descriptor.class == veldwake_procedural::SilhouetteClass::Gate)
+        else {
+            panic!("the golden world has no gate");
+        };
+        let (low_x, high_x, low_z, high_z) = gate.bounds;
+        // The gate spans one axis; a body crosses the other.
+        let across_x = (high_x - low_x) < (high_z - low_z);
+        let (centre_x, centre_z) = ((low_x + high_x) / 2, (low_z + high_z) / 2);
+
+        // Where the opening is: the columns whose stone starts above a body.
+        let mut opening: Vec<(i64, i64)> = Vec::new();
+        for z in low_z..=high_z {
+            for x in low_x..=high_x {
+                let Some((stone_low, _)) = gate.column(x, z) else {
+                    continue;
+                };
+                if stone_low > gate.base_y {
+                    opening.push((x, z));
+                }
+            }
+        }
+        assert!(!opening.is_empty(), "the gate has no opening columns");
+        let through = opening[opening.len() / 2];
+
+        // One walk through the opening, and one into a pillar: same machinery,
+        // same distance, opposite expectations.
+        let run = |start: (i64, i64), goal: (i64, i64)| -> (f32, bool) {
+            let mut setup = fixture::golden_setup();
+            setup.arena = None;
+            setup.player_victory = PlayerVictoryPolicy::Remain;
+            // The adversary is parked far away: this test is about stone.
+            setup.starts = [
+                column_centre(start.0, start.1),
+                column_centre(start.0, start.1 + 200),
+            ];
+            let mut encounter = match Encounter::new(&setup, Some(&ground)) {
+                Ok(encounter) => encounter,
+                Err(error) => panic!("the gate encounter must build: {error}"),
+            };
+            encounter.arm();
+            let target = column_centre(goal.0, goal.1);
+            let mut crossed = false;
+            for _ in 0..2_400_u32 {
+                let position = encounter.combatant(Side::Player).position();
+                let to_goal = target - position;
+                if to_goal.length() < 0.4 {
+                    break;
+                }
+                let _ = encounter.step(
+                    Intent::player(to_goal.normalize_or_zero(), false, false),
+                    world,
+                );
+                let position = encounter.combatant(Side::Player).position();
+                assert!(position.is_finite(), "the player left the number line");
+                #[expect(clippy::cast_possible_truncation, reason = "region coordinates")]
+                let column = (position.x.floor() as i64, position.y.floor() as i64);
+                if (low_x..=high_x).contains(&column.0) && (low_z..=high_z).contains(&column.1) {
+                    crossed = true;
+                }
+                // Whatever happens, the body may never stand in stone.
+                assert!(
+                    veto.walkable(f64::from(position.x), f64::from(position.y)),
+                    "the body stood at {position}, which traversal refuses"
+                );
+            }
+            let position = encounter.combatant(Side::Player).position();
+            ((position - target).length(), crossed)
+        };
+
+        let (before, after) = if across_x {
+            ((low_x - 6, through.1), (high_x + 6, through.1))
+        } else {
+            ((through.0, low_z - 6), (through.0, high_z + 6))
+        };
+        let (remaining, crossed) = run(before, after);
+        assert!(
+            crossed,
+            "the body reached {remaining:.2} from the far side without entering the gate"
+        );
+        assert!(
+            remaining < 1.0,
+            "the body stopped {remaining:.2} short of the far side of the opening"
+        );
+
+        // And the same walk aimed at a pillar instead of the opening. A pillar
+        // column is one whose stone starts at the base course.
+        let mut pillar = None;
+        for z in low_z..=high_z {
+            for x in low_x..=high_x {
+                if gate.column(x, z).is_some_and(|(low, _)| low <= gate.base_y) {
+                    pillar = Some((x, z));
+                }
+            }
+        }
+        let Some(pillar) = pillar else {
+            panic!("the gate has no grounded pillar");
+        };
+        let (blocked_from, blocked_to) = if across_x {
+            ((pillar.0 - 6, pillar.1), (pillar.0 + 6, pillar.1))
+        } else {
+            ((pillar.0, pillar.1 - 6), (pillar.0, pillar.1 + 6))
+        };
+        let (stopped, _) = run(blocked_from, blocked_to);
+        assert!(
+            stopped > 1.0,
+            "a body walked straight through a pillar and stopped {stopped:.2} from the far side"
+        );
+        let _ = (centre_x, centre_z);
     }
 }

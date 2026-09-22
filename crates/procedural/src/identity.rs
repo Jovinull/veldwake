@@ -554,6 +554,128 @@ mod tests {
     }
 
     #[test]
+    fn the_fingerprint_reacts_to_every_landmark_control() {
+        // M8 put a second art domain inside the identity, and the cache is
+        // keyed on the identity. Branch QA added this because the test above
+        // says "every input" and did not cover the new one: if the landmark
+        // controls ever stopped being folded in, a world composed one way
+        // would happily replay chunks composed another way, and nothing would
+        // fail.
+        let golden = WorldIdentity::golden();
+        let controls = crate::landmark::LandmarkControls::golden();
+
+        let moved = |changed: crate::landmark::LandmarkControls, what: &str| {
+            assert_ne!(
+                golden.fingerprint(),
+                golden.with_landmarks(changed).fingerprint(),
+                "changing {what} must invalidate cached chunks"
+            );
+        };
+
+        moved(
+            crate::landmark::LandmarkControls {
+                overlook_hint: (controls.overlook_hint.0 + 1, controls.overlook_hint.1),
+                ..controls
+            },
+            "the overlook hint",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                overlook_clearing: controls.overlook_clearing + 1,
+                ..controls
+            },
+            "the overlook clearing",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                apron: controls.apron + 1,
+                ..controls
+            },
+            "the apron",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                site_lattice: controls.site_lattice + 1,
+                ..controls
+            },
+            "the site lattice",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                first_pair_distance: (
+                    controls.first_pair_distance.0 + 1,
+                    controls.first_pair_distance.1,
+                ),
+                ..controls
+            },
+            "the first-pair band",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                reveal_distance: (controls.reveal_distance.0, controls.reveal_distance.1 + 1),
+                ..controls
+            },
+            "the reveal band",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                min_separation_degrees: controls.min_separation_degrees + 0.5,
+                ..controls
+            },
+            "the angular separation",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                min_site_separation: controls.min_site_separation + 1,
+                ..controls
+            },
+            "the site separation",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                observer_eye: controls.observer_eye + 0.1,
+                ..controls
+            },
+            "the observer's eye height",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                max_elevation_degrees: controls.max_elevation_degrees + 0.5,
+                ..controls
+            },
+            "the elevation limit",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                min_visible_voxels: controls.min_visible_voxels + 1,
+                ..controls
+            },
+            "the least visible silhouette",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                max_hidden_voxels: controls.max_hidden_voxels + 1,
+                ..controls
+            },
+            "the most a hidden landmark may show",
+        );
+        moved(
+            crate::landmark::LandmarkControls {
+                max_sight_distance: controls.max_sight_distance + 1,
+                ..controls
+            },
+            "the sight limit",
+        );
+
+        // And the same controls are the same world.
+        assert_eq!(
+            golden.fingerprint(),
+            golden.with_landmarks(controls).fingerprint(),
+            "the golden controls are the ones the golden identity already has"
+        );
+    }
+
+    #[test]
     fn named_streams_are_independent_and_stable() {
         let seed = WorldSeed::GOLDEN;
         let labels = [
