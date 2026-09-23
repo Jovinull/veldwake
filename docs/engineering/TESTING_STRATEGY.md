@@ -79,6 +79,10 @@ The combat domain is headless by construction, so everything it claims is assert
 
 The audio is the one place where the tests stop short on purpose. Amplitude, envelope, decay, band separation, voice limits, clipping, determinism, silence on idle and whiff-against-hit are all assertions. Whether an impact *sounds* like an impact is not, and the offline listening fixture exists so a person can decide rather than so a test can pretend to.
 
+### Combat Pressure oracles
+
+`crates/combat/src/oracle.rs` adds three tests that are evidence about the encounter rather than about a rule. `owner_spam_beats_the_historical_encounter_every_time_untouched` runs the M9 owner's strategy under six seeds on open ground and asserts six wins with no hit taken; `intentional_play_beats_the_historical_encounter_every_time` is its control; `a_reactive_sidestep_escapes_the_players_swing_only_below_a_human_reaction_time` measures the adversary's body evading the player's swing by swapping the two roles, because the rules are side-neutral and the measurement must not add an adversary dodge. The first is a regression witness of a *product* finding: when the encounter is deliberately changed to answer it, it is the test expected to fail, and it is updated with the reason rather than to get green. The workspace now runs 758 tests by default with 3 ignored.
+
 ### What branch QA added
 
 Four properties that were assumed rather than checked, and each was wrong:

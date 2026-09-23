@@ -80,6 +80,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
 - [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the active milestone, implemented, owner-accepted and branch-QA'd
+- [`planning/COMBAT_PRESSURE.md`](planning/COMBAT_PRESSURE.md): unnumbered combat milestone, blocked on a fairness cliff (KI-040)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)

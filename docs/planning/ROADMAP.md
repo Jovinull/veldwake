@@ -74,6 +74,10 @@ From a discovery overlook the player sees, in the world itself, more than one de
 
 Proposed after M7 from the evidence M7 produced rather than from the list below — in particular KI-029, the owner walking an 800 x 800 region and never finding the one thing standing in it — and named by the owner. M8 is deliberately **not** persistence, **not** world editing, **not** a navigation system and **not** a physics engine.
 
+## Combat Pressure (unnumbered)
+
+Proposed after M9's owner gate failed and accepted by the owner as a capability: can the adversary force the player to respond to pressure rather than win by holding forward and attacking? **BLOCKED on `feat/combat-pressure`** — the accepted evasive response only works at a reaction of about `18` ticks against the player's `22`-tick windup, below the `24`–`30` ticks the owner set as fair. The branch carries the repository oracle for the owner's strategy and the measurement; see [`COMBAT_PRESSURE.md`](COMBAT_PRESSURE.md) and KI-040. No milestone number is assigned.
+
 ## Later capability groups
 
 Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.

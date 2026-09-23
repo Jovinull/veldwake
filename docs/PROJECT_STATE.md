@@ -123,6 +123,8 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
+**Combat Pressure, on `feat/combat-pressure`: BLOCKED.** The owner accepted the *adversary commitment response* capability (a lateral evasion through `Action::Dodge` plus a punish legal only against an observable whiff) but not its tuning. The first measurement fired hard stop 1: a sidestep that reacts to the player's swing escapes it only with a reaction of about `18` ticks, and none of the owner's response-dodge candidates escapes anything at `24`, because the player's windup is `22` ticks. Nothing past the measurement was built. The branch adds only `crates/combat/src/oracle.rs` — the owner's strategy as a regression oracle (it wins six of six against the historical encounter without taking a hit), an intentional-play control, and the evasion measurement — plus the record in [`planning/COMBAT_PRESSURE.md`](planning/COMBAT_PRESSURE.md), KI-040 and COMBAT-005. No rule, spec or lock changed. No pull request; the next step is an owner decision among the options that record lists.
+
 **M8 — Discoverable Landmarks, on `feat/m8-discoverable-landmarks`, implemented, owner-accepted and branch-QA'd.** The owner's discovery playtest passed on 2026-09-22 and closed the core product gate; independent branch QA has since reviewed the whole of `main...HEAD`, fixed one defect, added independent oracles, and re-derived every number the milestone claims. No pull request is open, nothing is merged, and the next milestone has not been chosen.
 
 The paragraphs below describe the state M8 was proposed from and remain true of `main`.

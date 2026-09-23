@@ -67,3 +67,6 @@ Every buffer in the combat path is fixed at compile time and every overflow is c
 
 **COMBAT-004 — The real-time audio callback**  
 The audio callback never allocates, never takes a lock, never logs, never blocks and never panics. Communication with it is a lock-free single-producer single-consumer ring of atomics, and everything it reports is an atomic the game thread reads on its own time. A channel that is not documented to be allocation-free does not satisfy this. Implemented in `apps/client/src/audio.rs` since M6.
+
+**COMBAT-005 — Adversary perception is visible commitment after a reaction delay**  
+An adversary response may consume only authoritative state that corresponds to visible, committed player behaviour — positions, the player's `Action`, its phase and elapsed ticks, and whether a swing has already hit — and only after an authored reaction delay compiled to ticks. It may never consume the player's input buffer or latches, a future hit or position, the mouse, the camera, or a weapon's identity as a shortcut for its reach. Accepted for Combat Pressure on 2026-09-22 as a contract, **with no implementation yet**: Combat Pressure is blocked (KI-040), so no adversary response exists to be bound by it. The oracle policies in `crates/combat/src/oracle.rs` follow the same rule for the player side.
