@@ -1,6 +1,6 @@
 # Combat Initiative / Spacing
 
-Status: **implemented on `feat/combat-initiative-spacing`, technical and self-QA gates green, awaiting the owner playtest.** No pull request, nothing merged, no milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner playtest has **not** happened, and nothing below is owner evidence.
+Status: **implemented on `feat/combat-initiative-spacing`; technical and self-QA gates green; OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23. Next: independent QA of the whole branch.** No pull request, nothing merged, no milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`. The owner's words and verdict are only in *Owner playtest* below; every other section is technical and self-QA evidence and stays that.
 
 ## Product question
 
@@ -245,7 +245,7 @@ On the audited Windows 11 host:
 | historical locks | PASS — `combat-probe signature`: golden encounter `0x6415_7522_d253_5658`, weapon geometry `0x8a6b_18ed_d4a2_b879`, weapon identity `0x084b_f386_500b_b0e4`, all `ok`; every M5/M7/M8 lock asserted by its own test, unchanged |
 | new lock | PASS — `COMBAT_INITIATIVE_SIGNATURE` `0x8238_2662_d859_8cf3`, measured identically in debug and release |
 | real-client self-QA | PASS with findings (above) |
-| owner playtest | **not run** |
+| owner playtest | **PASS** — `OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS`, 2026-09-23, run after every row above on `fea74017cfdf97aa1cbb808ba24605282e7ed71d` (see *Owner playtest*) |
 
 KI-008's `LNK1104` linker lock appeared repeatedly and cleared on a plain re-run each time; the final `nextest` run needed a second attempt for it and no attempt failed a test.
 
@@ -267,6 +267,57 @@ Afterwards:
 - was it fun?
 - what did you naturally start doing differently?
 
+### Result — 2026-09-23
+
+**OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS.**
+
+**Order.** The owner played after the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d` was pushed with every technical gate and the real-client self-QA green, on the same day. No code, tuning or pose changed between the self-QA and the owner's session, and none changed because of it.
+
+**Conditions.** `VELDWAKE_ENCOUNTER=initiative`, several fights, played naturally. **Not blind**: the owner already knew, as a concept, that the work was about initiative, a lunge and spacing. The only instruction before the first session was *"lute normalmente."*
+
+**Spontaneous evidence** — the owner's first words after the first session, before any question was asked:
+
+> "achei da hora o combate agora, foi muito divertido, gostei"
+
+*I thought the combat was cool now, it was a lot of fun, I liked it.*
+
+**Directed evidence** — a second, directed test, and the owner's answers:
+
+| question | the owner's words | in English |
+|---|---|---|
+| does running at it and just attacking work? | "não funciona só correr e atacar" | just running and attacking does not work |
+| is the telegraph perceived? | "eu percebo ele me atacando antes de atacar de fato" | I notice it attacking me before it actually attacks |
+| what changed naturally? | "eu comecei a desviar e tals para começar a vencer e avançar com o dash" | I started dodging and such to start winning, and advancing with the dash |
+| is the whiff opening perceived? | "eu percebo quando ele erra o lunge" | I notice when it misses the lunge |
+| does the spacing backstep feel natural? | "parece sim natural o backstep dele" | yes, its backstep looks natural |
+| after learning it? | "depois que entendi a mecânica dá pra prever mas é divertido sim" | once I understood the mechanic it can be predicted, but it is fun, yes |
+
+The owner also asked for the great sword. It was not there, correctly: the found weapon and M9 are not part of this gate, and nothing here says anything about them.
+
+**What the PASS supports:**
+
+- attack-spam stopped being a reliable strategy;
+- the telegraph is perceived before the lunge moves;
+- the owner changed behaviour without being told to;
+- the owner began to use the dodge and to choose when to go in;
+- the opening a whiffed lunge leaves is perceived;
+- the spacing backstep reads as natural;
+- the owner reported no sense of the adversary reading input;
+- understanding the mechanic did not remove the fun.
+
+**What the owner did not say**, and what nothing in this repository may attribute to the owner:
+
+- that combat is final;
+- that every enemy should use this;
+- that the tuning is definitive;
+- that the lunge is visually perfect;
+- that KI-041 or KI-042 is resolved;
+- that M9 passed;
+- that the found weapon was tested;
+- that the game's combat as a whole is solved.
+
+**Limits of this evidence.** One person, one host, one session pair, not blind. Two protocol questions got no explicit answer — whether there were stalled or frustrating moments, and whether the primary still appeared — and are recorded as unanswered, not as "no". The headless numbers, the fairness table, the terrain results, the real-client evidence table and the visual findings above remain technical and self-QA evidence; the owner judged none of them individually. *"Dá pra prever"* is recorded as an observation and not acted on (see *Remaining risks*).
+
 ## Remaining risks
 
 - **The player's own view.** The strongest evidence for the telegraph is from the side; from behind the player the lunge's blade is foreshortened. Whether a person reads it in time is the gate.
@@ -277,6 +328,7 @@ Afterwards:
 - **Contact overlap** of the blade and torso after a connected lunge, about `0.1` s.
 - **Non-reactivity against the player's swing is held by timing.** The spacing trigger never reads the player; what keeps the dodge out of a live swing is that the player is still locked when it starts. A spacing dodge owed while the adversary's dodge cooldown still runs is dropped, not deferred, so it can never start later over a swing it did not see; but a retune of the player's recovery, the stagger or the lunge's connected recovery could move the first free tick into a new player swing. `dodges_during_unresolved_swing` is the check, and it is `0` everywhere it was measured (COMBAT-005).
 - Headless oracles are scripts, and the real client is one integrated-GPU host (KI-021).
+- **Predictable once understood.** The owner's own words after the gate: once the mechanic was understood the fight could be predicted, and it was still fun. That is consistent with spam-read winning cleanly once the line is learned. It did not stop the gate from passing and it is not a defect; whether the fun survives longer play, a second enemy or a second attack is untested.
 
 ## What this agent could not verify
 
@@ -285,6 +337,8 @@ Afterwards:
 - whether the spacing dodge reads as a backstep or as the adversary running away;
 - whether the fight is fun;
 - a person landing a punish with the keyboard — the harness cannot aim.
+
+The owner's session on 2026-09-23 has since given a person's answer to three of these for one player who knew the concept — the lunge is perceived before it moves, the backstep reads as natural, and the fight was fun — and a partial answer to a fourth: the owner was told only *"lute normalmente"* and began dodging and choosing when to go in, but knew the concept beforehand, so this is not evidence of learning without prior knowledge. The owner reported perceiving the whiff and advancing with the dash; landing a punish was not stated explicitly. The list above is kept as it was written, because it is what the self-QA could not reach.
 
 ## Non-goals
 

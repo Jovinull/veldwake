@@ -4,7 +4,7 @@ Last updated: 2026-09-23
 
 ## Current position
 
-**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing` and is waiting for the owner's playtest.** Technical gates and real-client self-QA are green; no pull request is open, nothing is merged, and it has no milestone number — the owner approved it as an unnumbered slice. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
+**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing` and passed the owner's playtest on 2026-09-23: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS.** Technical gates and real-client self-QA are green; the next step is an independent QA of the whole branch. No pull request is open, nothing is merged, and it has no milestone number — the owner approved it as an unnumbered slice. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
 
 **The one thing to hold:** the capability exists only when a tuning authors `adversary_pressure`. The historical encounter, every fixture, script and lock is byte-identical — `GOLDEN_ENCOUNTER_SIGNATURE` is still `0x6415_7522_d253_5658` — and the new behaviour is locked separately at `COMBAT_INITIATIVE_SIGNATURE = 0x8238_2662_d859_8cf3`. The two are never compared.
 
@@ -106,29 +106,23 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — the owner playtest of combat initiative
+## Continue here — independent QA of combat initiative
 
-**The single next step is the owner's playtest, and it is the owner's to run.** Nothing else on `feat/combat-initiative-spacing` should move before it: not the tuning, not the pose, not a pull request, not a milestone number, and no Codex review. The protocol and the eleven questions to ask afterwards are in [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md#owner-playtest):
+**The owner gate is closed: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23.** The single next step is an **independent QA of the whole branch** — every commit in `main...HEAD`, code, tests and documents — and it is the owner's to start. Until it has run: no pull request, no merge, no retune, no milestone number.
 
-```text
-VELDWAKE_ENCOUNTER=initiative cargo run --release -p veldwake-client
-```
+**What the owner judged, and only that.** The owner played `VELDWAKE_ENCOUNTER=initiative` on the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`, several fights, told only *"lute normalmente"*, knowing the concept beforehand — so the session was **not blind**. Unprompted: *"achei da hora o combate agora, foi muito divertido, gostei."* Asked directly: just running in and attacking does not work; the attack is perceived before it lands; they started dodging and choosing when to go in with the dash in order to win; the missed lunge is perceived; the backstep looks natural; once understood it can be predicted, but it is fun. The exact words, with translations, are in [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md#result--2026-09-23).
 
-The session starts paused at the open clearing `(-69, 49)` with the adversary eight units away and arms on the first input; a defeat either way starts another round. The instruction is only *"lute normalmente."* The owner knows the concept, so this is not a blind test, and the report must say so.
+**What the owner did not say**, and no document may say for them: that combat is final, that every enemy should use this, that the tuning is definitive, that the lunge is visually perfect, that KI-041 or KI-042 is resolved, that M9 passed, that the found weapon was tested — the owner asked for the great sword, and it was correctly absent — or that the game's combat is solved.
 
-**What the playtest decides, and what each answer means.**
+**What independent QA should attack first**, because these are the places the branch decided something rather than derived it:
 
-- **Owner-spam stops working and the fight asks for decisions:** the product question is answered yes. Then, and only then, branch QA over `main...HEAD`, and a proposal for what — if anything — gives it a number.
-- **Owner-spam still works for a person:** the headless `2/4` is not what a person experiences. The first suspect is the telegraph from the player's camera, which is foreshortened (see the document's *Visual findings*); the second is the band, which a person may simply walk through.
-- **It only feels harder:** the capability exists and does not produce a decision. That is a design finding, not a tuning bug, and it should be written down before anything is retuned.
-- **The spacing dodge reads as the adversary running away, or as reading input:** the structural proof and the `0` counter say it is not reactive; a person's reading of it is still the product evidence.
-
-**Where to look first if the owner reports a problem**, because these are the places the branch decided something rather than derived it:
-
-- **the lunge choice's aim cone** — reusing the swing-start aim assist was a measured fix (the six-degree rule lost almost every lunge), and it is the one place the adversary turns on commit;
-- **the `66`-tick windup and the `4.35`–`4.65` band** — each moved once against one measurement, and the document's table says which;
-- **the `120`-tick whiff recovery** — set so a `400` ms reader lands inside it with thirteen ticks to spare, not for feel;
-- **straight retreat does not escape the lunge**, deliberately. If that reads as unfair, it is the lesson being unclear, not the numbers.
+- **COMBAT-005.** Look for any input to `AdversaryBrain::decide` that depends on the player's action rather than its position. Then try to make `dodges_during_unresolved_swing` non-zero under the authored tuning — a player that swings on the first tick it is free is the obvious attempt — because non-reactivity is held by timing, not by a check.
+- **The historical contract.** Re-run `combat-probe signature` and every M5/M7/M8 lock, and look for a historical path that reaches the pressure spec, `total_for(true)` with a different answer, or the new counters in the encounter trace.
+- **The band and the no-bluff claim.** Re-derive them with `measure_the_lunge_band` rather than trusting the table, including the advancing escapes the fairness test now asserts.
+- **The oracles themselves.** Are they kinder to spam or to read than a person is? Owner-spam's misjudgement range, spam-read's single rule and the read policy's lag handling decide every flat-ground number.
+- **The lunge's aim at commit.** It reuses the swing-start aim assist with the band's far edge as its range; check that it never turns a body further than the M6 primary already does.
+- **The terrain evidence and KI-041.** Confirm the clearing is open for the whole fight, and reproduce the two spire witnesses.
+- **Every number in the slice document**, from the tests, the ignored measurements, the probe or a capture. The real-client harness is not in the repository; [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) says how to rebuild it.
 
 **Branch state.** Read it with `git rev-parse HEAD` and `git rev-list --count main..HEAD`; a head copied into this file is stale within a day. The branch is pushed to `origin/feat/combat-initiative-spacing`, has no pull request, and must not be merged by an agent.
 
@@ -258,7 +252,8 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **Combat initiative has self-QA and no owner verdict.** Do not open a pull request, merge, retune, give it a milestone number, or start other work on top of it until the owner has played it. Every number in its document is headless or real-client self-QA evidence; none is owner judgement.
+- **Combat initiative has its owner gate and not its QA.** OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23. Do not open a pull request, merge, retune, give it a milestone number, or start other work on top of it until an independent pass over `main...HEAD` has run. The owner judged that pressure demands a response; every number in its document is still headless or real-client self-QA evidence, and none becomes owner judgement by association.
+- **Do not act on the owner's remarks as if they were work items.** *"Dá pra prever"* — predictable once understood, and still fun — is recorded as an observation next to the risk that spam-read wins cleanly. The request for the great sword belongs to M9, which is frozen on its own branch and is not part of this gate.
 - **Do not re-lock a historical value for this capability.** `GOLDEN_ENCOUNTER_SIGNATURE`, both weapon fingerprints and every M5/M7/M8 lock stayed byte-identical and must stay so; if one moves, the capability has leaked into the historical encounter. `COMBAT_INITIATIVE_SIGNATURE` is the lock that is allowed to move, with an OLD/NEW/WHY paragraph.
 - **The spacing dodge must stay non-reactive.** Its trigger is the adversary's own state — its stagger ended, or its own lunge connected — and `dodges_during_unresolved_swing` must stay `0` for the adversary. Adding the player's action to the brain's inputs turns this into `feat/combat-pressure`, which is blocked for a measured reason.
 - **Stone behind the adversary turns the capability off** (KI-041). The opt-in session stands in the open clearing on purpose; the M8 encounter at the spire does not use the capability, and moving it there is a navigation decision.
