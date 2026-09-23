@@ -2,8 +2,11 @@
 
 Status (M9 revisit, 2026-09-23): **ported onto combat initiative on
 `feat/m9-meaningful-reward-revisit`; technical gates and the headless pre-gate
-PASS; ready for `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`, not yet
-run.** Not merged and not complete. See [*M9 REVISIT*](#m9-revisit) at the end;
+PASS; `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`: FAIL** — the found
+weapon was perceived as better overall and the original as offering no
+practical advantage, while combat initiative held with either weapon. A retune
+is **not** authorised; the causal investigation is recorded. Not merged and not
+complete. See [*M9 REVISIT*](#m9-revisit) at the end;
 everything between here and there is the original M9's record, unchanged.
 
 Original status (2026-09-22, frozen branch): **M9 PRODUCT GATE: FAIL — mechanical sidegrade exists, but the current
@@ -698,8 +701,9 @@ generalized equipment system; **and no two-handed pose or second-hand contact.**
 
 ## M9 REVISIT
 
-Status: **M9 REVISIT PRE-GATE: PASS — ready for `OWNER PLAYTEST — WEAPON
-CHOICE MATTERS (REVISIT)`, which has not run.** Branch
+Status: **M9 REVISIT PRE-GATE: PASS; OWNER PLAYTEST — WEAPON CHOICE MATTERS
+(REVISIT): FAIL, 2026-09-23** (see *Result — 2026-09-23* below). Retune not
+authorised. Branch
 `feat/m9-meaningful-reward-revisit`, cut from `docs/post-combat-initiative-handoff`
 at `0aeac9c849a27e71d249d5d013376d50e1896e9d` (`main` at
 `af475efc18139dfc4b86b3c41e165dcfd0d7393c` plus the post-merge handoff), on
@@ -1053,7 +1057,10 @@ In `engineering/PERFORMANCE.md`: vsync-bound `60` FPS and `16.66` ms in
 the planted weapon's `106,064` bytes and one draw per pass, as on the frozen
 branch; combat tick `6.86`–`7.29` µs with either weapon against initiative.
 
-### OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT): prepared, not run
+### OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)
+
+The protocol as it was prepared before the session, unchanged; the result
+follows it.
 
 Not blind: the owner knows combat initiative, the lunge and the found weapon's
 concept. Session:
@@ -1103,6 +1110,71 @@ follow directly: the behaviour will have been shown in the laboratory, and the
 product encounter at the spire still cannot host combat initiative (KI-041,
 KI-038, KI-043). Integrating it into the product world is the owner's next
 decision.
+
+### Result — 2026-09-23
+
+**OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT): FAIL.**
+
+**Conditions.** `VELDWAKE_ENCOUNTER=weapon-choice` on the pre-gate head
+`a59961810559a102c2ac487eb2aad0e476ff8e9c`, by the repository owner, with Phase
+A (the original weapon, several fights), Phase B (the found weapon, several
+fights) and Phase C (free choice and swaps). **Not blind**: the owner already
+knew combat initiative, the lunge and the found weapon's concept.
+
+**Spontaneous evidence** — the owner's first words, verbatim and uncorrected:
+
+> "eu gostei muito do combate, com a espada larga é masi facil de bater e tals, gostie bastante acerto é mais facil, eu gostei de como ficou"
+
+*I liked the combat a lot; with the broad sword it is easier to hit and such; I
+liked it a lot, hitting is easier; I liked how it turned out.*
+
+**Directed evidence**, verbatim:
+
+| question | the owner's words | in English |
+|---|---|---|
+| Did you fight the same way with both swords, or did you change how you played? | "Não lutei" | I did not — read in the context of the question as *did not fight the same way*, and nothing more |
+| With which did you stay closer or further? | "a espada grane me fez ficar mais longe" | the big sword made me stay further away |
+| Did you attack at different moments? | "sim eu atacavam" | yes, I attacked [at different moments] |
+| When it missed the lunge, did you punish the same way? | "sim, mas acertava menos com a menor" | yes, but I hit less with the smaller one |
+| Did either put you in more danger when you missed or attacked badly? | "a menor" | the smaller one |
+| Is there a situation in which you prefer the original? | "a espada maior paercia no geral melhor, mesmo sendo mais lenta eu sentir maior facilidade nela" | the bigger sword seemed better overall; even though it is slower I felt it was easier |
+| In the free choice, which did you use more? | "eu usei a maior eu sempre acertava mais e tals com ela, gosto de armas maiores" | I used the bigger one, I always hit more with it, I like bigger weapons |
+| With the found weapon, did running in and pressing attack work again? | "não" | no |
+| How would you describe the difference without only saying one is bigger? | "eu não sei bem KKKKKKKK realmente tipo ela é maior, eu sinto que dar mais chance de acertar e tals, é lenta mas parece mais forte e tals" | I don't really know (laughs) — it really is bigger, I feel it gives more chance to hit, it is slow but it seems stronger |
+
+The owner also declared a **personal preference for bigger weapons**, so the
+free-choice phase alone is not evidence about balance.
+
+**The verdict, stated precisely.** The choice produces perceptible differences
+in distance, timing and ease of contact — the owner stayed further away with the
+found weapon and attacked at different moments. But the owner perceived the
+found weapon as **better overall**, identified **no practical advantage of the
+original**, and felt **more** danger with the original when missing or
+attacking badly — the opposite of the hypothesis that the original is the safer,
+more reactive option. The found weapon's slowness and commitment were perceived
+and were not enough to offset its easier contact, its greater perceived reach
+and its sense of greater strength. The personal preference for bigger weapons
+does not rescue the gate: no situation favouring the original was named, and the
+found weapon's cost was not perceptually sufficient.
+
+**What the owner did not say**, and nothing may say on the owner's behalf: that
+the found weapon is mathematically superior in every situation; that the two
+weapons feel the same; that the found weapon should be removed or weakened by
+any particular number; or that combat initiative has a problem.
+
+### What passed, separately
+
+**Combat initiative remains validated with the found weapon.** Asked whether
+running in and pressing attack worked again with it, the owner answered *"não"*.
+The M9 revisit FAIL is **not** a combat initiative regression: the adversary
+still demands a response whichever weapon the player holds. The problem is now
+isolated to **the weapon sidegrade's balance and affordance** — what the found
+weapon costs and whether the original offers anything the found weapon does not.
+
+**What happens next is not a retune by an agent.** No found-weapon parameter —
+windup, active, recovery, damage, reach, step-in, knockback or geometry — was
+changed, and none is authorised. The causal investigation below is analytical
+and headless; any retune is the owner's decision.
 
 ### Remaining risks
 
