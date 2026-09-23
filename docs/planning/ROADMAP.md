@@ -110,7 +110,7 @@ two-handed weapon. Its durable decision is
 and its invariants are **ARM-001** and **ARM-002**. See
 [`M9_MEANINGFUL_REWARD.md`](M9_MEANINGFUL_REWARD.md).
 
-The owner gate, **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, was run on 2026-09-22 and returned **FAIL**. The next step is a focused redesign analysis of the encounter; no milestone follows M9 yet.
+The owner gate, **OWNER PLAYTEST — WEAPON CHOICE MATTERS**, was run on 2026-09-22 and returned **FAIL**. The redesign investigation that followed is **closed**: bounded changes to the current encounter could not stop an approach-and-attack strategy from winning reliably, so **M9 needs a broader combat slice** and is not being expanded to build it. The next step is a separate combat milestone proposal, started from `main`, asking whether the adversary can force the player to respond to pressure; it has no number and no chosen capability. M9 would later consume it and rerun its own gate.
 
 ## Later capability groups
 

@@ -4,7 +4,10 @@ Status: **M9 PRODUCT GATE: FAIL — mechanical sidegrade exists, but the current
 encounter does not make weapon choice meaningfully affect play.** The
 implementation stays on `feat/m9-meaningful-reward` and is not reverted, not
 merged and has no pull request. It is **not ready for branch QA as a completed
-milestone**. Base: `docs/post-m8-handoff` at
+milestone**, and it is **not being expanded further**: the redesign
+investigation that followed the owner gate is closed with the conclusion that
+**M9 needs a broader combat slice** (see *Redesign investigation — closed*
+below). Base: `docs/post-m8-handoff` at
 `658ebfbd618b1d7387eee7890d11af53b5f8e045`, which is `main` at merge commit
 `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` plus one documentation commit.
 
@@ -494,8 +497,138 @@ Nothing. No descriptor, no attack spec, no damage, reach, windup or recovery, no
 aim assist, no enemy tuning, no second verb, no second enemy, no stamina, no
 combos and no difficulty. Making the found weapon artificially weaker to
 manufacture a contrast would answer a different question than the one that
-failed. The evidence is persisted first; the redesign is a separate decision the
-owner has not yet taken.
+failed. The evidence was persisted first; the redesign analysis that followed
+changed no production value either, and is recorded below.
+
+## Redesign investigation — closed
+
+**Conclusion: M9 needs a broader combat slice. The owner accepted this outcome
+on 2026-09-22, and M9 is not being expanded to build it.** The current
+encounter vocabulary cannot make the weapon sidegrade change a player's
+decisions. The weapons, the exchange and every technical claim above are
+unaffected, and nothing in the repository was changed by the investigation
+except this documentation.
+
+### Three kinds of evidence, kept apart
+
+- **Owner evidence** is the playtest above and nothing else: the natural strategy
+  was approach, face the adversary, attack repeatedly and win, with both weapons,
+  and the owner perceived both the reach difference and the timing difference.
+- **Repository evidence** is everything in *The sidegrade, measured* and
+  *Evidence*: tests, probes, locks and driven client runs on this branch.
+- **Scratch experimental evidence** is everything in this section below this
+  list. It was produced by throwaway harnesses in a `git archive` copy of
+  `6d3524065684f5f2f128b6d8df1cb9f55bd8e988` outside the repository, with
+  experimental hooks that default to off. **None of it is a repository test, none
+  of it is reproducible from the repository alone, and no rule it tried is
+  approved for production.** With every hook off, the copy reproduced
+  `GOLDEN_ENCOUNTER_SIGNATURE` `0x6415_7522_d253_5658`,
+  `FOUND_ENCOUNTER_SIGNATURE` `0x735a_9961_f661_8e7d` and all four weapon
+  fingerprints exactly.
+
+The scratch method: the owner's behaviour turned into a policy (walk at the
+adversary, attack whenever the body can act, never dodge), five intentional
+policies for contrast (enter-hit-exit, edge-poke, hit-and-out, react-dodge,
+edge-anticipate), a human approximation for all of them (perception lag of `18`
+to `32` ticks, a distance misjudgement of `±0.25` world units, observable state
+only), flat-ground runs as diagnosis, and the **real golden traversal as the
+gate**: `TerrainGround`, `TerrainWalkability` and the real exchange site, walked
+from the gate along three validated approaches — the overlook route, gate
+direct (arriving from the north) and gate south — six seeds each, with any run
+where the adversary stalled against landmark stone classified as KI-038 and
+discarded. No run in the gate was discarded.
+
+### What the investigation found, in order
+
+1. **Against the owner's strategy the adversary never reaches an active window.**
+   Baseline, flat ground: sixteen of sixteen fights won with zero damage taken,
+   with either weapon, and the adversary's swings all interrupted in windup or
+   cut off by its defeat. A deliberate whiff at any distance from `3.0` to `5.0`
+   units cost nothing. On the golden traversal the same strategy took zero
+   damage with both weapons.
+2. **Unconditional interruption closes the loop.** Every player hit replaces the
+   adversary's action with a stagger at any windup tick. Its telegraph is `54`
+   ticks; the player's blade connects about `24` ticks (original) or `33`
+   (found) after a swing starts. For the original weapon the loop cannot be
+   broken at all: its `75`-tick cycle is shorter than the `36` ticks of stagger
+   it inflicts plus the `54`-tick telegraph (`90`). After every hit the brain
+   repositions and then walks back into reach.
+3. **The weapons already differ under pressure; the encounter rarely applies
+   any.** Answering a telegraph with a swing wins if started within `36` ticks
+   with the original weapon and `24` with the found one. The adversary commits
+   at `2.2` units — inside both reaches (`2.8835` and `3.4477`) — so the
+   standoff band measured above against its `2.7439` reach never occurs in play.
+4. **A commit point on the adversary's telegraph (K) is necessary and
+   insufficient.** Making the late windup uninterruptible breaks part of the
+   loop. On the current windup curve tick `30` is mid-rise at close to peak
+   angular speed and visually arbitrary; the legible points (`48`–`54`) come
+   after the original weapon's re-hit and restore the loop. A rise-and-hold
+   windup that makes the commit visible was modelled in scratch only and has not
+   been shown to the owner.
+5. **Punishing a visible recovery (P) creates the style divergence and is
+   insufficient.** With K and P together the best intentional policy differs by
+   weapon — enter-hit-exit for the original, edge-anticipate for the found — but
+   the owner's strategy still wins.
+6. **Damage and health cannot fix a fight the adversary does not land.**
+   Adversary damage `48`, or `32` with `144` adversary health, made the owner's
+   strategy lose on flat ground; on the golden traversal it still won six of
+   six with the original weapon in every approach.
+7. **A shorter brain `Recover` pause does not help.** After the adversary lands,
+   the player is free at `+43` ticks and a repeated swing connects at `+67`
+   (original) or `+76` (found), while the adversary is still inside its own
+   `72`-tick attack recovery (free at `+86`) — before the brain's pause even
+   starts. `recover_seconds` at its minimum of one tick changed nothing.
+8. **A shorter adversary attack recovery does not help.** `0.43` s and `0.18` s,
+   derived from that timeline, left the owner's strategy winning six of six in
+   every approach and made the intentional policies worse.
+9. **Threat-aware approach (T) does not help.** Stopping the adversary's
+   approach when continuing would walk into a visible swing — after a
+   `24`-tick reaction, with the threat reach derived from `attack_envelope` and
+   no branch on weapon identity — fired `0.2`–`0.4` times per fight against the
+   owner's strategy.
+10. **T-Hold and T-Reposition fail the same gate.** Holding still and falling
+    back into the existing `Reposition` both left the owner's strategy a six of
+    six win in every approach, created no stalemate and did not increase KI-038.
+11. **The player is the body closing the distance.** The owner's strategy walks
+    at `3.4` world units per second while attacking; half of its hits land on an
+    adversary already retreating in `Reposition` at `1.8`.
+12. **Ordinary adversary movement cannot escape.** The brain scales every
+    movement intent against the shared `MovementSpec` speed and clamps it there,
+    so the fastest an adversary can move with the existing intents is the
+    player's own `3.4`. With reposition raised to that ceiling the owner's
+    strategy still won every flat fight. The adversary has no action that can
+    break the pressure of a pursuing attacker.
+
+**The stop condition.** Across every bounded redesign tried, the owner's
+strategy remained a reliable six-of-six victory in every ordinary golden
+approach with both weapons.
+
+### Families tested and rejected as the next step
+
+Adversary damage and player or adversary health; aim-assist range; stagger
+length; telegraph length; strike range on its own; a hold band; the brain's
+`Recover` duration; the adversary's attack recovery; commit-point semantics
+(K); recovery punishment (P); threat-aware approach (T), both as T-Hold and as
+T-Reposition. K and P each produced a real effect and neither is approved: they
+are findings, not rules.
+
+### The capability that is missing, and what is not decided
+
+The missing category is **a broader adversary capability for defending against
+and managing pressure**. One plausible first experiment for a future milestone
+is a burst evasive action — possibly the existing `Dodge` action used by the
+adversary — because ordinary movement cannot open separation from a pursuer.
+**That is a hypothesis, not a selection.** No enemy dodge has been tested, and
+nothing here chooses one.
+
+### What happens next
+
+**Not M9 implementation.** The next step is a separate combat milestone
+proposal, started from `main` rather than by growing this branch, with a product
+question independent of the reward: *can the adversary force the player to
+respond to pressure rather than win by holding forward and repeatedly
+attacking?* This branch would later consume that capability and run its own
+owner gate again. No milestone number is assigned.
 
 ## Accepted behaviour
 
@@ -554,4 +687,5 @@ generalized equipment system; **and no two-handed pose or second-hand contact.**
   object at close range, as it does through gate stone. KI-025, unchanged.
 - **KI-039: the encounter does not demand what the sidegrade trades.** The
   owner's own session is the evidence, and it is the reason the product gate
-  failed. No solution is prescribed and none is chosen.
+  failed. The bounded redesigns tried afterwards are exhausted as a next step;
+  a broader adversary capability is required and none is chosen.
