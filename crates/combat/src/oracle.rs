@@ -19,9 +19,21 @@
 //! action and kind and how long it has been running — and a policy that reads
 //! an adversary's action does so only after an authored observation lag.
 //! None of them reads an input, a future hit or a future position.
+//!
+//! **A player knows what it is holding** (M9). Every distance a policy judges
+//! by its *own* reach — when a swing is worth starting, where to hold, from
+//! where to punish — is taken from [`Encounter::aim_range_of`] for the player,
+//! so a policy holding the found weapon uses the reach it actually has. For
+//! the original weapon that range is exactly the historical
+//! [`AIM_ASSIST_RANGE`], every offset below is exactly zero, and every
+//! historical oracle fight and [`COMBAT_INITIATIVE_SIGNATURE`] are unchanged.
+//! The adversary never learns any of this (COMBAT-005).
 
 use glam::Vec2;
 
+use veldwake_character::GroundSampler;
+
+use crate::armament::WeaponVariant;
 use crate::combatant::{Action, AttackKind, Intent, Side};
 use crate::encounter::{
     AIM_ASSIST_RANGE, CombatCounters, Encounter, EncounterError, EncounterSetup,
@@ -29,6 +41,7 @@ use crate::encounter::{
 };
 use crate::event::CombatEvent;
 use crate::fixture;
+use crate::movement::TraversalLegality;
 use crate::spec::CombatSeed;
 use crate::tick::Ticks;
 
@@ -63,6 +76,11 @@ pub const ORACLE_FIGHT_TICKS: u32 = 7_200;
 /// units: just outside both bodies' reach, where the M6 intentional player
 /// held.
 pub const READ_HOLD_DISTANCE: f32 = 3.0;
+
+/// Distance from which the read policies answer an opening with the original
+/// weapon, in world units: a tenth inside its `2.90` aim range. A policy
+/// holding a longer weapon adds exactly the extra reach that weapon has.
+pub const PUNISH_REACH: f32 = 2.8;
 
 /// A scripted player.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,8 +143,13 @@ impl OraclePolicy {
         } else {
             Vec2::ZERO
         };
+        // The player's own reach, and how much further it is than the
+        // historical one. Exactly `AIM_ASSIST_RANGE` and exactly `0.0` with the
+        // original weapon, so every historical distance below is unchanged.
+        let reach = encounter.aim_range_of(Side::Player);
+        let longer = reach - AIM_ASSIST_RANGE;
         let spam = |misjudgement: f32| {
-            let swing = me.can_act() && distance <= AIM_ASSIST_RANGE + misjudgement;
+            let swing = me.can_act() && distance <= reach + misjudgement;
             Intent::player(toward, swing, false)
         };
         // Sideways off the line between the two bodies, which is the lunge's
@@ -156,7 +179,7 @@ impl OraclePolicy {
                 side,
             } => {
                 let hold = || {
-                    let walk = if distance > READ_HOLD_DISTANCE {
+                    let walk = if distance > READ_HOLD_DISTANCE + longer {
                         toward
                     } else {
                         Vec2::ZERO
@@ -164,7 +187,11 @@ impl OraclePolicy {
                     Intent::player(walk, false, false)
                 };
                 let punish = |ready: bool| {
-                    Intent::player(toward, ready && me.can_act() && distance <= 2.8, false)
+                    Intent::player(
+                        toward,
+                        ready && me.can_act() && distance <= PUNISH_REACH + longer,
+                        false,
+                    )
                 };
                 match *foe.action() {
                     Action::Attack {
@@ -199,6 +226,69 @@ impl OraclePolicy {
     }
 }
 
+/// One family of oracle policies, run under the six seeds: the unit every
+/// oracle table is reported in.
+///
+/// A family fixes the policy and its reaction lag; the seed index decides the
+/// owner-spam misjudgement ([`ORACLE_MISJUDGEMENT`]) and which side a read
+/// policy steps to, exactly as the combat initiative gate always has.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OracleFamily {
+    OwnerSpam,
+    SpamRead { lag: Ticks },
+    Read { lag: Ticks, walk_only: bool },
+}
+
+impl OracleFamily {
+    /// Every family the M9 revisit's pre-gate compares: owner-spam, then
+    /// spam-read, read-dodge and read-walk at every [`READ_LAGS`] value.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        let mut families = vec![Self::OwnerSpam];
+        families.extend(READ_LAGS.map(|lag| Self::SpamRead { lag }));
+        for walk_only in [false, true] {
+            families.extend(READ_LAGS.map(|lag| Self::Read { lag, walk_only }));
+        }
+        families
+    }
+
+    #[must_use]
+    pub fn name(self) -> String {
+        match self {
+            Self::OwnerSpam => "owner-spam".to_owned(),
+            Self::SpamRead { lag } => format!("spam-read-{lag}"),
+            Self::Read {
+                lag,
+                walk_only: false,
+            } => format!("read-dodge-{lag}"),
+            Self::Read {
+                lag,
+                walk_only: true,
+            } => format!("read-walk-{lag}"),
+        }
+    }
+
+    /// The policy this family plays under the seed at `index`.
+    #[must_use]
+    pub fn policy(self, index: usize) -> OraclePolicy {
+        let misjudgement = ORACLE_MISJUDGEMENT[index % ORACLE_MISJUDGEMENT.len()];
+        let side = if index.is_multiple_of(2) { 1.0 } else { -1.0 };
+        match self {
+            Self::OwnerSpam => OraclePolicy::OwnerSpam { misjudgement },
+            Self::SpamRead { lag } => OraclePolicy::SpamRead {
+                misjudgement,
+                lag,
+                side,
+            },
+            Self::Read { lag, walk_only } => OraclePolicy::Read {
+                lag,
+                walk_only,
+                side,
+            },
+        }
+    }
+}
+
 /// What one oracle fight did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FightReport {
@@ -223,6 +313,19 @@ pub struct FightReport {
     /// one tick, and the fastest continuous motion is a dodge or a lunge at
     /// about `0.06` a tick.
     pub max_step: f32,
+    /// Lunges the player's blade cut short: the adversary was in a pressure
+    /// lunge that had not yet connected or run out its active window, and a
+    /// player hit staggered it.
+    pub pressure_interrupted: u32,
+    /// The same for the adversary's primary.
+    pub primary_interrupted: u32,
+    /// Adversary hits that landed while the player was inside its own swing —
+    /// winding up, active or recovering — and so could not have dodged: the
+    /// price of a commitment, paid.
+    pub hits_taken_committed: u32,
+    /// Which weapon the player held when the fight ended. Only the first tick
+    /// of [`run_fight_holding`] can change it.
+    pub holding: WeaponVariant,
 }
 
 impl FightReport {
@@ -279,6 +382,116 @@ pub fn run_fight(
 ) -> Result<FightReport, EncounterError> {
     let mut encounter = Encounter::new(setup, world.ground())?;
     encounter.arm();
+    Ok(play(encounter, world, policy, max_ticks, false))
+}
+
+/// Why an armament-aware oracle fight could not be run as asked.
+#[derive(Debug)]
+pub enum OracleError {
+    Encounter(EncounterError),
+    /// The fight was asked to hold one weapon and the exchange rule left the
+    /// player holding the other: the setup offers no reward, or the world no
+    /// site at the player's start. Refused rather than measured, because a
+    /// result labelled with the wrong weapon is worse than none.
+    NotHolding {
+        asked: WeaponVariant,
+        held: WeaponVariant,
+    },
+}
+
+impl std::fmt::Display for OracleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Encounter(error) => write!(formatter, "{error}"),
+            Self::NotHolding { asked, held } => write!(
+                formatter,
+                "asked to fight holding the {} weapon, held the {}",
+                asked.name(),
+                held.name()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OracleError {}
+
+impl From<EncounterError> for OracleError {
+    fn from(error: EncounterError) -> Self {
+        Self::Encounter(error)
+    }
+}
+
+/// A veto that refuses nothing, for an exchange world on open flat ground:
+/// the same answer as no veto at all, which is what
+/// [`WorldContact::ground_only`] gives.
+struct OpenGround;
+
+impl TraversalLegality for OpenGround {
+    fn walkable(&self, _x: f64, _z: f64) -> bool {
+        true
+    }
+}
+
+static OPEN_GROUND: OpenGround = OpenGround;
+
+/// Open flat ground that offers the weapon exchange at `site`, and nothing else
+/// that [`WorldContact::ground_only`] does not.
+#[must_use]
+pub fn open_exchange_world(ground: &dyn GroundSampler, site: Vec2) -> WorldContact<'_> {
+    WorldContact::terrain_with_weapon_exchange(ground, &OPEN_GROUND, site)
+}
+
+/// [`initiative_oracle_setup`] offering the M9 exchange: the found weapon and
+/// its spec, with nothing about the adversary changed.
+#[must_use]
+pub fn armament_oracle_setup(seed: CombatSeed) -> EncounterSetup {
+    let mut setup = initiative_oracle_setup(seed);
+    setup.reward = Some(fixture::reward_setup());
+    setup
+}
+
+/// Runs one policy holding one weapon.
+///
+/// The fight is [`run_fight`]'s, with one difference on its first tick: the
+/// policy's intent also presses interact when `holding` is the found weapon,
+/// so the real exchange rule — not a test hook — puts it in the hand. `world`
+/// has to offer the exchange at the player's start, which
+/// [`open_exchange_world`] does on flat ground. Holding the original weapon
+/// presses nothing, so that fight is exactly `run_fight`'s.
+pub fn run_fight_holding(
+    setup: &EncounterSetup,
+    world: WorldContact<'_>,
+    policy: OraclePolicy,
+    max_ticks: u32,
+    holding: WeaponVariant,
+) -> Result<FightReport, OracleError> {
+    let mut encounter = Encounter::new(setup, world.ground())?;
+    encounter.arm();
+    let report = play(
+        encounter,
+        world,
+        policy,
+        max_ticks,
+        holding == WeaponVariant::Found,
+    );
+    if report.holding == holding {
+        Ok(report)
+    } else {
+        Err(OracleError::NotHolding {
+            asked: holding,
+            held: report.holding,
+        })
+    }
+}
+
+/// The fight loop both entry points share.
+fn play(
+    mut encounter: Encounter,
+    world: WorldContact<'_>,
+    policy: OraclePolicy,
+    max_ticks: u32,
+    take_found_first: bool,
+) -> FightReport {
     let mut winner = None;
     let mut quiet = 0_u32;
     let mut longest_quiet = 0_u32;
@@ -286,6 +499,9 @@ pub fn run_fight(
     let mut stuck = 0_u32;
     let mut longest_stuck_approach = 0_u32;
     let mut max_step = 0.0_f32;
+    let mut pressure_interrupted = 0_u32;
+    let mut primary_interrupted = 0_u32;
+    let mut hits_taken_committed = 0_u32;
     let mut ticks = 0_u32;
     while ticks < max_ticks && winner.is_none() {
         let spec = *encounter.attack_spec(Side::Adversary);
@@ -294,9 +510,23 @@ pub fn run_fight(
             Action::Attack { kind: AttackKind::Pressure, elapsed, hits, .. }
                 if elapsed >= spec.active_end() && !hits[Side::Player.index()]
         );
+        // A swing of the adversary's that a player hit can still cut short:
+        // not yet connected and not past its active window.
+        let live = match *encounter.combatant(Side::Adversary).action() {
+            Action::Attack {
+                kind,
+                elapsed,
+                hits,
+                ..
+            } if elapsed < spec.active_end() && !hits[Side::Player.index()] => Some(kind),
+            _ => None,
+        };
+        let committed = encounter.combatant(Side::Player).action().is_attacking();
         let before = encounter.combatant(Side::Adversary).position();
         let player_before = encounter.combatant(Side::Player).position();
-        let intent = policy.intent(&encounter);
+        let intent = policy
+            .intent(&encounter)
+            .interacting(take_found_first && ticks == 0);
         let events = encounter.step(intent, world);
         ticks += 1;
         let mut hit = false;
@@ -307,7 +537,17 @@ pub fn run_fight(
                     if attacker == Side::Player && opening {
                         punishes += 1;
                     }
+                    if attacker == Side::Adversary && committed {
+                        hits_taken_committed += 1;
+                    }
                 }
+                CombatEvent::Staggered {
+                    side: Side::Adversary,
+                } => match live {
+                    Some(AttackKind::Pressure) => pressure_interrupted += 1,
+                    Some(AttackKind::Primary) => primary_interrupted += 1,
+                    None => {}
+                },
                 CombatEvent::Defeated { side } => winner = Some(side.other()),
                 _ => {}
             }
@@ -325,7 +565,7 @@ pub fn run_fight(
         stuck = if frozen { stuck + 1 } else { 0 };
         longest_stuck_approach = longest_stuck_approach.max(stuck);
     }
-    Ok(FightReport {
+    FightReport {
         winner,
         ticks,
         counters: *encounter.counters(),
@@ -335,7 +575,11 @@ pub fn run_fight(
         punishes,
         longest_stuck_approach,
         max_step,
-    })
+        pressure_interrupted,
+        primary_interrupted,
+        hits_taken_committed,
+        holding: encounter.armament().player(),
+    }
 }
 
 /// How the probed player answers a lunge.
@@ -350,8 +594,8 @@ pub enum LungeResponse {
     /// Dodges sideways off the line at `reaction` ticks into the windup.
     Dodge { reaction: Ticks, side: i8 },
     /// The owner's strategy: runs straight at the adversary and swings the
-    /// moment the aim-assist distance plus `misjudgement` hundredths of a unit
-    /// says it is in range.
+    /// moment the aim-assist distance of the weapon it holds plus
+    /// `misjudgement` hundredths of a unit says it is in range.
     Charge { misjudgement_centi: i32 },
     /// Swings at once, where it stands, on the first tick of the windup.
     SwingAtOnce,
@@ -374,6 +618,8 @@ pub struct LungeProbe {
     pub lunge_hit: bool,
     /// The player's blade connected with the adversary.
     pub player_hit: bool,
+    /// Which weapon the player held.
+    pub holding: WeaponVariant,
 }
 
 /// Commits one pressure lunge from `separation` against a player answering
@@ -398,8 +644,42 @@ pub fn probe_lunge_with(
     separation: f32,
     response: LungeResponse,
 ) -> Result<Option<LungeProbe>, EncounterError> {
+    probe_lunge_inner(pressure, separation, response, None)
+}
+
+/// [`probe_lunge`] with the player holding one weapon, put in its hand by the
+/// real exchange rule on the probe's first tick.
+///
+/// Holding the original weapon presses nothing and is the same probe as
+/// [`probe_lunge`] with the exchange merely on offer; the found weapon differs
+/// from it by one interact on the first tick, and by nothing else — the same
+/// lunge, the same band, the same adversary.
+pub fn probe_lunge_holding(
+    separation: f32,
+    response: LungeResponse,
+    holding: WeaponVariant,
+) -> Result<Option<LungeProbe>, OracleError> {
+    let probe = probe_lunge_inner(fixture::pressure(), separation, response, Some(holding))?;
+    match probe {
+        Some(probe) if probe.holding != holding => Err(OracleError::NotHolding {
+            asked: holding,
+            held: probe.holding,
+        }),
+        other => Ok(other),
+    }
+}
+
+fn probe_lunge_inner(
+    pressure: crate::spec::AuthoredPressure,
+    separation: f32,
+    response: LungeResponse,
+    holding: Option<WeaponVariant>,
+) -> Result<Option<LungeProbe>, EncounterError> {
     let ground = fixture::golden_ground();
     let mut setup = initiative_oracle_setup(CombatSeed::GOLDEN);
+    if holding.is_some() {
+        setup.reward = Some(fixture::reward_setup());
+    }
     setup.tuning.adversary_pressure = Some(pressure);
     if let Some(pressure) = setup.tuning.adversary_pressure.as_mut() {
         // The band may sit anywhere for a probe, but it has to stay outside
@@ -413,12 +693,16 @@ pub fn probe_lunge_with(
     ];
     let mut encounter = Encounter::new(&setup, Some(&ground))?;
     encounter.arm();
-    let world = WorldContact::ground_only(&ground);
+    let world = match holding {
+        Some(_) => open_exchange_world(&ground, setup.starts[Side::Player.index()]),
+        None => WorldContact::ground_only(&ground),
+    };
+    let take_found = holding == Some(WeaponVariant::Found);
     let mut committed_at = None;
     let mut lunge_hit = false;
     let mut player_hit = false;
     let mut pressed = false;
-    for _ in 0..400 {
+    for tick in 0..400 {
         let adversary = encounter.combatant(Side::Adversary);
         let windup = match *adversary.action() {
             Action::Attack {
@@ -453,7 +737,8 @@ pub fn probe_lunge_with(
                 Intent::player(if go { across } else { Vec2::ZERO }, false, go)
             }
             LungeResponse::Charge { misjudgement_centi } => {
-                let range = AIM_ASSIST_RANGE + misjudgement_centi as f32 / 100.0;
+                let range =
+                    encounter.aim_range_of(Side::Player) + misjudgement_centi as f32 / 100.0;
                 let swing = player.can_act() && line.length() <= range;
                 Intent::player(toward, swing, false)
             }
@@ -477,6 +762,7 @@ pub fn probe_lunge_with(
                 Intent::player(Vec2::ZERO, go, false)
             }
         };
+        let intent = intent.interacting(take_found && tick == 0);
         let distance = encounter.separation_distance();
         let events = encounter.step(intent, world);
         if committed_at.is_none()
@@ -498,6 +784,7 @@ pub fn probe_lunge_with(
         committed_at,
         lunge_hit,
         player_hit,
+        holding: encounter.armament().player(),
     }))
 }
 
@@ -581,6 +868,8 @@ pub struct OpeningProbe {
     pub punished_after: Option<Ticks>,
     /// Ticks the recovery ran, if nothing cut it short.
     pub recovered_after: Option<Ticks>,
+    /// Which weapon the player held.
+    pub holding: WeaponVariant,
 }
 
 /// Steps around one lunge from the middle of the band, waits until the missed
@@ -589,8 +878,46 @@ pub struct OpeningProbe {
 /// still take it. A `lag` of [`Ticks::MAX`] never answers, which measures the
 /// recovery itself.
 pub fn probe_opening(lag: Ticks) -> Result<Option<OpeningProbe>, EncounterError> {
+    probe_opening_inner(lag, None, None)
+}
+
+/// [`probe_opening`] with the player holding one weapon, and answering from
+/// that weapon's own reach: [`PUNISH_REACH`] plus however much further it
+/// reaches than the original.
+pub fn probe_opening_holding(
+    lag: Ticks,
+    holding: WeaponVariant,
+) -> Result<Option<OpeningProbe>, OracleError> {
+    probe_opening_from(lag, holding, None)
+}
+
+/// [`probe_opening_holding`] answering from a chosen distance rather than the
+/// weapon's own [`PUNISH_REACH`]: how far out each weapon can actually take
+/// the opening a missed lunge leaves, against the body in its spent pose.
+pub fn probe_opening_from(
+    lag: Ticks,
+    holding: WeaponVariant,
+    reach: Option<f32>,
+) -> Result<Option<OpeningProbe>, OracleError> {
+    match probe_opening_inner(lag, Some(holding), reach)? {
+        Some(probe) if probe.holding != holding => Err(OracleError::NotHolding {
+            asked: holding,
+            held: probe.holding,
+        }),
+        other => Ok(other),
+    }
+}
+
+fn probe_opening_inner(
+    lag: Ticks,
+    holding: Option<WeaponVariant>,
+    reach: Option<f32>,
+) -> Result<Option<OpeningProbe>, EncounterError> {
     let ground = fixture::golden_ground();
     let mut setup = initiative_oracle_setup(CombatSeed::GOLDEN);
+    if holding.is_some() {
+        setup.reward = Some(fixture::reward_setup());
+    }
     let pressure = fixture::pressure();
     let separation = (pressure.select_min + pressure.select_max) * 0.5;
     setup.starts = [
@@ -599,7 +926,12 @@ pub fn probe_opening(lag: Ticks) -> Result<Option<OpeningProbe>, EncounterError>
     ];
     let mut encounter = Encounter::new(&setup, Some(&ground))?;
     encounter.arm();
-    let world = WorldContact::ground_only(&ground);
+    let world = match holding {
+        Some(_) => open_exchange_world(&ground, setup.starts[Side::Player.index()]),
+        None => WorldContact::ground_only(&ground),
+    };
+    let take_found = holding == Some(WeaponVariant::Found);
+    let mut first = true;
     let mut dodged = false;
     let mut seen_lunge = false;
     let mut recovery_started = None;
@@ -626,12 +958,16 @@ pub fn probe_opening(lag: Ticks) -> Result<Option<OpeningProbe>, EncounterError>
                 } else {
                     let started = *recovery_started.get_or_insert(tick);
                     let ready = tick >= started.saturating_add(u64::from(lag));
-                    let swing = ready && player.can_act() && line.length() <= 2.8;
+                    let longer = encounter.aim_range_of(Side::Player) - AIM_ASSIST_RANGE;
+                    let from = reach.unwrap_or(PUNISH_REACH + longer);
+                    let swing = ready && player.can_act() && line.length() <= from;
                     Intent::player(if ready { toward } else { Vec2::ZERO }, swing, false)
                 }
             }
             _ => Intent::idle(),
         };
+        let intent = intent.interacting(take_found && first);
+        first = false;
         let events = encounter.step(intent, world);
         let still_recovering = matches!(
             *encounter.combatant(Side::Adversary).action(),
@@ -657,6 +993,7 @@ pub fn probe_opening(lag: Ticks) -> Result<Option<OpeningProbe>, EncounterError>
                 return Ok(Some(OpeningProbe {
                     punished_after: None,
                     recovered_after: Some(into),
+                    holding: encounter.armament().player(),
                 }));
             }
         }
@@ -664,9 +1001,11 @@ pub fn probe_opening(lag: Ticks) -> Result<Option<OpeningProbe>, EncounterError>
             break;
         }
     }
+    let holding = encounter.armament().player();
     Ok(recovery.map(|()| OpeningProbe {
         punished_after,
         recovered_after: None,
+        holding,
     }))
 }
 
@@ -750,10 +1089,12 @@ pub fn probe_connect() -> Result<Option<ConnectProbe>, EncounterError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FightReport, LungeResponse, ORACLE_MISJUDGEMENT, ORACLE_SEEDS, OraclePolicy, READ_LAGS,
-        initiative_oracle_setup, oracle_setup, probe_connect, probe_lunge, probe_opening,
-        run_fight,
+        FightReport, LungeResponse, ORACLE_MISJUDGEMENT, ORACLE_SEEDS, OracleFamily, OraclePolicy,
+        READ_LAGS, armament_oracle_setup, initiative_oracle_setup, open_exchange_world,
+        oracle_setup, probe_connect, probe_lunge, probe_lunge_holding, probe_opening,
+        probe_opening_from, probe_opening_holding, run_fight, run_fight_holding,
     };
+    use crate::armament::WeaponVariant;
     use crate::combatant::Side;
     use crate::encounter::{EncounterSetup, WorldContact};
     use crate::fixture;
@@ -1258,6 +1599,288 @@ mod tests {
             "the extended hilt is off the line: {:.2}",
             blade.base.x
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // M9 revisit — the found weapon against combat initiative
+    // -----------------------------------------------------------------------
+
+    /// One policy under the six oracle seeds, holding one weapon, on flat
+    /// ground with the exchange offered at the player's start.
+    fn fights_holding(
+        holding: WeaponVariant,
+        policy: impl Fn(usize) -> OraclePolicy,
+    ) -> Vec<FightReport> {
+        let ground = fixture::golden_ground();
+        ORACLE_SEEDS
+            .iter()
+            .enumerate()
+            .map(|(index, seed)| {
+                let setup = armament_oracle_setup(*seed);
+                let site = setup.starts[Side::Player.index()];
+                match run_fight_holding(
+                    &setup,
+                    open_exchange_world(&ground, site),
+                    policy(index),
+                    super::ORACLE_FIGHT_TICKS,
+                    holding,
+                ) {
+                    Ok(report) => report,
+                    Err(error) => panic!("{error}"),
+                }
+            })
+            .collect()
+    }
+
+    fn armament_line(name: &str, holding: WeaponVariant, reports: &[FightReport]) -> String {
+        let n = reports.len().max(1) as u32;
+        let player_hits = total(reports, |r| r.counters.hits[0]);
+        let primary_hits = total(reports, |r| {
+            r.counters.hits[1].saturating_sub(r.counters.pressure_hits)
+        });
+        format!(
+            "{name:14} {:8} W/L/D {}/{}/{} hp {:3} (mean {:2}) ticks {:5} (mean {:4}) | swings {:3} hits {:2} whiffs {:3} | lunge {:2} hit {:2} whiff {:2} cut {:2} | primary {:2} hit {:2} cut {:2} | punish {:2} | spacing {:2} unresolved {} | hit-while-committed {:2} | quiet {:4} step {:.3}",
+            holding.name(),
+            wins(reports),
+            losses(reports),
+            reports.iter().filter(|r| r.winner.is_none()).count(),
+            total(reports, |r| u32::from(r.player_health)),
+            total(reports, |r| u32::from(r.player_health)) / n,
+            total(reports, |r| r.ticks),
+            total(reports, |r| r.ticks) / n,
+            total(reports, |r| r.counters.swings[0]),
+            player_hits,
+            total(reports, |r| r.counters.whiffs[0]),
+            total(reports, |r| r.counters.pressure_swings),
+            total(reports, |r| r.counters.pressure_hits),
+            total(reports, |r| r.counters.pressure_whiffs),
+            total(reports, |r| r.pressure_interrupted),
+            total(reports, FightReport::adversary_primary_swings),
+            primary_hits,
+            total(reports, |r| r.primary_interrupted),
+            total(reports, |r| r.punishes),
+            total(reports, |r| r.counters.dodges[1]),
+            total(reports, |r| r.counters.dodges_during_unresolved_swing[1]),
+            total(reports, |r| r.hits_taken_committed),
+            reports.iter().map(|r| r.longest_quiet).max().unwrap_or(0),
+            reports.iter().map(|r| r.max_step).fold(0.0_f32, f32::max),
+        )
+    }
+
+    /// The control that makes the armament comparison mean something: holding
+    /// the original weapon in an encounter that offers the exchange is the
+    /// historical combat-initiative fight, report for report, under every
+    /// policy and seed. Only the first tick's interact can differ between the
+    /// two weapons, and for the original weapon it is not pressed.
+    #[test]
+    fn holding_the_original_weapon_is_the_historical_initiative_fight() {
+        for family in OracleFamily::all() {
+            let historical = fights(initiative_oracle_setup, |index| family.policy(index));
+            let original = fights_holding(WeaponVariant::Original, |index| family.policy(index));
+            assert_eq!(historical, original, "{} moved", family.name());
+        }
+    }
+
+    /// The same control for the band probes: the original weapon, with the
+    /// exchange on offer, meets every lunge exactly as the historical probe.
+    #[test]
+    fn holding_the_original_weapon_is_the_historical_lunge_probe() {
+        let pressure = fixture::pressure();
+        let mut distance = pressure.select_min;
+        while distance <= pressure.select_max + 1.0e-4 {
+            for misjudgement_centi in (-25..=25).step_by(5) {
+                let response = LungeResponse::Charge { misjudgement_centi };
+                let historical = probe_lunge(distance, response).unwrap_or_else(|e| panic!("{e}"));
+                let original = probe_lunge_holding(distance, response, WeaponVariant::Original)
+                    .unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(historical, original, "{distance} {misjudgement_centi}");
+            }
+            distance += 0.05;
+        }
+    }
+
+    /// COMBAT-005 with the found weapon in the hand: under every policy the
+    /// pre-gate runs, no spacing dodge ever starts over a live player swing,
+    /// and the found weapon is really what was held.
+    #[test]
+    fn with_the_found_weapon_no_spacing_dodge_starts_over_a_live_swing() {
+        let mut spacing = 0;
+        for family in OracleFamily::all() {
+            let name = family.name();
+            for report in fights_holding(WeaponVariant::Found, |index| family.policy(index)) {
+                assert_eq!(report.holding, WeaponVariant::Found, "{name}");
+                assert_eq!(
+                    report.counters.dodges_during_unresolved_swing[1], 0,
+                    "{name}: a spacing dodge started over a live found swing"
+                );
+                assert!(report.winner.is_some(), "{name}: a stalemate {report:?}");
+                assert!(
+                    report.max_step < 0.60,
+                    "{name}: a body jumped {}",
+                    report.max_step
+                );
+                spacing += report.counters.dodges[1];
+            }
+        }
+        assert!(spacing > 0, "the audit audited nothing");
+    }
+
+    /// The pre-gate's fight table: both weapons under every policy family and
+    /// reaction lag, same seeds, same ground, same adversary.
+    /// `docs/planning/M9_MEANINGFUL_REWARD.md` reads its output.
+    #[test]
+    #[ignore = "measurement: prints the found-against-initiative fight table"]
+    fn measure_the_found_weapon_against_initiative() {
+        for family in OracleFamily::all() {
+            let name = family.name();
+            for holding in [WeaponVariant::Original, WeaponVariant::Found] {
+                let reports = fights_holding(holding, |index| family.policy(index));
+                println!("{}", armament_line(&name, holding, &reports));
+                if name == "owner-spam" {
+                    for (index, report) in reports.iter().enumerate() {
+                        println!(
+                            "    seed {index} misjudge {:+.2}: winner {:?} hp {} adversary hp {} ticks {} lunges {} hit {} cut {} primary {} committed-hits {}",
+                            ORACLE_MISJUDGEMENT[index],
+                            report.winner,
+                            report.player_health,
+                            report.adversary_health,
+                            report.ticks,
+                            report.counters.pressure_swings,
+                            report.counters.pressure_hits,
+                            report.pressure_interrupted,
+                            report.adversary_primary_swings(),
+                            report.hits_taken_committed,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The pre-gate's band table: who wins the race when the player charges a
+    /// lunge committed from each distance, under every misjudgement the
+    /// oracles use, holding each weapon; and what the stationary, swing-at-once,
+    /// step-off and punish answers meet with each.
+    #[test]
+    #[ignore = "measurement: prints the found-against-the-lunge-band table"]
+    fn measure_the_found_weapon_against_the_lunge_band() {
+        let first = |distance: f32, response, holding| match probe_lunge_holding(
+            distance, response, holding,
+        ) {
+            Ok(Some(p)) if p.player_hit && p.lunge_hit => 'B',
+            Ok(Some(p)) if p.player_hit => 'P',
+            Ok(Some(p)) if p.lunge_hit => 'L',
+            Ok(Some(_)) => '-',
+            Ok(None) => '?',
+            Err(error) => panic!("{error}"),
+        };
+        println!(
+            "charge: P = player blade first (lunge cut), L = lunge first, B = both, - = neither"
+        );
+        println!("misjudgement -0.25 .. +0.25 by 0.05");
+        let mut distance = 4.10_f32;
+        while distance <= 4.801 {
+            let row = |holding| -> String {
+                (-25..=25)
+                    .step_by(5)
+                    .map(|misjudgement_centi| {
+                        first(
+                            distance,
+                            LungeResponse::Charge { misjudgement_centi },
+                            holding,
+                        )
+                    })
+                    .collect()
+            };
+            let one = |response| {
+                [WeaponVariant::Original, WeaponVariant::Found]
+                    .map(|holding| first(distance, response, holding))
+                    .iter()
+                    .collect::<String>()
+            };
+            let escapes = |make: fn(u32, i8) -> LungeResponse, holding| -> String {
+                READ_LAGS
+                    .iter()
+                    .map(|lag| {
+                        let both = [1_i8, -1].map(|side| {
+                            !matches!(
+                                probe_lunge_holding(distance, make(*lag, side), holding),
+                                Ok(Some(p)) if p.lunge_hit
+                            )
+                        });
+                        match both {
+                            [true, true] => '2',
+                            [true, false] | [false, true] => '1',
+                            [false, false] => '0',
+                        }
+                    })
+                    .collect()
+            };
+            println!(
+                "{distance:.2} charge original {} found {} | still O/F {} | swing-at-once O/F {} | dodge R18/24/32/48 O {} F {} | walk O {} F {} | advance-then-dodge R24 O/F {}",
+                row(WeaponVariant::Original),
+                row(WeaponVariant::Found),
+                one(LungeResponse::Nothing),
+                one(LungeResponse::SwingAtOnce),
+                escapes(
+                    |reaction, side| LungeResponse::Dodge { reaction, side },
+                    WeaponVariant::Original
+                ),
+                escapes(
+                    |reaction, side| LungeResponse::Dodge { reaction, side },
+                    WeaponVariant::Found
+                ),
+                escapes(
+                    |reaction, side| LungeResponse::Walk { reaction, side },
+                    WeaponVariant::Original
+                ),
+                escapes(
+                    |reaction, side| LungeResponse::Walk { reaction, side },
+                    WeaponVariant::Found
+                ),
+                one(LungeResponse::AdvanceThenLeave {
+                    reaction: 24,
+                    side: 1,
+                    dodge: true
+                }),
+            );
+            distance += 0.05;
+        }
+        for holding in [WeaponVariant::Original, WeaponVariant::Found] {
+            let punished: Vec<String> = READ_LAGS
+                .iter()
+                .map(|lag| match probe_opening_holding(*lag, holding) {
+                    Ok(Some(probe)) => format!(
+                        "lag {lag}: {}",
+                        probe
+                            .punished_after
+                            .map_or_else(|| "missed".to_owned(), |into| format!("{into}/120"))
+                    ),
+                    other => format!("lag {lag}: {other:?}"),
+                })
+                .collect();
+            println!("opening, {}: {}", holding.name(), punished.join(", "));
+        }
+        println!("opening by answer distance: tick of the recovery the answer landed on, of 120");
+        for holding in [WeaponVariant::Original, WeaponVariant::Found] {
+            for lag in READ_LAGS {
+                let row: Vec<String> = [2.4_f32, 2.6, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3, 3.4]
+                    .iter()
+                    .map(
+                        |reach| match probe_opening_from(lag, holding, Some(*reach)) {
+                            Ok(Some(probe)) => format!(
+                                "{reach:.1}:{}",
+                                probe
+                                    .punished_after
+                                    .map_or_else(|| "--".to_owned(), |into| into.to_string())
+                            ),
+                            other => format!("{reach:.1}:{other:?}"),
+                        },
+                    )
+                    .collect();
+                println!("{:8} lag {lag:2}: {}", holding.name(), row.join(" "));
+            }
+        }
     }
 
     /// The table the band was derived from: every distance from `3.40` to
