@@ -1176,6 +1176,217 @@ windup, active, recovery, damage, reach, step-in, knockback or geometry — was
 changed, and none is authorised. The causal investigation below is analytical
 and headless; any retune is the owner's decision.
 
+### Causal investigation — why the found weapon's cost is not felt
+
+Analytical and headless only, 2026-09-23, after the FAIL. **No production
+value was changed**: the experiments ran in a throwaway `git archive` copy of
+`7c718f4` outside the repository, as one integration test over the public API
+(`armament_oracle_setup`, `open_exchange_world`, `OracleFamily`, `Encounter`),
+with the found weapon's descriptor and spec substituted in the reward slot for
+each variant. The copy's own control reproduced this branch exactly: the
+original weapon placed in the reward slot gave the historical original results
+fight for fight. Nothing here is owner evidence.
+
+**The measurement the pre-gate lacked.** Every repository oracle judges its
+swing distance by its own weapon's exact reach and aims along the bearing. A
+person does neither: a person swings when the body *looks* close. So the
+investigation added a scratch policy that swings at a fixed perceived distance
+`d`, whatever it holds — with and without stepping off the lunge's line at `32`
+ticks — and a hit map: one swing at a dormant target from distance `d` with a
+facing error `θ`, through the real aim assist.
+
+#### Hypothesis A — reach dominates: **confirmed, and it is the root cause**
+
+**Hit map** (a dormant target; the furthest distance at which one swing still
+connects, by facing error; nothing connects beyond `35°` for either weapon,
+which is the aim-assist cone):
+
+| weapon | `0°` | `10°`–`30°` | cells that connect, of `580` (`1.2`–`4.0` by `0.1`, `±0°`–`±90°`) |
+|---|---|---|---|
+| original | `3.0` | `2.9` | `162` |
+| found | `3.6` | `3.4` | `201` |
+
+Inside the cone the found weapon connects over about `45%` more ground
+(`1.2`–`3.4` against `1.2`–`2.9`). **Against a person who swings at a fixed
+distance**, six seeds each:
+
+| swings at | original, mashing | found, mashing | original, stepping off the lunge | found, stepping off the lunge |
+|---|---|---|---|---|
+| `2.6` | 6/0, `468` hp, hit `67%` | 6/0, `468` hp, hit `60%` | 6/0, `576`, `3,930` ticks | 6/0, `576`, `3,570` ticks |
+| `3.0` | **0/6**, hit `13%` | **6/0**, `360` hp, hit `43%` | 6/0, `576`, `5,622` ticks, hit `44%` | 6/0, `576`, `4,404` ticks, hit `60%` |
+| `3.3` | **0/6**, hit `8%` | **6/0**, `360` hp, hit `43%` | 6/0, `576`, `6,540` ticks, hit `36%` | 6/0, `576`, `4,374` ticks, hit `60%` |
+| `3.6` | 0/6 | 0/6, hit `0%` | 6/0, `576`, `6,540` ticks | 6/0, `576`, `4,374` ticks |
+
+The distance a person naturally swings from — just outside the adversary's own
+`2.74` reach — is where the original misses and the found weapon connects. A
+person holding the original has to go further in, into the adversary's
+primary and the lunge's timing, to land anything. That is *"acertava menos com
+a menor"* and *"a menor"* felt more dangerous, measured. Against the lunge's
+**spent** pose the found weapon's reach is `3.20`, not `3.45` (the pre-gate's
+opening table), and it still out-reaches the original's `3.00`.
+
+#### Hypothesis B — the recovery cost is not paid: **confirmed**
+
+| policy | weapon | whiffs | whiffs the adversary punished | hits taken while committed | lunges committed while the player's own swing locked it past the escape deadline (hit) |
+|---|---|---|---|---|---|
+| read-dodge 24 | original / found | `0` / `0` | `0` / `0` | `0` / `0` | `0` / `0` |
+| steps off at 32, swings at `3.0` | original / found | `30` / `12` | `0` / `0` | `0` / `0` | `0` / `0` |
+| steps off at 32, swings at `3.3` | original / found | `42` / `12` | `0` / `0` | `0` / `0` | `0` / `0` |
+| owner-spam | original / found | `30` / `22` | `0` / `1` | `26` / `24` | `0` / `15` (`15`) |
+| spam-read 48 | original / found | `25` / `26` | `0` / `3` | `0` / `12` | `0` / `8` (`5`) |
+
+A player who steps off the lunge's line **never pays for a whiff with either
+weapon**, however many it throws: the adversary's answers to a whiff are the
+lunge, which commits from the band and is escaped by leaving its line, and the
+primary, which needs `62` ticks of approach from `3.45` plus a `54`-tick windup
+— longer than even the found weapon's `103`-tick lock. The `103` ticks are
+paid only by a player who swings into a lunge's commit (mashing, or reading
+late), and only there. The original is **never** caught locked past a lunge's
+escape deadline in any measured fight; the found weapon is, `15` times out of
+`15` under owner-spam. That is a real original affordance, and it lives only in
+play the owner had already stopped doing.
+
+#### Hypothesis C — damage compounds the reach: **partly**
+
+The found weapon with damage `24` (four hits, like the original) finishes a
+clean read in `5,574` ticks against the original's `5,124` and its own `4,056`
+at `32`: the third-fewer openings is the **whole** of the found weapon's speed
+for a clean reader. It changes nothing about who connects from where. Two
+decomposition runs isolate the parts: the found **blade** with the original's
+timing and damage makes owner-spam lose `0/6` (it swings from too far and is
+caught), while the original blade with the found **spec** (timing, damage `32`,
+stagger, knockback) makes owner-spam win `6/0`. The found weapon's owner-spam
+`3/3` comes from its spec — three hits, and a heavier stagger and knockback
+that interrupt the adversary's primary during its approach — not from its
+reach.
+
+#### Hypothesis D — the original has no unique affordance: **for a careful player, confirmed**
+
+At every fixed swing distance a careful person uses, the original is equal
+(`2.6`) or worse (`3.0` and beyond) — never better. Searched and not found:
+
+- **attack → dodge windows:** real — the original's lock is `28` ticks shorter
+  and it is never caught past a lunge's escape — but it matters only to a
+  player who swings into the lunge's commit;
+- **double punish:** neither weapon lands two hits in one opening; the first
+  staggers, the adversary spaces;
+- **primary interruption:** the found weapon cuts the adversary's primary more
+  often (spam-read `12` of `18` against `4` of `7`), because it hits the
+  adversary while it is still approaching;
+- **punishing later in an opening:** both fit comfortably (next section);
+- **failed-read recovery:** real only for a late reader who also swings
+  (spam-read at `48`: `576` against `324` health);
+- **repositioning sooner:** after the player's action ends the next threat
+  arrives `45`–`61` ticks later with the original and `25`–`37` with the found
+  weapon — and in no measured careful fight does that shorter gap cost a hit.
+
+**The original has no advantage a careful player can use.** Its measured
+advantages all belong to imperfect play; the owner played carefully, as combat
+initiative taught.
+
+#### Hypothesis E — the encounter does not exercise commitment: **confirmed, and it is not a lever**
+
+A missed lunge's recovery is `120` ticks. A careful player's answer lands
+`50`–`72` ticks into it with the original and `61`–`82` with the found weapon:
+`38`–`70` ticks of slack for either. The found weapon's nine extra windup
+ticks are never the difference. Combat initiative made the fight demand a
+response to pressure, and it does — but it demands nothing of the player's
+*own* commitment unless the player swings into a lunge. The adversary, the
+lunge and `COMBAT_INITIATIVE_SIGNATURE` stay closed; the lever has to be the
+found weapon.
+
+#### Pressure interruption — **not a cause**
+
+The found weapon cut a lunge in `0` of every measured fight — oracle,
+fixed-distance and facing-error policies alike. The band probe's `10` of `77`
+cells need an early swing in the band's near half, and a failed attempt is a
+committed hit (`15` of `15`). Nothing suggests the owner was using it.
+
+#### Root cause
+
+**The found weapon's advantage is contact at the distance a person naturally
+swings from; its cost is commitment, which this encounter only charges to a
+player who swings into a lunge.** A careful player — the one combat initiative
+produces — collects the advantage every fight and pays the cost in none, and on
+top of that needs one opening fewer. The original has nothing to offer that
+player: it is equal close in and worse at comfortable range. That is the FAIL,
+in numbers.
+
+#### Candidate levers, measured — none implemented
+
+Found-weapon-only, each against the same fights (the original's row for
+comparison: owner-spam `2/4`; spam-read at `48` `576` hp; clean read `5,124`
+ticks; mashing at `3.0` `0/6`; stepping off and swinging at `3.0` `5,622`
+ticks):
+
+| candidate | ticks | owner-spam | spam-read 48 | clean read | mashing at `3.0` | stepping off at `3.0` | reach |
+|---|---|---|---|---|---|---|---|
+| found, as is | `31/14/58`, `32` dmg | 3/3 | 6/0, `324` | `4,056` | 6/0, `360` | `4,404` | `3.4` |
+| **A. damage `28`** (four hits) | — | 3/3 | 5/1, `300` | **`5,574`** | 6/0, `360` | `5,394` | `3.4` |
+| **B. windup `0.32` s** (`38`) | `38` windup | **2/4** | **4/2, `168`** | `4,182` | 6/0, `360` | `4,593` | `3.4` |
+| windup `0.36` s (`43`) | `43` windup | 2/4 | 3/3, `144` | `4,272` | 6/0, `360` | `4,731` | `3.4` |
+| **C. recovery `0.60` s** (`72`) | `72` recovery | 4/2 | 4/2, `222` | `4,056` | 6/0, `252` | `4,605` | `3.4` |
+| recovery `0.72` s (`86`) | `86` recovery | 4/2 | 4/2, `258` | `4,092` | 6/0, `360` | `5,883` | `3.4` |
+| blade `18` | geometry | 5/1 | 6/0, `432` | `4,056` | 6/0, `360` | `4,404` | `3.2` |
+| **A + B: damage `28`, windup `0.30` s** (`36`) | — | **2/4** | **3/3, `144`** | **`5,694`** | 6/0, `360` | `5,553` | `3.4` |
+| damage `28`, recovery `0.60` s | — | 4/2 | 4/2, `168` | `5,574` | 6/0, `144` | `6,114` | `3.4` |
+| windup `0.30` s, recovery `0.60` s | — | 3/3 | 4/2, `258` | `4,146` | 6/0, `360` | `4,734` | `3.4` |
+| damage `28`, blade `18` | geometry | 5/1 | 6/0, `414` | `5,574` | 6/0, `360` | `5,394` | `3.2` |
+
+What the table says, candidate by candidate:
+
+- **A — damage `32` → `28`.** Solves the *speed* half: a clean reader now needs
+  four openings with either weapon and is **faster with the original**
+  (`5,124` against `5,574`), which is the first measured regime of careful play
+  the original wins. Keeps the reach, the easier contact and a heavier hit
+  (`28` against `24`); the owner would likely perceive fights taking longer with
+  the found weapon. Does not touch owner-spam (`3/3`) or mashing at range.
+- **B — windup `31` → `38` ticks.** Solves the *mash* half: owner-spam falls back
+  to the original's `2/4`, and a late reader pays (`168` against `576`). Keeps
+  reach and damage; the swing reads slower, which is on-fantasy. A clean reader
+  is still faster with the found weapon (`4,182`), so on its own it likely
+  leaves *"no reason to use the original"* standing.
+- **C — recovery `58` → `72`+ ticks.** Charges mashing and late reads, but it
+  **raises owner-spam to `4/2`** (measured; the mechanism was not isolated) and
+  leaves the careful player untouched. Not recommended.
+- **Reach (blade `18`).** Cuts the fantasy the owner liked, still out-reaches
+  the original at `3.2`, and raises owner-spam to `5/1`. Not recommended.
+- **Aim-assist convenience for the found weapon only.** Not geometrically
+  justified: the aim range is derived from the weapon's own connect distance,
+  and a found-only reduction would be a special case in a shared rule. Not a
+  candidate.
+- **A + B — damage `28`, windup `36` ticks.** The one combination measured to
+  give each weapon a regime: the original is faster for a clean reader
+  (`5,124` against `5,694`), safer for a late reader (`576` against `144`) and
+  equal against owner-spam (`2/4` each); the found weapon keeps its reach, its
+  easier contact at comfortable range (mashing at `3.0`: `6/0` against the
+  original's `0/6`), a heavier hit and a slower, more deliberate swing.
+
+**Locks each would move.** Any change to the found **spec** (damage, windup,
+recovery) moves `FOUND_ENCOUNTER_SIGNATURE` (the found reference fight) and
+`REWARD_BEHAVIOR_SIGNATURE` (which folds both specs), each re-locked once with
+an OLD/NEW/WHY paragraph; `FOUND_WEAPON_GEOMETRY_FINGERPRINT` and
+`FOUND_WEAPON_IDENTITY_FINGERPRINT` do not move. A change to the found
+**blade** additionally moves both found fingerprints and the M9 style table in
+`COMBAT_STYLE.md`. No candidate touches `GOLDEN_ENCOUNTER_SIGNATURE`, the
+golden weapon's locks, `COMBAT_INITIATIVE_SIGNATURE` or any world or traversal
+lock. **`FOUND_WEAPON_PROFILE_VERSION`** is the found weapon's *visual* profile
+under `COMBAT_STYLE.md`: a spec-only retune does not change the profile and
+does not require a bump (it would move `REWARD_BEHAVIOR_SIGNATURE`, which moves
+anyway); a blade change does.
+
+**What must not change** in any of them: the adversary, the lunge, the band,
+the spacing dodge, the outcome-dependent recovery and
+`COMBAT_INITIATIVE_SIGNATURE`; the original weapon; COMBAT-005 and ARM-002; the
+found weapon's reach and silhouette unless the owner explicitly accepts losing
+part of the fantasy.
+
+**What to watch for if the owner chooses one**, in a new session of the same
+laboratory: whether the owner names a situation for the original (a clean
+fight, a quick kill, a recovery after a bad read); whether the found weapon
+still reads as the big, heavy, easier-to-reach sword; whether "mais lenta" now
+feels like a price; and whether running in and attacking still fails with both.
+
 ### Remaining risks
 
 - **A clean reader finishes sooner with the found weapon at no extra risk.** If
