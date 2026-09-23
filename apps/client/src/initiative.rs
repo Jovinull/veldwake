@@ -690,50 +690,72 @@ mod tests {
     #[ignore = "measurement: prints the driven fights' event schedule at the clearing"]
     fn print_the_driven_schedule_at_the_clearing() {
         use crate::encounter::InitiativeDriver;
-        use veldwake_combat::{CombatEvent, Encounter};
+        use veldwake_combat::{CombatEvent, Encounter, WeaponVariant};
         let generator = TerrainGenerator::golden();
         let ground = TerrainGround::new(&generator);
         let legality = TerrainWalkability::new(&generator);
-        let world = WorldContact::terrain(&ground, &legality);
-        for driver in [
-            InitiativeDriver::Read,
-            InitiativeDriver::Spam,
-            InitiativeDriver::SpamRead,
-        ] {
-            let Some(policy) = driver.policy() else {
-                continue;
+        let point = super::weapon_choice_site();
+        // The initiative session, then the M9 weapon-choice laboratory holding
+        // each weapon: the same fight with the exchange on offer, the found
+        // weapon taken through the real rule on the first armed tick.
+        let sessions = [
+            ("initiative", None),
+            ("weapon-choice", Some(WeaponVariant::Original)),
+            ("weapon-choice+found", Some(WeaponVariant::Found)),
+        ];
+        for (session, holding) in sessions {
+            let world = match holding {
+                Some(_) => WorldContact::terrain_with_weapon_exchange(&ground, &legality, point),
+                None => WorldContact::terrain(&ground, &legality),
             };
-            let setup = initiative_setup_at(InitiativeSite::Clearing);
-            let mut encounter = match Encounter::new(&setup, Some(&ground)) {
-                Ok(encounter) => encounter,
-                Err(error) => panic!("{error}"),
-            };
-            encounter.arm();
-            for _ in 0..2_400 {
-                let events = encounter.step(policy.intent(&encounter), world);
-                for event in events.iter() {
-                    let (name, side) = match event {
-                        CombatEvent::SwingStarted { side, .. } => ("swing", side),
-                        CombatEvent::SwingActive { side, .. } => ("active", side),
-                        CombatEvent::SwingWhiffed { side, .. } => ("whiff", side),
-                        CombatEvent::DodgeStarted { side, .. } => ("dodge", side),
-                        CombatEvent::Hit { attacker, .. } => ("hit", attacker),
-                        CombatEvent::Defeated { side } => ("defeated", side),
-                        CombatEvent::EncounterReset => ("reset", Side::Player),
-                        _ => continue,
-                    };
-                    println!(
-                        "{} t{} {name} {} kind {:?} d {:.2}",
-                        driver.name(),
-                        encounter.tick_index(),
-                        side.name(),
-                        encounter
-                            .combatant(side)
-                            .action()
-                            .attack_kind()
-                            .map(|kind| kind.name()),
-                        encounter.separation_distance()
-                    );
+            for driver in [
+                InitiativeDriver::Read,
+                InitiativeDriver::Spam,
+                InitiativeDriver::SpamRead,
+            ] {
+                let Some(policy) = driver.policy() else {
+                    continue;
+                };
+                let setup = match holding {
+                    Some(_) => super::weapon_choice_setup(),
+                    None => initiative_setup_at(InitiativeSite::Clearing),
+                };
+                let mut encounter = match Encounter::new(&setup, Some(&ground)) {
+                    Ok(encounter) => encounter,
+                    Err(error) => panic!("{error}"),
+                };
+                encounter.arm();
+                let mut first = holding == Some(WeaponVariant::Found);
+                for _ in 0..2_400 {
+                    let intent = policy.intent(&encounter).interacting(first);
+                    first = false;
+                    let events = encounter.step(intent, world);
+                    for event in events.iter() {
+                        let (name, side) = match event {
+                            CombatEvent::SwingStarted { side, .. } => ("swing", side),
+                            CombatEvent::SwingActive { side, .. } => ("active", side),
+                            CombatEvent::SwingWhiffed { side, .. } => ("whiff", side),
+                            CombatEvent::DodgeStarted { side, .. } => ("dodge", side),
+                            CombatEvent::Hit { attacker, .. } => ("hit", attacker),
+                            CombatEvent::Defeated { side } => ("defeated", side),
+                            CombatEvent::EncounterReset => ("reset", Side::Player),
+                            CombatEvent::ArmamentSwapped { .. } => ("swapped", Side::Player),
+                            _ => continue,
+                        };
+                        println!(
+                            "{session}:{} t{} {name} {} kind {:?} d {:.2} weapon {}",
+                            driver.name(),
+                            encounter.tick_index(),
+                            side.name(),
+                            encounter
+                                .combatant(side)
+                                .action()
+                                .attack_kind()
+                                .map(|kind| kind.name()),
+                            encounter.separation_distance(),
+                            encounter.armament().player().name(),
+                        );
+                    }
                 }
             }
         }
