@@ -1,10 +1,20 @@
 # Current handoff
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 
 ## Current position
 
-**M8 — Discoverable Landmarks is implemented on `feat/m8-discoverable-landmarks`, the owner's discovery playtest passed on 2026-09-22, and independent branch QA has run.** Nothing is merged and no pull request is open. The branch state is at the end of this section, because a head written down here goes stale the moment anything else lands.
+**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing` and is waiting for the owner's playtest.** Technical gates and real-client self-QA are green; no pull request is open, nothing is merged, and it has no milestone number — the owner approved it as an unnumbered slice. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
+
+**The one thing to hold:** the capability exists only when a tuning authors `adversary_pressure`. The historical encounter, every fixture, script and lock is byte-identical — `GOLDEN_ENCOUNTER_SIGNATURE` is still `0x6415_7522_d253_5658` — and the new behaviour is locked separately at `COMBAT_INITIATIVE_SIGNATURE = 0x8238_2662_d859_8cf3`. The two are never compared.
+
+**M8 — Discoverable Landmarks is merged.** It landed through [PR #12](https://github.com/Jovinull/veldwake/pull/12) at merge commit `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. `docs/post-m8-handoff` carries a post-merge documentation commit that is not in `main`; this branch restates the merge in its own documents and will overlap it textually if both land.
+
+**Two branches are frozen and must not be continued or merged from here.** `feat/m9-meaningful-reward`: M9's owner playtest failed on 2026-09-22, because approaching and attacking won with either weapon. `feat/combat-pressure`: blocked, because an adversary sidestep started after the player's swing is visible is fair only at `18`–`20` ticks of reaction. Combat initiative is the answer to both findings that acts **before** the player commits; see *Where it came from* in its document.
+
+The M8 record below is kept because its owner evidence and its known weak points still bind.
+
+**M8 — the discovery playtest and branch QA.**
 
 **OWNER DISCOVERY PLAYTEST WITHOUT NAVIGATION INSTRUCTIONS: PASS.** The wording is exact and the exactness matters: during the session the owner was given no coordinate, direction, waypoint or route, but had read the implementation report beforehand, so the session was *uninstructed* rather than literally blind. Told only to play and explore normally, the owner noticed two structures with no navigation interface of any kind, read them as two different destinations — one a tower, one a broken construction — chose the tower deliberately, walked to it, **found the adversary while exploring**, and liked it. The structures were judged simple but good and sufficient for the current objective, with the observation that they still read somewhat close to the visual language of Cube World and familiar voxel RPGs.
 
@@ -60,20 +70,22 @@ Read these before changing anything. They are the whole truth of the project; no
 14. [`../audiovisual/ART_DIRECTION.md`](../audiovisual/ART_DIRECTION.md) — the aesthetic direction
 15. [`../audiovisual/STYLE_BIBLE.md`](../audiovisual/STYLE_BIBLE.md) — the versioned, checkable constraints M4 was held to, and what they explicitly do not cover
 16. [`../audiovisual/CHARACTER_STYLE.md`](../audiovisual/CHARACTER_STYLE.md) — the versioned, checkable constraints M5 was held to, and how they relate to the style bible
-17. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the five action poses, the two effects, the readout, and what the camera may do
+17. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the six action poses (the lunge is the sixth), the two effects, the readout, and what the camera may do
 18. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which M6 deliberately does not build yet
-19. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the most recent milestone: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
-20. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
-21. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
-22. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
-23. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
-24. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
-25. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
-26. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
-27. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
-28. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
-29. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
-30. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
+19. [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) — the active, unnumbered slice on its branch, and [ADR-0010](../adr/0010-sixth-action-keeps-the-keyed-layer.md), why its lunge is still a keyed curve
+20. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the last merged milestone
+21. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone before it: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
+22. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
+23. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
+24. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
+25. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
+26. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
+27. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
+28. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
+29. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
+30. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
+31. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
+32. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
 
 Then, as needed: [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md), the rest of the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
@@ -81,6 +93,8 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 - `crates/combat/src/movement.rs` — **the whole of movement legality**, in one place. `check_move` returns `MoveBlockReason`, `accepts` wraps it, `try_move` slides per axis, `separate` pushes two bodies apart through the same rules, and `TraversalLegality` is the veto a world hands in. Read this before anything that moves a body.
 - `apps/client/src/traversal.rs` — the region reasoned about as columns: the water veto, the cached `SurfaceGrid`, the whole-region reachability audit that calls `check_move`, the derived and locked named route, the derived adversary placement, and the tests that judge all of it against the generated voxels rather than against each other.
+- `crates/combat/src/adversary.rs` and `crates/combat/src/oracle.rs` — on the combat-initiative branch, the brain's two additions (the lunge choice and the owed spacing dodge) and the three policies that judge them. Read the brain's `decide` with one question: does anything here read what the player is *doing*? The answer must stay no.
+- `apps/client/src/initiative.rs` — the same policies over the golden world's real ground and walkability, the open clearing where the opt-in session stands, and the spire witnesses that show where the capability breaks (KI-041).
 - `crates/combat` — the fixed-step headless domain. One call to `Encounter::step` is one tick; every duration is a tick count; the weapon, the two attack specs, the swept hit query, the torso-column hurt volume, the kinematic movement rules, the adversary's state machine and the bounded event type all live here. It has no GPU, window, audio or filesystem types, and it depends on `crates/character` and never the reverse.
 - `crates/character` — the descriptor, compiler, skeleton, distance-driven locomotion, ground contact, IK and collision representation, plus the tick-driven action pose layer M6 added beside it. `pose()` is M5's path and is unchanged; `pose_with()` takes an action overlay.
 - `apps/client/src/encounter.rs` — where the domain meets the frame: the integer tick accumulator, the encounter modes including the frozen named moments, and the bounded per-frame event buffer.
@@ -92,28 +106,40 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — M8 is reviewed and the next step is the pull request
+## Continue here — the owner playtest of combat initiative
 
-**The single next step is opening the pull request**, and it is the owner's call to make, not an agent's. Both gates that precede it are closed: the owner's discovery playtest passed on 2026-09-22, and independent branch QA has reviewed the whole of `main...HEAD`, fixed one defect, added eight independent oracles and reconciled the documentation. After the pull request the sequence is the usual one — CI on the exact head, merge commit, post-merge CI, handoff branch — and none of it happens without the owner asking.
+**The single next step is the owner's playtest, and it is the owner's to run.** Nothing else on `feat/combat-initiative-spacing` should move before it: not the tuning, not the pose, not a pull request, not a milestone number, and no Codex review. The protocol and the eleven questions to ask afterwards are in [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md#owner-playtest):
 
-**What a reviewer of the pull request should look at first**, because these are the places the branch decided something rather than derived it:
+```text
+VELDWAKE_ENCOUNTER=initiative cargo run --release -p veldwake-client
+```
 
-- **the two-level visibility split** ([ADR-0009](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md)). The world proxy does occlusion and no framing; the client oracle does framing and no raycasting. Only one test compares them, and it can only prove one direction. Try to find a landmark the proxy likes and the camera cannot see;
-- **the keep-out**. `0.86` by `2.84` is the adversary's capsule rounded up, applied to a destination only. Try to get a body inside stone, and try to get it refused somewhere the drawn voxels are open;
-- **the plan's composition rules**, especially the straight-line water test, which is a world rule that correlates with reachability without consulting the movement rules. Try to break the claim that it is a composition rule and not a smuggled reachability check;
-- **the relocks**. Six locked values moved. Re-derive each one rather than trusting the OLD/NEW/WHY paragraph beside it;
-- **the numbers in the milestone document**. Every one of them should be reproducible from the probe, the ignored report or a capture.
+The session starts paused at the open clearing `(-69, 49)` with the adversary eight units away and arms on the first input; a defeat either way starts another round. The instruction is only *"lute normalmente."* The owner knows the concept, so this is not a blind test, and the report must say so.
 
-**The composition, for reference.** Three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points:
+**What the playtest decides, and what each answer means.**
+
+- **Owner-spam stops working and the fight asks for decisions:** the product question is answered yes. Then, and only then, branch QA over `main...HEAD`, and a proposal for what — if anything — gives it a number.
+- **Owner-spam still works for a person:** the headless `2/4` is not what a person experiences. The first suspect is the telegraph from the player's camera, which is foreshortened (see the document's *Visual findings*); the second is the band, which a person may simply walk through.
+- **It only feels harder:** the capability exists and does not produce a decision. That is a design finding, not a tuning bug, and it should be written down before anything is retuned.
+- **The spacing dodge reads as the adversary running away, or as reading input:** the structural proof and the `0` counter say it is not reactive; a person's reading of it is still the product evidence.
+
+**Where to look first if the owner reports a problem**, because these are the places the branch decided something rather than derived it:
+
+- **the lunge choice's aim cone** — reusing the swing-start aim assist was a measured fix (the six-degree rule lost almost every lunge), and it is the one place the adversary turns on commit;
+- **the `66`-tick windup and the `4.35`–`4.65` band** — each moved once against one measurement, and the document's table says which;
+- **the `120`-tick whiff recovery** — set so a `400` ms reader lands inside it with thirteen ticks to spare, not for feel;
+- **straight retreat does not escape the lunge**, deliberately. If that reads as unfair, it is the lesson being unclear, not the numbers.
+
+**Branch state.** Read it with `git rev-parse HEAD` and `git rev-list --count main..HEAD`; a head copied into this file is stale within a day. The branch is pushed to `origin/feat/combat-initiative-spacing`, has no pull request, and must not be merged by an agent.
+
+### M8's known weak points, still true in `main`
+
+Three landmarks around the overlook at `(-69, 49)`: a spire 62 units west, a gate 63 units east, `159.7` degrees apart, and a broken monolith hidden from the overlook that shows itself from the gate at 149 units. The adversary stands at the spire, five columns from its crown, because the spire is the first choice that does not reveal the third. The known weak points:
 
 - the crown of a first choice is **above the default camera frame** at 62 units (KI-032) — a deliberate, captured choice against a complete-but-tiny silhouette at 96 units. The owner read the gate as a broken construction rather than as a gate, which is consistent with its lintel being off-frame, though the owner said nothing about why;
 - the overlook's `r = 40` vegetation reservation is a composition control nobody has judged on sight yet;
 - the reveal is the weakest link: the forest leaves only two candidate sites visible from a landmark at all;
 - the family still reads close to familiar voxel-RPG architecture (KI-036), which is art direction for a later milestone and not a defect in this one.
-
-**Branch state at the end of QA.** `feat/m8-discoverable-landmarks`: **twelve commits ahead of `main`** (`0c81c069bb95a8caf3b6a5252b89b023c6334ae1`) and **eleven after `docs/post-m7-handoff`** (`08081b8a15be3ea70de82e03cb0b113d71c7c8d9`) — the milestone plan, the implementation, its documentation, the owner's session, then QA's defect fix, its oracles, its documentation corrections and this count. Working tree clean, local equal to origin, no pull request open.
-
-The head itself is deliberately not written here: a commit cannot name its own hash, and the last two times one was copied into this file it was stale within a day. Read it with `git rev-parse HEAD`, and count against a named base with `git rev-list --count main..HEAD` rather than from how many commits a session happened to make — an earlier report said "two commits" for a branch that was four ahead.
 
 ### What M7 left, and what it still means
 
@@ -232,8 +258,13 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
-- **M8 has its owner gate and not its QA.** Do not merge it, do not open a pull request for it, and do not start another milestone on top of it until an independent pass over `main...HEAD` has run.
-- **The owner judged discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
+- **Combat initiative has self-QA and no owner verdict.** Do not open a pull request, merge, retune, give it a milestone number, or start other work on top of it until the owner has played it. Every number in its document is headless or real-client self-QA evidence; none is owner judgement.
+- **Do not re-lock a historical value for this capability.** `GOLDEN_ENCOUNTER_SIGNATURE`, both weapon fingerprints and every M5/M7/M8 lock stayed byte-identical and must stay so; if one moves, the capability has leaked into the historical encounter. `COMBAT_INITIATIVE_SIGNATURE` is the lock that is allowed to move, with an OLD/NEW/WHY paragraph.
+- **The spacing dodge must stay non-reactive.** Its trigger is the adversary's own state — its stagger ended, or its own lunge connected — and `dodges_during_unresolved_swing` must stay `0` for the adversary. Adding the player's action to the brain's inputs turns this into `feat/combat-pressure`, which is blocked for a measured reason.
+- **Stone behind the adversary turns the capability off** (KI-041). The opt-in session stands in the open clearing on purpose; the M8 encounter at the spire does not use the capability, and moving it there is a navigation decision.
+- **`combat-shoulder` frames from behind the adversary** (KI-042). Do not use it as evidence of what the player sees.
+- **The golden-world initiative gates are slow in debug** — the open-clearing gate took `80` s and the spire gate `139` s under `cargo nextest` on the audited host, because each builds a world and plays dozens of sixty-second fights. They are not ignored; they are the terrain evidence.
+- **The owner judged M8's discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
 - **The visual-simplicity and Cube-World observations are recorded, not actioned.** The owner said the structures are simple but sufficient, and that they still read close to familiar voxel-RPG architecture (KI-036). Neither is a work item on this branch: no props, no decoration, no second family, no second material system, no particles, no lights, no interiors.
 - **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `248-272 ms` in release and `1,108 ms` in debug per world. `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.
 - **`LANDMARK_BEHAVIOR_SIGNATURE` is the golden plan's own fingerprint** and is folded into the world fingerprint. Any change to placement, the compiler, the descriptor or the controls moves it, invalidates every cached chunk, and needs an OLD/NEW/WHY paragraph — as do `TERRAIN_BEHAVIOR_SIGNATURE`, `GOLDEN_REGION_SIGNATURE`, `GOLDEN_ROUTE_SIGNATURE` and `ADVERSARY_COLUMN`, all of which M8 moved once.

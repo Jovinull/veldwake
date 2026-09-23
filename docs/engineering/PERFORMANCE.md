@@ -256,6 +256,19 @@ Independent runs, 2026-09-21, release, `m4-golden`, golden seed, `1920 x 991` cl
 
 Drained in `30.2` s, sampled at 1 Hz against a report published every five, so the true figure is somewhere in `(25.7, 30.1]` s. `render` never moved: the resident set was not lost, the far field was missing. KI-030. **Nothing was changed in response** — the rail's answer to KI-017 for a *walking* body, measured above, is unaffected by this, and prefetching around a teleport is a milestone's decision.
 
+## Combat initiative, measured on the audited host
+
+On `feat/combat-initiative-spacing`, not merged. Release builds, `combat-probe bench 24000`, alternating a `main` binary and the branch binary four rounds each so a slow moment of the host lands on both:
+
+| measure | `main` | branch |
+|---|---|---|
+| historical encounter tick, mean | `6.35`–`7.46` µs | `6.90`–`7.52` µs |
+| combat initiative fight tick, mean (read policy) | — | `6.12`–`7.08` µs |
+
+The ranges overlap and no regression is claimed or excluded below that noise. Both binaries measured slower on this day than M6's recorded `5.463` µs, which is the host, not the code.
+
+The client, `initiative:read` against `armed`, alternating, `25` s each with no captures: `60.0` FPS and `16.66` ms average wall frame in both, vsync-bound, with `2` actors, `2` weapons, `985,648` GPU bytes, `34` world and `34` shadow draws and `2,720` dynamic bytes a frame in both — identical to M6, because the lunge is a pose and the pose is written into the same per-part transforms.
+
 ## M8 discoverable landmarks, measured on the audited host
 
 Release unless stated, Intel Core i5-1335U / Intel Iris Xe / D3D12, `m4-golden` profile, golden seed. One-host observations, never targets.
