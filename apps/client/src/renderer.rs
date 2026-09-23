@@ -459,6 +459,15 @@ struct GpuCharacterPart {
     bind_group: wgpu::BindGroup,
 }
 
+/// What the weapon standing at the exchange site costs on the GPU.
+#[derive(Clone, Copy, Debug, Default)]
+struct PlacedWeaponCost {
+    quads: usize,
+    vertex_bytes: usize,
+    index_bytes: usize,
+    uniform_bytes: usize,
+}
+
 /// One drawn body on the GPU, and the weapon in its hand.
 ///
 /// Rigid parts make the geometry static: the buffers are immutable after upload
@@ -709,6 +718,16 @@ pub struct Renderer {
     /// The drawn bodies. One for the M5 preview, two for a fight; the renderer
     /// holds no scene graph and nothing here is an entity.
     actors: Vec<GpuActor>,
+    /// The weapon standing at the M9 exchange site.
+    ///
+    /// A rigid part like any other, uploaded once and given a matrix per frame.
+    /// It is not an actor: it has no body, no bones and no pose, and it is
+    /// deliberately outside `actors` so that nothing which iterates bodies
+    /// finds an object among them.
+    placed_weapon: Option<GpuCharacterPart>,
+    /// What the placed weapon costs, so the character stats can count it as
+    /// the third weapon instance it is rather than only as an extra draw.
+    placed_weapon_cost: PlacedWeaponCost,
 }
 
 impl Renderer {
@@ -1264,6 +1283,8 @@ impl Renderer {
             character_shadow_pipeline,
             part_layout,
             actors: Vec::new(),
+            placed_weapon: None,
+            placed_weapon_cost: PlacedWeaponCost::default(),
         };
         renderer.configure_if_visible();
         renderer.log_configuration(&adapter_info, &capabilities);
@@ -1466,10 +1487,15 @@ impl Renderer {
                     .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 shadow_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
-            if !self.actors.is_empty() {
+            if !self.actors.is_empty() || self.placed_weapon.is_some() {
                 shadow_pass.set_pipeline(&self.character_shadow_pipeline);
                 shadow_pass.set_bind_group(0, &self.scene_only_bind_group, &[]);
-                for part in self.actors.iter().flat_map(GpuActor::drawables) {
+                for part in self
+                    .actors
+                    .iter()
+                    .flat_map(GpuActor::drawables)
+                    .chain(self.placed_weapon.iter())
+                {
                     shadow_pass.set_bind_group(1, &part.bind_group, &[]);
                     shadow_pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
                     shadow_pass
@@ -1526,10 +1552,15 @@ impl Renderer {
                 pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
-            if !self.actors.is_empty() {
+            if !self.actors.is_empty() || self.placed_weapon.is_some() {
                 pass.set_pipeline(&self.character_pipeline);
                 pass.set_bind_group(0, &self.scene_bind_group, &[]);
-                for part in self.actors.iter().flat_map(GpuActor::drawables) {
+                for part in self
+                    .actors
+                    .iter()
+                    .flat_map(GpuActor::drawables)
+                    .chain(self.placed_weapon.iter())
+                {
                     pass.set_bind_group(1, &part.bind_group, &[]);
                     pass.set_vertex_buffer(0, part.vertex_buffer.slice(..));
                     pass.set_index_buffer(part.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1629,6 +1660,8 @@ impl Renderer {
         character: &CompiledCharacter,
     ) -> Result<(), CharacterUploadError> {
         self.actors.clear();
+        self.placed_weapon = None;
+        self.placed_weapon_cost = PlacedWeaponCost::default();
         self.upload_actor(character, None).map(|_| ())
     }
 
@@ -1702,6 +1735,51 @@ impl Renderer {
             quads,
         });
         Ok(self.actors.len() - 1)
+    }
+
+    /// Uploads the weapon that stands at the exchange site.
+    ///
+    /// Static geometry, uploaded once, exactly like a body part: M8's lesson
+    /// that geometry uploads once and a frame writes transforms applies to an
+    /// object in the world as much as to one in a hand. There is no new
+    /// pipeline, no new bind group layout, no new palette path and no new
+    /// `VoxelId` range — a weapon in the ground is the same rigid part it is
+    /// in a fist.
+    pub fn upload_placed_weapon(
+        &mut self,
+        weapon: &CompiledWeapon,
+    ) -> Result<(), CharacterUploadError> {
+        let palette = weapon.palette();
+        let uploaded = self.upload_part(weapon.mesh(), "placed-weapon", &|voxel| {
+            palette.appearance(voxel)
+        })?;
+        info!(
+            quads = uploaded.quads,
+            vertex_bytes = uploaded.vertex_bytes,
+            index_bytes = uploaded.index_bytes,
+            fingerprint = format_args!("{:#018x}", weapon.fingerprint()),
+            "placed weapon uploaded"
+        );
+        self.placed_weapon_cost = PlacedWeaponCost {
+            quads: uploaded.quads,
+            vertex_bytes: uploaded.vertex_bytes,
+            index_bytes: uploaded.index_bytes,
+            uniform_bytes: size_of::<PartUniform>(),
+        };
+        self.placed_weapon = Some(uploaded.part);
+        Ok(())
+    }
+
+    /// Writes the placed weapon's transform for this frame.
+    pub fn set_placed_weapon(&self, matrix: glam::Mat4) {
+        let Some(part) = self.placed_weapon.as_ref() else {
+            return;
+        };
+        self.queue.write_buffer(
+            &part.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&PartUniform::from_matrix(matrix)),
+        );
     }
 
     /// Uploads one rigid mesh and its per-frame uniform.
@@ -1842,6 +1920,21 @@ impl Renderer {
             stats.uniform_bytes += actor.uniform_bytes;
             stats.world_draws += actor.draw_count();
             stats.shadow_draws += actor.draw_count();
+        }
+        // The placed weapon is a third weapon instance in the world and is
+        // counted as one, with its bytes and its quads. The exchange pair is
+        // the player's and the site's; the adversary carries an independent
+        // original outside that pair, so "exactly two weapons in the world"
+        // would be wrong, and a count that named three while the bytes named
+        // two would be worse than either.
+        if self.placed_weapon.is_some() {
+            stats.weapons += 1;
+            stats.world_draws += 1;
+            stats.shadow_draws += 1;
+            stats.quads += self.placed_weapon_cost.quads;
+            stats.vertex_bytes += self.placed_weapon_cost.vertex_bytes;
+            stats.index_bytes += self.placed_weapon_cost.index_bytes;
+            stats.uniform_bytes += self.placed_weapon_cost.uniform_bytes;
         }
         stats.dynamic_upload_bytes = stats.uniform_bytes;
         stats

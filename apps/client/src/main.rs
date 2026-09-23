@@ -22,6 +22,7 @@ mod landmark;
 mod lighting;
 mod readout;
 mod renderer;
+mod reward;
 mod streaming;
 mod synth;
 mod traversal;
