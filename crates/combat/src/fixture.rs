@@ -17,25 +17,24 @@ use veldwake_character::descriptor::{CharacterSeed, Proportions};
 use veldwake_character::fixture::golden_descriptor;
 use veldwake_character::ground::FlatGround;
 use veldwake_character::material::{GarmentScheme, HairTone, PaletteChoice, SkinTone};
-use veldwake_character::skeleton::{BoneId, Side as BodySide};
-use veldwake_character::{
-    CharacterDescriptor, CharacterState, CompiledCharacter, GroundSampler, pose_with,
-};
+use veldwake_character::{CharacterDescriptor, GroundSampler};
 
-use crate::combatant::{Action, Intent, SIDES, Side, SwingId};
+use crate::armament::RewardSetup;
+use crate::combatant::{Action, Intent, SIDES, Side};
 use crate::encounter::{
     CombatCounters, Encounter, EncounterError, EncounterSetup, PlayerVictoryPolicy, WorldContact,
 };
 use crate::hash::{fnv1a64, push_f32, push_u16, push_u32, push_u64};
+use crate::material::WeaponScheme;
 use crate::script::{
     EncounterScript, GOLDEN_SCRIPT, MomentKind, NAMED_MOMENTS, ScriptRunner, at_moment,
 };
 use crate::spec::{
-    ArenaSpec, AttackSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement,
+    ArenaSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement,
     AuthoredPressure, AuthoredTuning, CombatSeed,
 };
 use crate::tick::Ticks;
-use crate::weapon::{CompiledWeapon, WeaponDescriptor};
+use crate::weapon::{WeaponDescriptor, WeaponSeed};
 
 /// The body the player drives.
 #[must_use]
@@ -82,10 +81,116 @@ pub fn adversary_descriptor() -> CharacterDescriptor {
     }
 }
 
-/// The one weapon.
+/// The weapon a combatant starts with, and the only one the adversary ever
+/// holds.
 #[must_use]
 pub fn weapon_descriptor() -> WeaponDescriptor {
     WeaponDescriptor::golden()
+}
+
+/// Version of the M9 found-weapon profile in
+/// `docs/audiovisual/COMBAT_STYLE.md`.
+///
+/// **Deliberately not [`crate::weapon::COMBAT_STYLE_VERSION`].** That constant
+/// is hashed into every [`crate::weapon::WeaponIdentity`], so bumping it
+/// because M9 adds a second accepted weapon would change the historical M6
+/// weapon's identity while its descriptor, its geometry and its behaviour are
+/// untouched. The M9 profile is additive under the same shared combat grammar,
+/// so it gets its own narrow version, which participates in the M9 signatures
+/// and in nothing historical.
+pub const FOUND_WEAPON_PROFILE_VERSION: u32 = 1;
+
+/// The weapon standing at the exchange site: a found longblade.
+///
+/// **Not a two-handed sword, and the documentation must not call it one.** The
+/// weapon hangs off `HandR` exactly as the original does and the free hand does
+/// nothing; M9 adds no second-hand contact and no two-handed pose. What is
+/// longer is the blade, the guard and the grip, and the grip is longer because
+/// a heavier blade wants more lever, not because a second fist is on it.
+///
+/// Every number here is evidence-backed rather than chosen by taste. The blade
+/// is `20` character voxels against the original's `14`, which is the largest
+/// length that still wins the reference fight under the pessimistic
+/// both-sides-armed measurement. The grip pitch is `1.10` rather than the
+/// original's `0.90` because at `0.90` a twenty-voxel blade hangs *below* the
+/// terrain in the carry pose — measured at `-0.029` world units, against the
+/// original's `+0.276` — and `1.10` puts the tip at `+0.359`, clearing better
+/// than the weapon the player already carries. The blade is six voxels across
+/// the swing plane rather than four purely for silhouette: width costs nothing
+/// in reach and nothing in clearance, and it is what makes the two read apart
+/// at a glance. [`WeaponScheme::DarkIron`] already existed and was drawn by
+/// nothing; M9 uses it rather than authoring a second palette.
+#[must_use]
+pub fn found_weapon_descriptor() -> WeaponDescriptor {
+    WeaponDescriptor {
+        seed: WeaponSeed(0x5645_4c44_4652_4541),
+        blade_length: 20,
+        blade_width: 6,
+        blade_thickness: 2,
+        guard_width: 8,
+        guard_height: 2,
+        grip_length: 6,
+        grip_thickness: 2,
+        pommel_width: 4,
+        pommel_height: 2,
+        grip_above_hand: 2,
+        grip_pitch: 1.10,
+        scheme: WeaponScheme::DarkIron,
+        ..WeaponDescriptor::golden()
+    }
+}
+
+/// The swing the found longblade executes.
+///
+/// The sidegrade, in one table. Against [`player_attack`]: windup `0.26`
+/// against `0.18`, recovery `0.48` against `0.34`, damage `32` against `24`.
+/// Compiled that is `31 / 14 / 58` ticks and `103` total against `22 / 12 / 41`
+/// and `75`.
+///
+/// The relationship the numbers were chosen for, and the one a test asserts:
+/// the extra reach buys the player about as much closing time as the extra
+/// commitment costs. The adversary approaches at `2.40` u/s and commits at
+/// `2.20`, so swinging from the found weapon's connect-out rather than the
+/// original's buys roughly `28` ticks before the adversary is in its own range,
+/// and the longer action costs exactly `103 - 75 = 28` ticks of lock. Neither
+/// weapon is safer; they are differently shaped.
+///
+/// `step_in` falls to `0.30` because a weapon that already reaches does not
+/// need to close as much, and `knockback` rises to `0.50` because a heavier
+/// blade that lands should buy space. Damage `32` fells a `96`-health adversary
+/// in three swings against the original's four; `36` was measured and rejected
+/// because it also gives three and only makes the weapon stronger.
+#[must_use]
+pub fn found_attack() -> AuthoredAttack {
+    AuthoredAttack {
+        windup_seconds: 0.26,
+        active_seconds: 0.12,
+        recovery_seconds: 0.48,
+        stagger_seconds: 0.34,
+        hitstop_seconds: 0.08,
+        damage: 32,
+        step_in: 0.30,
+        knockback: 0.50,
+    }
+}
+
+/// How close a body must be to the exchange site to swap weapons, in world
+/// units.
+///
+/// `1.75`: the player's capsule radius is `0.627`, so this is a little over a
+/// body and an arm. It is comfortably inside the gate opening the client
+/// anchors the site in, and comfortably outside anything at the route start, so
+/// a session cannot begin inside its own reward.
+pub const FOUND_INTERACT_RADIUS: f32 = 1.75;
+
+/// The exchange the M9 traversal session is configured with.
+#[must_use]
+pub fn reward_setup() -> RewardSetup {
+    RewardSetup {
+        weapon: found_weapon_descriptor(),
+        attack: found_attack(),
+        interact_radius: FOUND_INTERACT_RADIUS,
+    }
 }
 
 /// The player's swing.
@@ -309,6 +414,9 @@ pub fn setup(arena_centre: Vec2, arena_radius: f32) -> EncounterSetup {
         // defeated adversary ends a round rather than a session.
         player_victory: PlayerVictoryPolicy::ResetEncounter,
         facing_offsets: [0.0; SIDES.len()],
+        // No exchange. Every M6, M7 and M8 fixture builds through here, and
+        // this is why none of their signatures moved in M9.
+        reward: None,
     }
 }
 
@@ -336,6 +444,27 @@ pub fn sandbox_setup() -> EncounterSetup {
         ..adversary()
     };
     setup
+}
+
+/// The reference setup **with** the M9 exchange configured.
+///
+/// The same fight, the same arena and the same tuning as [`golden_setup`]; the
+/// only difference is that a found weapon is standing at a site. The player
+/// still starts holding the original weapon, because process construction
+/// always does.
+#[must_use]
+pub fn found_setup() -> EncounterSetup {
+    EncounterSetup {
+        reward: Some(reward_setup()),
+        ..golden_setup()
+    }
+}
+
+/// Where the headless exchange site stands: exactly where the player starts,
+/// so a fixture can perform the exchange on its first tick without walking.
+#[must_use]
+pub fn found_site() -> Vec2 {
+    golden_setup().starts[Side::Player.index()]
 }
 
 /// The floor the headless fixture stands on.
@@ -390,7 +519,66 @@ pub fn run_script(
 ) -> Result<ScriptOutcome, EncounterError> {
     let mut encounter = Encounter::new(setup, ground)?;
     encounter.arm();
-    let reach = reach_of(&encounter);
+    Ok(trace_script(&mut encounter, script, ground, ticks))
+}
+
+/// The same reference script, run by a player who has exchanged weapons.
+///
+/// Builds [`found_setup`], performs **one real exchange** through the
+/// authoritative rule — an interact intent against a world whose exchange site
+/// is exactly where the player stands — and then traces the reference script
+/// exactly as [`run_script`] does.
+///
+/// The exchange is deliberately performed rather than authored: there is no way
+/// to construct an encounter that begins with the found weapon, because process
+/// construction always starts a session holding the original one.
+///
+/// The trace **format** is the M6 format, byte for byte. The trace **bytes**
+/// are not, and are not meant to be: this is a different fixture doing
+/// different work with a different weapon, and its signature is locked
+/// independently.
+pub fn run_found_script(
+    script: EncounterScript,
+    ground: Option<&dyn GroundSampler>,
+    ticks: u64,
+) -> Result<ScriptOutcome, EncounterError> {
+    let setup = found_setup();
+    let mut encounter = Encounter::new(&setup, ground)?;
+    encounter.arm();
+    let site = found_site();
+    let world = match ground {
+        Some(ground) => WorldContact::terrain_with_weapon_exchange(ground, &NoVeto, site),
+        None => WorldContact::none(),
+    };
+    // One tick, one press, one exchange. Untraced on purpose: what the lock is
+    // about is the fight that follows, not the swap that set it up.
+    let _ = encounter.step(
+        Intent::player(Vec2::ZERO, false, false).interacting(true),
+        world,
+    );
+    Ok(trace_script(&mut encounter, script, ground, ticks))
+}
+
+/// A traversal veto that refuses nothing, so a headless exchange can use the
+/// one `WorldContact` constructor that carries a site without inventing terrain
+/// rules the fixture does not have.
+struct NoVeto;
+
+impl crate::movement::TraversalLegality for NoVeto {
+    fn walkable(&self, _x: f64, _z: f64) -> bool {
+        true
+    }
+}
+
+/// Traces an armed encounter through a script, in the one trace format every
+/// locked signature uses.
+fn trace_script(
+    encounter: &mut Encounter,
+    script: EncounterScript,
+    ground: Option<&dyn GroundSampler>,
+    ticks: u64,
+) -> ScriptOutcome {
+    let reach = reach_of(encounter);
     let mut runner = ScriptRunner::new(script, reach);
     let mut bytes = Vec::with_capacity(ticks as usize * 24);
     let mut moments: [Option<u64>; NAMED_MOMENTS.len()] = [None; NAMED_MOMENTS.len()];
@@ -398,12 +586,12 @@ pub fn run_script(
     let mut worst_overlap = 0.0_f32;
 
     for _ in 0..ticks {
-        let intent = runner.next_intent(&encounter);
+        let intent = runner.next_intent(encounter);
         let events = encounter.step(intent, WorldContact::from_ground(ground));
         let tick = encounter.tick_index();
 
         for (index, moment) in NAMED_MOMENTS.iter().enumerate() {
-            if moments[index].is_none() && at_moment(moment.kind, &encounter, &events) {
+            if moments[index].is_none() && at_moment(moment.kind, encounter, &events) {
                 moments[index] = Some(tick);
             }
         }
@@ -444,81 +632,21 @@ pub fn run_script(
         }
     }
 
-    Ok(ScriptOutcome {
+    ScriptOutcome {
         ticks,
         counters: *encounter.counters(),
         moments,
         signature: fnv1a64(&bytes),
         min_health,
         worst_overlap,
-    })
-}
-
-/// Where a body's blade goes during its own swing, measured rather than declared.
-///
-/// A pure function of a compiled body, a compiled weapon and an attack spec, with
-/// no terrain and no encounter, so the numbers the strike range and the dodge
-/// distance are chosen against come from the same pose path the fight uses.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SwingEnvelope {
-    /// Furthest the tip gets from the body's own centre, at any point.
-    pub max_tip_reach: f32,
-    /// Reach of the tip while the blade can connect.
-    pub active_reach: (f32, f32),
-    /// Height of the tip above the ground while the blade can connect.
-    pub active_height: (f32, f32),
-}
-
-impl SwingEnvelope {
-    /// Centre-to-centre distance at which this swing can still touch a body of
-    /// the given capsule radius.
-    #[must_use]
-    pub fn connects_out_to(&self, target_radius: f32) -> f32 {
-        self.active_reach.1 + target_radius
     }
 }
 
-/// Measures one body's swing envelope.
-#[must_use]
-pub fn swing_envelope(
-    character: &CompiledCharacter,
-    weapon: &CompiledWeapon,
-    spec: &AttackSpec,
-    weapon_side: BodySide,
-) -> SwingEnvelope {
-    let mut max_tip_reach = 0.0_f32;
-    let mut active_reach = (f32::INFINITY, f32::NEG_INFINITY);
-    let mut active_height = (f32::INFINITY, f32::NEG_INFINITY);
-    let state = CharacterState::default();
-    for elapsed in 0..=spec.total() {
-        let action = Action::Attack {
-            swing: SwingId::first(),
-            kind: crate::combatant::AttackKind::Primary,
-            elapsed,
-            hits: [false; SIDES.len()],
-        };
-        let overlay = action.overlay(spec, weapon_side, state.facing);
-        let posed = pose_with(character, &state, None, Some(&overlay));
-        let blade = weapon.blade_world(
-            posed.world_matrix(),
-            posed.bone_world()[BoneId::HandR.index()],
-        );
-        let reach = Vec2::new(blade.tip.x, blade.tip.z).length();
-        max_tip_reach = max_tip_reach.max(reach);
-        if spec.is_active(elapsed) {
-            active_reach = (active_reach.0.min(reach), active_reach.1.max(reach));
-            active_height = (
-                active_height.0.min(blade.tip.y),
-                active_height.1.max(blade.tip.y),
-            );
-        }
-    }
-    SwingEnvelope {
-        max_tip_reach,
-        active_reach,
-        active_height,
-    }
-}
+// Where a body's blade goes during its own swing used to be measured here.
+// M9 moved it to `crate::reach`, because the encounter's aim-assist range is
+// now derived from the same geometry and a fixture may not be a dependency of
+// a rule. The fixtures, the probe and the encounter all call
+// `reach::attack_envelope`; there is no second copy of the formula.
 
 /// Which way a probed dodge goes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -720,9 +848,35 @@ pub const GOLDEN_WEAPON_IDENTITY_FINGERPRINT: u64 = 0x084b_f386_500b_b0e4;
 /// facing in it is a hair different and the trace follows.
 pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x6415_7522_d253_5658;
 
+/// Locked hash of the found weapon's compiled surface.
+///
+/// **Old** none, **new** `0x0723_e9dd_aeff_d4d5`, **why**: first lock, M9. The
+/// geometry of the found longblade, and palette-independent by construction —
+/// the same voxels under a different scheme give the same value, which is why
+/// this and the identity below are separate numbers.
+pub const FOUND_WEAPON_GEOMETRY_FINGERPRINT: u64 = 0x0723_e9dd_aeff_d4d5;
+/// Locked hash of the found weapon's identity.
+///
+/// **Old** none, **new** `0xa09f_cd9b_fa45_d87a`, **why**: first lock, M9. The
+/// descriptor, the compiler version and the style version. It moves when the
+/// found weapon's shape, seed or palette moves, and it must **not** move when
+/// something historical does — which is the reason M9 did not touch
+/// [`crate::weapon::COMBAT_STYLE_VERSION`] and gave the profile its own
+/// [`FOUND_WEAPON_PROFILE_VERSION`] instead.
+pub const FOUND_WEAPON_IDENTITY_FINGERPRINT: u64 = 0xa09f_cd9b_fa45_d87a;
+/// Locked hash of the reference encounter fought with the found weapon.
+///
+/// **Old** none, **new** `0x735a_9961_f661_8e7d`, **why**: first lock, M9.
+/// [`run_found_script`] exchanges once through the authoritative rule and then
+/// traces [`GOLDEN_SCRIPT`] for [`GOLDEN_RUN_TICKS`] in **the same trace format
+/// as [`GOLDEN_ENCOUNTER_SIGNATURE`]**. It is a different fixture doing
+/// different work with a different weapon, so a different value is the expected
+/// result and not a regression; the two are never compared for equality.
+pub const FOUND_ENCOUNTER_SIGNATURE: u64 = 0x735a_9961_f661_8e7d;
+
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]
-pub fn locked_values() -> [(&'static str, u64); 4] {
+pub fn locked_values() -> [(&'static str, u64); 7] {
     [
         ("golden weapon geometry", GOLDEN_WEAPON_GEOMETRY_FINGERPRINT),
         ("golden weapon identity", GOLDEN_WEAPON_IDENTITY_FINGERPRINT),
@@ -731,13 +885,18 @@ pub fn locked_values() -> [(&'static str, u64); 4] {
             "combat initiative",
             crate::oracle::COMBAT_INITIATIVE_SIGNATURE,
         ),
+        ("found weapon geometry", FOUND_WEAPON_GEOMETRY_FINGERPRINT),
+        ("found weapon identity", FOUND_WEAPON_IDENTITY_FINGERPRINT),
+        ("found encounter", FOUND_ENCOUNTER_SIGNATURE),
     ]
 }
 
 /// Computes every signature from scratch; the probe prints these next to the
 /// locked ones so a mismatch is one line to read.
-pub fn measured_values() -> Result<[(&'static str, u64); 4], EncounterError> {
-    let weapon = crate::weapon::WeaponCompiler::new().compile_descriptor(&weapon_descriptor())?;
+pub fn measured_values() -> Result<[(&'static str, u64); 7], EncounterError> {
+    let mut compiler = crate::weapon::WeaponCompiler::new();
+    let weapon = compiler.compile_descriptor(&weapon_descriptor())?;
+    let found = compiler.compile_descriptor(&found_weapon_descriptor())?;
     let ground = golden_ground();
     let outcome = run_script(
         GOLDEN_SCRIPT,
@@ -745,11 +904,15 @@ pub fn measured_values() -> Result<[(&'static str, u64); 4], EncounterError> {
         Some(&ground),
         GOLDEN_RUN_TICKS,
     )?;
+    let found_outcome = run_found_script(GOLDEN_SCRIPT, Some(&ground), GOLDEN_RUN_TICKS)?;
     Ok([
         ("golden weapon geometry", weapon.geometry_fingerprint()),
         ("golden weapon identity", weapon.fingerprint()),
         ("golden encounter", outcome.signature),
         ("combat initiative", crate::oracle::initiative_signature()?),
+        ("found weapon geometry", found.geometry_fingerprint()),
+        ("found weapon identity", found.fingerprint()),
+        ("found encounter", found_outcome.signature),
     ])
 }
 
@@ -767,12 +930,13 @@ mod tests {
     use super::{
         ADVERSARY_OFFSET, ARENA_RADIUS, DodgeDirection, GOLDEN_ENCOUNTER_SIGNATURE,
         GOLDEN_RUN_TICKS, PLAYER_OFFSET, START_SEPARATION, adversary, adversary_descriptor, dodge,
-        golden_ground, golden_setup, locked_values, measured_values, movement, player_attack,
-        player_descriptor, probe_dodge, reach_of, run_script, sandbox_setup, setup, swing_envelope,
-        trace_signature, tuning, weapon_descriptor,
+        found_attack, found_weapon_descriptor, golden_ground, golden_setup, locked_values,
+        measured_values, movement, player_attack, player_descriptor, probe_dodge, reach_of,
+        run_script, sandbox_setup, setup, trace_signature, tuning, weapon_descriptor,
     };
     use crate::combatant::{SIDES, Side};
     use crate::encounter::{Encounter, EncounterError, WorldContact};
+    use crate::reach::attack_envelope;
     use crate::script::{GOLDEN_SCRIPT, NAMED_MOMENTS};
     use crate::weapon::WeaponCompiler;
     use glam::Vec2;
@@ -908,7 +1072,7 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
         let spec = *encounter.attack_spec(Side::Adversary);
-        let envelope = swing_envelope(
+        let envelope = attack_envelope(
             encounter.character(Side::Adversary),
             encounter.weapon(),
             &spec,
@@ -940,7 +1104,7 @@ mod tests {
         let mut connects = [0.0_f32; SIDES.len()];
         for side in SIDES {
             let spec = *encounter.attack_spec(side);
-            let envelope = swing_envelope(
+            let envelope = attack_envelope(
                 encounter.character(side),
                 encounter.weapon(),
                 &spec,
@@ -993,7 +1157,7 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
         let spec = *encounter.attack_spec(Side::Adversary);
-        let envelope = swing_envelope(
+        let envelope = attack_envelope(
             encounter.character(Side::Adversary),
             encounter.weapon(),
             &spec,
@@ -1271,5 +1435,167 @@ mod tests {
         );
         assert!(compiled.knockback() > 0.0);
         assert!(compiled.stagger() > compiled.hitstop());
+    }
+
+    // -----------------------------------------------------------------------
+    // M9 — the found weapon as a fixture
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_found_weapon_compiles_and_matches_its_locks() {
+        let mut compiler = WeaponCompiler::new();
+        let Ok(found) = compiler.compile_descriptor(&found_weapon_descriptor()) else {
+            panic!("the found weapon must compile");
+        };
+        assert_eq!(
+            found.geometry_fingerprint(),
+            super::FOUND_WEAPON_GEOMETRY_FINGERPRINT,
+            "the found weapon's geometry moved"
+        );
+        assert_eq!(
+            found.fingerprint(),
+            super::FOUND_WEAPON_IDENTITY_FINGERPRINT,
+            "the found weapon's identity moved"
+        );
+    }
+
+    #[test]
+    fn adding_the_found_weapon_left_the_historical_weapon_untouched() {
+        // The M9 profile is additive under the same combat grammar. The shared
+        // style version is hashed into every identity, so bumping it would have
+        // changed the M6 weapon while its descriptor, geometry and behaviour
+        // were untouched. It stays at one, and this is the assertion that says
+        // so out loud.
+        assert_eq!(
+            crate::weapon::COMBAT_STYLE_VERSION,
+            1,
+            "M9 must not bump the shared style version"
+        );
+        assert_eq!(super::FOUND_WEAPON_PROFILE_VERSION, 1);
+        let mut compiler = WeaponCompiler::new();
+        let Ok(original) = compiler.compile_descriptor(&weapon_descriptor()) else {
+            panic!("the original weapon must compile");
+        };
+        assert_eq!(
+            original.fingerprint(),
+            super::GOLDEN_WEAPON_IDENTITY_FINGERPRINT
+        );
+        assert_eq!(
+            original.geometry_fingerprint(),
+            super::GOLDEN_WEAPON_GEOMETRY_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn the_found_swing_compiles_to_the_longer_commitment_the_profile_claims() {
+        let Ok(found) = found_attack().compile() else {
+            panic!("the found attack must compile");
+        };
+        let Ok(original) = player_attack().compile() else {
+            panic!("the player attack must compile");
+        };
+        assert_eq!(found.windup(), 31);
+        assert_eq!(found.active(), 14);
+        assert_eq!(found.recovery(), 58);
+        assert_eq!(found.total(), 103);
+        assert_eq!(found.damage(), 32);
+        assert!(found.total() > original.total());
+        // Three swings to fell a ninety-six health adversary, against four.
+        let swings = |spec: &crate::spec::AttackSpec| 96_u16.div_ceil(spec.damage());
+        assert_eq!(swings(&found), 3);
+        assert_eq!(swings(&original), 4);
+    }
+
+    #[test]
+    fn the_two_weapons_are_distinguishable_without_a_stats_panel() {
+        let mut compiler = WeaponCompiler::new();
+        let Ok(original) = compiler.compile_descriptor(&weapon_descriptor()) else {
+            panic!("the original weapon must compile");
+        };
+        let Ok(found) = compiler.compile_descriptor(&found_weapon_descriptor()) else {
+            panic!("the found weapon must compile");
+        };
+        // Length, mass and palette all move, and the silhouette claim is the
+        // blade rather than the total, because the blade is what a viewer reads.
+        assert!(
+            found.blade().world_length() > original.blade().world_length() * 1.35,
+            "the found blade is not visibly longer: {} against {}",
+            found.blade().world_length(),
+            original.blade().world_length()
+        );
+        assert!(
+            found.solid_voxels() > original.solid_voxels() * 3 / 2,
+            "the found weapon is not visibly heavier: {} against {}",
+            found.solid_voxels(),
+            original.solid_voxels()
+        );
+        assert_ne!(
+            found_weapon_descriptor().scheme,
+            weapon_descriptor().scheme,
+            "the two weapons share a palette"
+        );
+    }
+
+    #[test]
+    fn the_found_weapon_does_not_hang_through_the_ground_when_carried() {
+        // The grip pitch is `1.10` rather than the original's `0.90` because of
+        // exactly this measurement: at `0.90` a twenty-voxel blade's tip sits
+        // below the terrain in the carry pose.
+        let mut compiler = veldwake_character::CharacterCompiler::new();
+        let Ok(body) = compiler.compile_descriptor(&player_descriptor()) else {
+            panic!("the player must compile");
+        };
+        let mut weapons = WeaponCompiler::new();
+        let mut tip_height = |descriptor: &crate::weapon::WeaponDescriptor| -> f32 {
+            let Ok(weapon) = weapons.compile_descriptor(descriptor) else {
+                panic!("the weapon must compile");
+            };
+            let state = veldwake_character::CharacterState::default();
+            let posed = veldwake_character::pose_with(&body, &state, None, None);
+            weapon
+                .blade_world(
+                    posed.world_matrix(),
+                    posed.bone_world()[veldwake_character::BoneId::HandR.index()],
+                )
+                .tip
+                .y
+        };
+        let original = tip_height(&weapon_descriptor());
+        let found = tip_height(&found_weapon_descriptor());
+        assert!(found > 0.0, "the found blade drags: tip at {found}");
+        assert!(
+            found >= original,
+            "the found blade clears worse than the original: {found} against {original}"
+        );
+    }
+
+    #[test]
+    fn the_found_reference_run_is_locked_and_is_not_the_m6_run() {
+        let ground = golden_ground();
+        let Ok(found) = super::run_found_script(GOLDEN_SCRIPT, Some(&ground), GOLDEN_RUN_TICKS)
+        else {
+            panic!("the found reference run must complete");
+        };
+        assert_eq!(
+            found.signature,
+            super::FOUND_ENCOUNTER_SIGNATURE,
+            "the found reference encounter moved"
+        );
+        let Ok(original) = run_script(
+            GOLDEN_SCRIPT,
+            &golden_setup(),
+            Some(&ground),
+            GOLDEN_RUN_TICKS,
+        ) else {
+            panic!("the M6 reference run must complete");
+        };
+        assert_eq!(original.signature, GOLDEN_ENCOUNTER_SIGNATURE);
+        assert_ne!(
+            found.signature, original.signature,
+            "two different fights produced one signature"
+        );
+        assert_eq!(found.counters.events_dropped, 0);
+        // The exchange really happened, and exactly once.
+        assert_eq!(found.counters.interacts[Side::Player.index()], 1);
     }
 }

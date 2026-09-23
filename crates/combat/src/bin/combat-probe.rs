@@ -20,6 +20,7 @@ use veldwake_combat::fixture;
 use veldwake_combat::hit::{Capsule, Segment, Sweep, closest_points, sweep_capsule};
 use veldwake_combat::hurt::narrowing;
 use veldwake_combat::material::{ALL_WEAPON_MATERIALS, luminance};
+use veldwake_combat::reach::attack_envelope;
 use veldwake_combat::script::{GOLDEN_SCRIPT, NAMED_MOMENTS, ScriptRunner};
 use veldwake_combat::tick::{COMBAT_TICK_HZ, CombatClock, seconds_for};
 use veldwake_combat::weapon::{WeaponCompiler, WeaponDescriptor};
@@ -391,13 +392,12 @@ fn reach() -> Result<(), String> {
     println!();
     // Both sides, measured off the pose path rather than off the encounter, so
     // the adversary's own reach is a number too and not an assumption.
-    let weapon = encounter.weapon();
     println!("side        max tip reach   active reach       active height      connects out to");
     for side in SIDES {
         let spec = *encounter.attack_spec(side);
-        let envelope = fixture::swing_envelope(
+        let envelope = attack_envelope(
             encounter.character(side),
-            weapon,
+            encounter.weapon_of(side),
             &spec,
             encounter.combatant(side).weapon_side(),
         );

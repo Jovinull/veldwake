@@ -51,6 +51,7 @@ use veldwake_character::{
 };
 
 use crate::adversary::AdversaryBrain;
+use crate::armament::{ArmamentState, RewardSetup, WeaponVariant};
 use crate::combatant::{Action, AttackKind, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
 use crate::hit::{Segment, Sweep, moving_substeps, sweep_moving_capsule};
@@ -58,6 +59,7 @@ use crate::hurt::HurtVolume;
 use crate::movement::{
     MoveRules, TraversalLegality, facing_of, separate, try_move, turn_toward, wrap_angle,
 };
+use crate::reach::attack_envelope;
 use crate::spec::{ArenaSpec, AttackSpec, AuthoredTuning, EncounterTuning, SpecError};
 use crate::tick::{Ticks, tick_seconds};
 use crate::weapon::{CompiledWeapon, WeaponCompiler, WeaponDescriptor, WeaponError};
@@ -99,6 +101,12 @@ pub struct EncounterSetup {
     /// error one swing forgives, whether the adversary turns to face a player
     /// behind it.
     pub facing_offsets: [f32; SIDES.len()],
+    /// The weapon exchange this encounter offers, if it offers one.
+    ///
+    /// `None` is every M6, M7 and M8 fixture and every regression: with no
+    /// reward configured there is no second weapon to compile, no exchange rule
+    /// that can fire, and no behaviour that differs from M6 in any respect.
+    pub reward: Option<RewardSetup>,
 }
 
 /// What an encounter needs from the world it is happening in.
@@ -113,6 +121,14 @@ pub struct EncounterSetup {
 pub struct WorldContact<'a> {
     ground: Option<&'a dyn GroundSampler>,
     legality: Option<&'a dyn TraversalLegality>,
+    /// Where the fixed weapon-exchange site stands, when this world has one.
+    ///
+    /// **Named for the one thing it is**, not for a generic "site", because a
+    /// vague name is an invitation to reuse it as an accidental interaction
+    /// framework. It is a position and nothing else: no trait, no object, no
+    /// identifier, no query. The world says *where*; the domain owns *how
+    /// close is close enough* and every other part of the rule.
+    weapon_exchange_site: Option<Vec2>,
 }
 
 impl<'a> WorldContact<'a> {
@@ -125,6 +141,25 @@ impl<'a> WorldContact<'a> {
         Self {
             ground: Some(ground),
             legality: Some(legality),
+            weapon_exchange_site: None,
+        }
+    }
+
+    /// A real world that also offers a weapon exchange at a fixed place.
+    ///
+    /// The only constructor that can make an exchange possible. Everything
+    /// that predates M9 uses one of the others and therefore cannot reach the
+    /// rule at all.
+    #[must_use]
+    pub const fn terrain_with_weapon_exchange(
+        ground: &'a dyn GroundSampler,
+        legality: &'a dyn TraversalLegality,
+        weapon_exchange_site: Vec2,
+    ) -> Self {
+        Self {
+            ground: Some(ground),
+            legality: Some(legality),
+            weapon_exchange_site: Some(weapon_exchange_site),
         }
     }
 
@@ -135,6 +170,7 @@ impl<'a> WorldContact<'a> {
         Self {
             ground: Some(ground),
             legality: None,
+            weapon_exchange_site: None,
         }
     }
 
@@ -144,6 +180,7 @@ impl<'a> WorldContact<'a> {
         Self {
             ground,
             legality: None,
+            weapon_exchange_site: None,
         }
     }
 
@@ -153,6 +190,7 @@ impl<'a> WorldContact<'a> {
         Self {
             ground: None,
             legality: None,
+            weapon_exchange_site: None,
         }
     }
 
@@ -164,6 +202,11 @@ impl<'a> WorldContact<'a> {
     #[must_use]
     pub const fn legality(&self) -> Option<&'a dyn TraversalLegality> {
         self.legality
+    }
+
+    #[must_use]
+    pub const fn weapon_exchange_site(&self) -> Option<Vec2> {
+        self.weapon_exchange_site
     }
 }
 
@@ -305,6 +348,12 @@ pub struct CombatCounters {
     pub sweep_substeps_max: u32,
     /// Extra contacts suppressed because the swing had already hit.
     pub multi_hit_suppressed: u32,
+    /// Weapon exchanges the rules accepted.
+    pub interacts: [u32; SIDES.len()],
+    /// Interacts asked for and refused: out of range, or while busy. Counted
+    /// rather than announced, because an interact that fires on every press or
+    /// on none is a defect either way and only the number says which.
+    pub interacts_refused: [u32; SIDES.len()],
     /// Events a tick could not hold. Must stay zero.
     pub events_dropped: u32,
     pub frozen_ticks: [u32; SIDES.len()],
@@ -349,11 +398,33 @@ impl GroundSampler for CountingGround<'_> {
 /// quarters of its length did not.
 pub const TRUNCATED_DODGE_FRACTION: f32 = 0.75;
 
+/// A [`RewardSetup`] after compilation: the object, its swing and its range.
+#[derive(Clone, Debug, PartialEq)]
+struct CompiledReward {
+    weapon: CompiledWeapon,
+    attack: AttackSpec,
+    interact_radius: f32,
+    /// The aim-assist range this weapon earns in the player's hands, already
+    /// floored at the historical constant.
+    aim_range: f32,
+}
+
 /// One fight between two combatants.
 pub struct Encounter {
     tuning: EncounterTuning,
     characters: [CompiledCharacter; SIDES.len()],
+    /// The original weapon. Both sides start with it and the adversary never
+    /// holds anything else.
     weapon: CompiledWeapon,
+    /// The found weapon, when this encounter offers an exchange.
+    reward: Option<CompiledReward>,
+    /// Which of the two the player is holding. Session state: an encounter
+    /// reset restores bodies, health, actions and the brain, and deliberately
+    /// leaves this alone (ARM-001).
+    armament: ArmamentState,
+    /// Aim-assist range per side with the **original** weapon, derived from the
+    /// geometry each body actually swings rather than from a shared literal.
+    aim_range: [f32; SIDES.len()],
     combatants: [Combatant; SIDES.len()],
     brain: AdversaryBrain,
     starts: [Vec2; SIDES.len()],
@@ -383,8 +454,64 @@ impl Encounter {
         let mut compiler = CharacterCompiler::new();
         let player = compiler.compile_descriptor(&setup.player)?;
         let adversary = compiler.compile_descriptor(&setup.adversary)?;
-        let weapon = WeaponCompiler::new().compile_descriptor(&setup.weapon)?;
+        let mut weapon_compiler = WeaponCompiler::new();
+        let weapon = weapon_compiler.compile_descriptor(&setup.weapon)?;
         let characters = [player, adversary];
+
+        // How far each body's blade gets while it can connect, measured from the
+        // geometry it actually swings. The aim-assist range is the larger of
+        // that and the historical constant, so a longer weapon earns a longer
+        // assist and the M6 pair — whose reaches are `2.8835` and `2.7439`, both
+        // under `2.90` — keeps exactly the literal it has always used.
+        let aim_range = [
+            aim_range_for(
+                &characters[Side::Player.index()],
+                &weapon,
+                tuning.player_attack(),
+                characters[Side::Adversary.index()]
+                    .collision()
+                    .capsule()
+                    .radius,
+            ),
+            aim_range_for(
+                &characters[Side::Adversary.index()],
+                &weapon,
+                tuning.adversary_attack(),
+                characters[Side::Player.index()]
+                    .collision()
+                    .capsule()
+                    .radius,
+            ),
+        ];
+
+        let reward = match setup.reward {
+            None => None,
+            Some(reward) => {
+                if !(reward.interact_radius.is_finite() && reward.interact_radius > 0.0) {
+                    return Err(EncounterError::Spec(SpecError::Distance {
+                        field: "interact_radius",
+                        value: reward.interact_radius,
+                    }));
+                }
+                let found = weapon_compiler.compile_descriptor(&reward.weapon)?;
+                let attack = reward.attack.compile()?;
+                let aim_range = aim_range_for(
+                    &characters[Side::Player.index()],
+                    &found,
+                    &attack,
+                    characters[Side::Adversary.index()]
+                        .collision()
+                        .capsule()
+                        .radius,
+                );
+                Some(CompiledReward {
+                    weapon: found,
+                    attack,
+                    interact_radius: reward.interact_radius,
+                    aim_range,
+                })
+            }
+        };
         let starts = setup.starts;
         let healths = [
             Health::full(tuning.player_health()),
@@ -416,6 +543,9 @@ impl Encounter {
             tuning,
             characters,
             weapon,
+            reward,
+            armament: ArmamentState::initial(),
+            aim_range,
             combatants,
             brain: AdversaryBrain::new(tuning.seed()),
             starts,
@@ -470,9 +600,78 @@ impl Encounter {
         &self.characters[side.index()]
     }
 
+    /// The original weapon: what a session starts with, and the only weapon the
+    /// adversary ever holds.
     #[must_use]
     pub const fn weapon(&self) -> &CompiledWeapon {
         &self.weapon
+    }
+
+    /// The found weapon, when this encounter offers an exchange.
+    #[must_use]
+    pub fn found_weapon(&self) -> Option<&CompiledWeapon> {
+        self.reward.as_ref().map(|reward| &reward.weapon)
+    }
+
+    /// Which weapon the player is holding, and therefore which one the site is.
+    ///
+    /// Read-only on purpose: presentation reads an armament and may never write
+    /// one. The exchange rule is the only thing that changes it.
+    #[must_use]
+    pub const fn armament(&self) -> ArmamentState {
+        self.armament
+    }
+
+    /// Whether this encounter offers a weapon exchange at all.
+    #[must_use]
+    pub const fn has_reward(&self) -> bool {
+        self.reward.is_some()
+    }
+
+    /// How close a body must be to the exchange site, in world units.
+    #[must_use]
+    pub fn interact_radius(&self) -> Option<f32> {
+        self.reward.as_ref().map(|reward| reward.interact_radius)
+    }
+
+    /// The compiled weapon one side is holding right now.
+    ///
+    /// **The one place weapon selection happens.** Every weapon-dependent path
+    /// — the world matrix, the blade segment, the sweep radius, the aim range —
+    /// goes through this rather than reaching for `self.weapon`, so a player
+    /// choice cannot reach the adversary and cannot be forgotten in one branch.
+    #[must_use]
+    pub fn weapon_of(&self, side: Side) -> &CompiledWeapon {
+        match (side, self.armament.player()) {
+            // The adversary is outside the exchange pair entirely.
+            (Side::Adversary, _) | (Side::Player, WeaponVariant::Original) => &self.weapon,
+            (Side::Player, WeaponVariant::Found) => match self.reward.as_ref() {
+                Some(reward) => &reward.weapon,
+                // Unreachable while `exchange` is the only writer and it refuses
+                // without a reward; answering with the original weapon is the
+                // safe reading of "the player is holding something".
+                None => &self.weapon,
+            },
+        }
+    }
+
+    /// The aim-assist range of the primary one side swings with the weapon it
+    /// is holding: `max(AIM_ASSIST_RANGE, connects out to)`.
+    ///
+    /// `2.90` for both M6 bodies, and the found weapon's own reach in the
+    /// player's hands. Public because a player policy may know what it is
+    /// holding; the adversary's brain never reads it (COMBAT-005, ARM-002).
+    #[must_use]
+    pub fn aim_range_of(&self, side: Side) -> f32 {
+        match (side, self.armament.player()) {
+            (Side::Adversary, _) | (Side::Player, WeaponVariant::Original) => {
+                self.aim_range[side.index()]
+            }
+            (Side::Player, WeaponVariant::Found) => match self.reward.as_ref() {
+                Some(reward) => reward.aim_range,
+                None => self.aim_range[side.index()],
+            },
+        }
     }
 
     #[must_use]
@@ -549,10 +748,20 @@ impl Encounter {
         }
     }
 
+    /// The spec of one side's primary: the historical swing.
+    ///
+    /// The one place the player's armament reaches a spec. The adversary's
+    /// primary never changes, and the pressure lunge is chosen by kind in
+    /// [`Self::attack_spec_for`] and never passes through here: which weapon
+    /// the player holds decides only which **primary** the player swings.
     fn primary_spec(&self, side: Side) -> &AttackSpec {
-        match side {
-            Side::Player => self.tuning.player_attack(),
-            Side::Adversary => self.tuning.adversary_attack(),
+        match (side, self.armament.player()) {
+            (Side::Adversary, _) => self.tuning.adversary_attack(),
+            (Side::Player, WeaponVariant::Original) => self.tuning.player_attack(),
+            (Side::Player, WeaponVariant::Found) => match self.reward.as_ref() {
+                Some(reward) => &reward.attack,
+                None => self.tuning.player_attack(),
+            },
         }
     }
 
@@ -566,7 +775,7 @@ impl Encounter {
     #[must_use]
     pub fn weapon_matrix(&self, side: Side) -> Mat4 {
         let posed = self.combatants[side.index()].posed();
-        self.weapon.matrix(
+        self.weapon_of(side).matrix(
             posed.world_matrix(),
             posed.bone_world()[BoneId::HandR.index()],
         )
@@ -576,7 +785,7 @@ impl Encounter {
     #[must_use]
     pub fn blade_world(&self, side: Side) -> Segment {
         let posed = self.combatants[side.index()].posed();
-        self.weapon.blade_world(
+        self.weapon_of(side).blade_world(
             posed.world_matrix(),
             posed.bone_world()[BoneId::HandR.index()],
         )
@@ -633,6 +842,10 @@ impl Encounter {
         for side in SIDES {
             self.start_action(side, intents[side.index()], &mut events);
         }
+        // 3b. exchange. After the action, because attack and dodge both outrank
+        // interact when several latches arrive in one tick, and `start_action`
+        // is what consumes them.
+        self.exchange_weapons(player_intent, world, ground, &mut events);
         for side in SIDES {
             self.phase_events(side, &mut events);
         }
@@ -693,8 +906,9 @@ impl Encounter {
     /// - **Inside [`AIM_ASSIST_CONE`] only.** A body facing away does not
     ///   snap round; this closes the last few degrees of a turn the body was
     ///   already most of the way through.
-    /// - **Inside [`AIM_ASSIST_RANGE`] only.** Beyond the reach of the attack
-    ///   there is nothing to assist.
+    /// - **Inside the weapon's aim range only**, which is [`AIM_ASSIST_RANGE`]
+    ///   for both M6 bodies and the found weapon's own reach in the player's
+    ///   hands (M9). Beyond the reach of the attack there is nothing to assist.
     /// - **One other body**, because the encounter has exactly two. This is not
     ///   target selection and there is nothing to select.
     /// - **No camera involvement at all.** The camera is not consulted and not
@@ -703,16 +917,18 @@ impl Encounter {
     ///
     /// A pressure lunge is aimed by the same rule, with the one difference its
     /// distance demands: its range is the far edge of the band it is chosen
-    /// from rather than [`AIM_ASSIST_RANGE`]. The facing a lunge ends up with is
+    /// from rather than any weapon's aim range. The facing a lunge ends up with is
     /// then locked for the whole action, which is what makes the line a line.
     fn aim_at_the_other_body(&mut self, side: Side, kind: AttackKind) {
         let index = side.index();
         let from = self.combatants[index].position();
         let to = self.combatants[side.other().index()].position();
         let offset = to - from;
+        // The lunge keeps combat initiative's rule, whatever the player
+        // holds; only a primary earns the range of the weapon swinging it.
         let range = match (kind, self.tuning.adversary_pressure()) {
             (AttackKind::Pressure, Some(pressure)) => pressure.select_max(),
-            _ => AIM_ASSIST_RANGE,
+            _ => self.aim_range_of(side),
         };
         if offset.length() > range {
             return;
@@ -726,6 +942,70 @@ impl Encounter {
         }
         self.combatants[index].state_mut().facing = bearing;
         self.counters.aim_assists[index] = self.counters.aim_assists[index].saturating_add(1);
+    }
+
+    /// Exchanges the player's weapon with the fixed site's, if the rules allow.
+    ///
+    /// The whole of M9's authority, and every clause is a refusal the caller
+    /// cannot see around:
+    ///
+    /// - **no reward configured**, so no exchange exists to perform. This is
+    ///   every encounter that predates M9 and the reason none of them changed.
+    /// - **the world offers no site**, because only
+    ///   [`WorldContact::terrain_with_weapon_exchange`] supplies one.
+    /// - **the player is busy** — attacking, dodging, staggered, frozen or
+    ///   defeated. A refusal here is counted rather than announced.
+    /// - **out of range**, by planar centre-to-site distance against the
+    ///   radius the tuning owns. Also counted, also silent: there is no prompt
+    ///   at the boundary and no UI anywhere.
+    ///
+    /// A successful exchange re-poses the player immediately. The next tick's
+    /// sweep runs from `previous_blade` to the current blade, and without this
+    /// it would start on one weapon and end on another. The exchange already
+    /// requires a free action, so no sweep is in flight — the re-pose makes
+    /// that an implementation fact rather than an argument.
+    ///
+    /// The adversary never reaches this: [`Intent::adversary`] cannot set the
+    /// verb, and the site belongs to the player's exchange pair alone.
+    fn exchange_weapons(
+        &mut self,
+        intent: Intent,
+        world: WorldContact<'_>,
+        ground: Option<&dyn GroundSampler>,
+        events: &mut StepEvents,
+    ) {
+        if !intent.interact() {
+            return;
+        }
+        let index = Side::Player.index();
+        let Some(reward) = self.reward.as_ref() else {
+            return;
+        };
+        let radius = reward.interact_radius;
+        let Some(site) = world.weapon_exchange_site() else {
+            self.counters.interacts_refused[index] =
+                self.counters.interacts_refused[index].saturating_add(1);
+            return;
+        };
+        if !self.combatants[index].can_act() {
+            self.counters.interacts_refused[index] =
+                self.counters.interacts_refused[index].saturating_add(1);
+            return;
+        }
+        if (self.combatants[index].position() - site).length() > radius {
+            self.counters.interacts_refused[index] =
+                self.counters.interacts_refused[index].saturating_add(1);
+            return;
+        }
+        self.armament.exchange();
+        self.counters.interacts[index] = self.counters.interacts[index].saturating_add(1);
+        // The blade the next sweep starts from must belong to the weapon now in
+        // the hand.
+        self.repose(Side::Player, ground);
+        self.combatants[index].clear_blade();
+        events.push(CombatEvent::ArmamentSwapped {
+            now: self.armament.player(),
+        });
     }
 
     /// Starts an attack or a dodge if one was asked for and is legal.
@@ -1027,7 +1307,7 @@ impl Encounter {
 
         let end = self.blade_world(attacker);
         let start = self.combatants[index].previous_blade().unwrap_or(end);
-        let sweep = Sweep::new(start, end, self.weapon.blade_radius_world());
+        let sweep = Sweep::new(start, end, self.weapon_of(attacker).blade_radius_world());
         let capsule_end = self.combatants[victim_index].hurt_capsule();
         let capsule_start = self.combatants[victim_index]
             .previous_hurt_capsule()
@@ -1146,6 +1426,11 @@ impl Encounter {
             self.resolution = Resolution::Settled(defeated);
             return;
         }
+        // **ARM-001.** Bodies, health, actions and the brain go back; the
+        // armament does not. What the player picked up is session state and
+        // outlives a round of the fight, and the only thing that ever changes
+        // it is an accepted exchange. `self.armament` is deliberately absent
+        // from this block and a test says so.
         for side in SIDES {
             let state = start_state(self.starts, self.facing_offsets[side.index()], side, ground);
             self.combatants[side.index()].reset(state);
@@ -1281,6 +1566,25 @@ pub const AIM_ASSIST_CONE: f32 = 0.61;
 /// to. Beyond the reach of the attack there is nothing to assist.
 pub const AIM_ASSIST_RANGE: f32 = 2.90;
 
+/// The aim-assist range one body earns with one weapon under one spec.
+///
+/// The larger of the historical [`AIM_ASSIST_RANGE`] and the distance this
+/// swing actually connects out to against a body of the given radius. The floor
+/// is what keeps M6 exact — both its bodies connect out to less than `2.90` —
+/// and the derivation is what keeps a longer weapon from owning reach it cannot
+/// use, which the M9 design measured as a facing window collapsing from `69`
+/// degrees to `26`.
+#[must_use]
+fn aim_range_for(
+    character: &CompiledCharacter,
+    weapon: &CompiledWeapon,
+    spec: &AttackSpec,
+    target_radius: f32,
+) -> f32 {
+    let envelope = attack_envelope(character, weapon, spec, BodySide::Right);
+    AIM_ASSIST_RANGE.max(envelope.connects_out_to(target_radius))
+}
+
 /// Ticks a whole action would take, for the probe and the tests.
 #[must_use]
 pub fn action_duration(action: &Action, spec: &AttackSpec) -> Ticks {
@@ -1298,10 +1602,12 @@ mod tests {
         AIM_ASSIST_CONE, AIM_ASSIST_RANGE, CountingGround, Encounter, EncounterError,
         EncounterSetup, PlayerVictoryPolicy, TraversalLegality, WorldContact, action_duration,
     };
+    use crate::armament::{ArmamentState, WeaponVariant};
     use crate::combatant::{Action, AttackKind, Intent, SIDES, Side};
     use crate::event::CombatEvent;
     use crate::fixture;
     use crate::spec::AuthoredTuning;
+    use crate::weapon::CompiledWeapon;
     use glam::Vec2;
     use veldwake_character::ground::{FlatGround, StepGround, SteppedRamp};
     use veldwake_character::skeleton::BoneId;
@@ -1309,6 +1615,560 @@ mod tests {
 
     fn ground() -> FlatGround {
         fixture::golden_ground()
+    }
+
+    /// The blade length of a compiled weapon, so a test can name the thing it
+    /// is comparing without reaching through three accessors inline.
+    fn veldwake_combat_blade_length_of_compiled(weapon: &CompiledWeapon) -> f32 {
+        weapon.blade().world_length()
+    }
+
+    // -----------------------------------------------------------------------
+    // M9 — the weapon exchange
+    // -----------------------------------------------------------------------
+
+    /// A veto that refuses nothing, so an exchange world can be built without
+    /// inventing terrain rules a headless test does not have.
+    struct NoVeto;
+
+    impl TraversalLegality for NoVeto {
+        fn walkable(&self, _x: f64, _z: f64) -> bool {
+            true
+        }
+    }
+
+    /// The world an exchange is offered in, with the site under the player's
+    /// own feet so a test does not have to walk there.
+    fn exchange_world<'a>(ground: &'a dyn GroundSampler, veto: &'a NoVeto) -> WorldContact<'a> {
+        WorldContact::terrain_with_weapon_exchange(ground, veto, fixture::found_site())
+    }
+
+    fn interact() -> Intent {
+        Intent::player(Vec2::ZERO, false, false).interacting(true)
+    }
+
+    #[test]
+    fn a_session_starts_holding_the_original_weapon_with_the_found_one_at_the_site() {
+        let ground = ground();
+        let encounter = armed(&fixture::found_setup(), &ground);
+        assert_eq!(encounter.armament(), ArmamentState::initial());
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+        assert_eq!(encounter.armament().site(), WeaponVariant::Found);
+        assert!(encounter.has_reward());
+        assert!(encounter.found_weapon().is_some());
+    }
+
+    #[test]
+    fn an_encounter_with_no_reward_cannot_exchange_at_all() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::golden_setup(), &ground);
+        assert!(!encounter.has_reward());
+        assert!(encounter.found_weapon().is_none());
+        assert!(encounter.interact_radius().is_none());
+        for _ in 0..200 {
+            let events = encounter.step(interact(), exchange_world(&ground, &veto));
+            assert!(
+                !events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })),
+                "an encounter with no reward published an exchange"
+            );
+        }
+        assert_eq!(encounter.armament(), ArmamentState::initial());
+        // Nothing was refused either: there is no exchange to refuse.
+        assert_eq!(
+            encounter.counters().interacts_refused[Side::Player.index()],
+            0
+        );
+        assert_eq!(encounter.counters().interacts[Side::Player.index()], 0);
+    }
+
+    #[test]
+    fn an_exchange_needs_a_world_that_offers_one() {
+        let ground = ground();
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        // A world with no site: the reward exists, the press is refused.
+        for _ in 0..10 {
+            let events = encounter.step(interact(), WorldContact::ground_only(&ground));
+            assert!(!events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })));
+        }
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+        assert_eq!(
+            encounter.counters().interacts_refused[Side::Player.index()],
+            10
+        );
+    }
+
+    #[test]
+    fn an_exchange_out_of_range_is_refused_and_in_range_is_accepted() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let Some(radius) = encounter.interact_radius() else {
+            panic!("the found setup must carry an interact radius");
+        };
+        // Far away: the site sits well beyond the radius from the player.
+        let far = fixture::found_site() + Vec2::new(radius * 4.0, 0.0);
+        let far_world = WorldContact::terrain_with_weapon_exchange(&ground, &veto, far);
+        let events = encounter.step(interact(), far_world);
+        assert!(!events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+        assert_eq!(
+            encounter.counters().interacts_refused[Side::Player.index()],
+            1
+        );
+
+        // Under its own feet: accepted.
+        let events = encounter.step(interact(), exchange_world(&ground, &veto));
+        let swapped: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event, CombatEvent::ArmamentSwapped { .. }))
+            .collect();
+        assert_eq!(swapped.len(), 1, "an exchange published {swapped:?}");
+        assert_eq!(
+            swapped[0],
+            CombatEvent::ArmamentSwapped {
+                now: WeaponVariant::Found
+            }
+        );
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+        assert_eq!(encounter.armament().site(), WeaponVariant::Original);
+        assert_eq!(encounter.counters().interacts[Side::Player.index()], 1);
+    }
+
+    #[test]
+    fn every_accepted_exchange_publishes_exactly_one_event() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let mut swaps = 0;
+        // A latch that is never cleared: a hundred ticks of "interact".
+        for _ in 0..100 {
+            let events = encounter.step(interact(), exchange_world(&ground, &veto));
+            swaps += events
+                .iter()
+                .filter(|event| matches!(event, CombatEvent::ArmamentSwapped { .. }))
+                .count();
+        }
+        // The domain does not deduplicate a held latch — the client consumes it
+        // — so what this proves is the bound: one event per accepted exchange,
+        // never more, and the counters agree with the events.
+        assert_eq!(
+            u32::try_from(swaps).unwrap_or(u32::MAX),
+            encounter.counters().interacts[Side::Player.index()],
+            "events and accepted exchanges disagree"
+        );
+        assert_eq!(encounter.counters().events_dropped, 0);
+    }
+
+    #[test]
+    fn an_exchange_is_refused_while_the_body_is_busy() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        // Commit to a swing, then try to swap in the middle of it.
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            exchange_world(&ground, &veto),
+        );
+        assert!(encounter.combatant(Side::Player).action().is_attacking());
+        let refused_before = encounter.counters().interacts_refused[Side::Player.index()];
+        let events = encounter.step(interact(), exchange_world(&ground, &veto));
+        assert!(!events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+        assert_eq!(
+            encounter.counters().interacts_refused[Side::Player.index()],
+            refused_before + 1
+        );
+    }
+
+    #[test]
+    fn attack_outranks_dodge_outranks_interact_in_one_tick() {
+        let ground = ground();
+        let veto = NoVeto;
+        // Attack plus interact: the swing happens and the swap does not, and
+        // the press does not fire later as a stale latch either, because the
+        // domain never stores it.
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let events = encounter.step(
+            Intent::player(Vec2::ZERO, true, false).interacting(true),
+            exchange_world(&ground, &veto),
+        );
+        assert!(events.any(|event| matches!(event, CombatEvent::SwingStarted { .. })));
+        assert!(!events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+        // Run the whole swing out with no further input: no surprise swap.
+        for _ in 0..200 {
+            let events = encounter.step(Intent::idle(), exchange_world(&ground, &veto));
+            assert!(
+                !events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })),
+                "an interact pressed with an attack fired later as a stale latch"
+            );
+        }
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+
+        // Dodge plus interact: the dodge happens and the swap does not.
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let events = encounter.step(
+            Intent::player(Vec2::ZERO, false, true).interacting(true),
+            exchange_world(&ground, &veto),
+        );
+        assert!(events.any(|event| matches!(event, CombatEvent::DodgeStarted { .. })));
+        assert!(!events.any(|event| matches!(event, CombatEvent::ArmamentSwapped { .. })));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Original);
+    }
+
+    #[test]
+    fn the_adversary_holds_the_original_weapon_in_every_armament_state() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let original = encounter.weapon().fingerprint();
+        let adversary_spec = *encounter.attack_spec(Side::Adversary);
+        assert_eq!(encounter.weapon_of(Side::Adversary).fingerprint(), original);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+        assert_eq!(
+            encounter.weapon_of(Side::Adversary).fingerprint(),
+            original,
+            "the player's choice reached the adversary's weapon"
+        );
+        assert_eq!(
+            *encounter.attack_spec(Side::Adversary),
+            adversary_spec,
+            "the player's choice reached the adversary's tuning"
+        );
+    }
+
+    #[test]
+    fn the_player_weapon_and_spec_follow_the_armament() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let original_weapon = encounter.weapon().fingerprint();
+        let original_spec = *encounter.attack_spec(Side::Player);
+        assert_eq!(
+            encounter.weapon_of(Side::Player).fingerprint(),
+            original_weapon
+        );
+
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        let found_weapon = encounter.weapon_of(Side::Player).fingerprint();
+        let found_spec = *encounter.attack_spec(Side::Player);
+        assert_ne!(found_weapon, original_weapon, "the weapon did not change");
+        assert_ne!(found_spec, original_spec, "the spec did not change");
+        assert!(
+            found_spec.total() > original_spec.total(),
+            "the found swing is not the longer commitment: {} against {}",
+            found_spec.total(),
+            original_spec.total()
+        );
+        assert!(found_spec.damage() > original_spec.damage());
+
+        // And the blade the rules sweep follows it too.
+        let blade = encounter.blade_world(Side::Player);
+        let length = (blade.tip - blade.base).length();
+        let found_blade = encounter
+            .found_weapon()
+            .map(veldwake_combat_blade_length_of_compiled);
+        assert!(
+            found_blade.is_some_and(|expected| (length - expected).abs() < 1.0e-4),
+            "the swept blade is not the found weapon's: {length} against {found_blade:?}"
+        );
+    }
+
+    #[test]
+    fn the_m6_pair_keeps_the_historical_aim_assist_range_exactly() {
+        let ground = ground();
+        // The floor is what keeps M6 exact: both historical bodies connect out
+        // to less than the constant, so the max() returns the literal.
+        let encounter = armed(&fixture::golden_setup(), &ground);
+        for side in SIDES {
+            let derived = encounter.aim_range_of(side);
+            assert!(
+                (derived - AIM_ASSIST_RANGE).abs() < f32::EPSILON,
+                "{} moved off the historical aim range: {derived}",
+                side.name()
+            );
+        }
+        // Same with a reward configured but not taken.
+        let encounter = armed(&fixture::found_setup(), &ground);
+        for side in SIDES {
+            assert!((encounter.aim_range_of(side) - AIM_ASSIST_RANGE).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn the_found_weapon_earns_an_aim_range_past_the_historical_floor() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        let derived = encounter.aim_range_of(Side::Player);
+        assert!(
+            derived > AIM_ASSIST_RANGE,
+            "the found weapon did not earn a longer aim range: {derived}"
+        );
+        // The adversary is untouched by the player's choice.
+        assert!((encounter.aim_range_of(Side::Adversary) - AIM_ASSIST_RANGE).abs() < f32::EPSILON);
+        // And it reaches past the distance the design measured the facing
+        // window collapsing at, which is the whole reason the range is derived.
+        assert!(
+            derived > 3.2,
+            "the derived range does not cover the band the reach was bought for: {derived}"
+        );
+    }
+
+    #[test]
+    fn a_defeat_reset_restores_the_bodies_and_never_the_armament() {
+        // ARM-001, driven through the authoritative loop rather than asserted
+        // about the code.
+        let ground = ground();
+        let veto = NoVeto;
+        let mut setup = fixture::found_setup();
+        setup.player_victory = PlayerVictoryPolicy::ResetEncounter;
+        let mut encounter = armed(&setup, &ground);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+
+        let mut saw_reset = false;
+        for _ in 0..40_000 {
+            let events = encounter.step(Intent::idle(), exchange_world(&ground, &veto));
+            if events.any(|event| matches!(event, CombatEvent::EncounterReset)) {
+                saw_reset = true;
+                break;
+            }
+        }
+        assert!(saw_reset, "the adversary never defeated a passive player");
+        assert!(encounter.counters().resets >= 1);
+        assert_eq!(
+            encounter.combatant(Side::Player).health().current(),
+            encounter.tuning().player_health(),
+            "the reset did not restore health"
+        );
+        assert_eq!(
+            encounter.armament().player(),
+            WeaponVariant::Found,
+            "an encounter reset took the found weapon back"
+        );
+        assert_eq!(encounter.armament().site(), WeaponVariant::Original);
+    }
+
+    #[test]
+    fn a_victory_leaves_the_armament_alone_too() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut setup = fixture::found_setup();
+        setup.player_victory = PlayerVictoryPolicy::Remain;
+        let mut encounter = armed(&setup, &ground);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+
+        // Walk in and attack whenever free until the adversary falls.
+        let mut settled = false;
+        for _ in 0..40_000 {
+            let free = encounter.combatant(Side::Player).action().is_free();
+            let intent = Intent::player(Vec2::new(0.0, -1.0), free, false);
+            let _ = encounter.step(intent, exchange_world(&ground, &veto));
+            if encounter.outcome_settled() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "the player never won under Remain");
+        assert_eq!(encounter.outcome(), Some(Side::Adversary));
+        assert_eq!(encounter.counters().resets, 0);
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+    }
+
+    #[test]
+    fn an_exchange_is_reversible_and_a_new_encounter_starts_over() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        assert_eq!(
+            encounter.armament(),
+            ArmamentState::initial(),
+            "returning to the site did not reverse the choice"
+        );
+
+        // A new process means a new encounter, and nothing was written down.
+        let fresh = armed(&fixture::found_setup(), &ground);
+        assert_eq!(fresh.armament(), ArmamentState::initial());
+    }
+
+    #[test]
+    fn the_found_weapon_connects_from_further_away_in_the_real_loop() {
+        // The sidegrade's substance, measured through the authoritative tick
+        // loop rather than through the envelope that predicted it. The sandbox
+        // adversary never wakes, never moves and never swings, so only the
+        // player's own weapon is in play.
+        let ground = ground();
+        let veto = NoVeto;
+
+        let furthest_hit = |found: bool| -> f32 {
+            let mut best = 0.0_f32;
+            let mut step: i16 = 0;
+            while step <= 60 {
+                let gap = 2.4 + f32::from(step) * 0.02;
+                let mut setup = fixture::sandbox_setup();
+                setup.reward = Some(fixture::reward_setup());
+                setup.starts = [Vec2::new(0.0, gap * 0.5), Vec2::new(0.0, -gap * 0.5)];
+                let mut encounter = armed(&setup, &ground);
+                let site = setup.starts[Side::Player.index()];
+                let world = WorldContact::terrain_with_weapon_exchange(&ground, &veto, site);
+                if found {
+                    let _ = encounter.step(interact(), world);
+                    assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+                }
+                let spec = *encounter.attack_spec(Side::Player);
+                let mut hit = false;
+                for tick in 0..(u64::from(spec.total()) + 40) {
+                    let events = encounter.step(
+                        Intent::player(Vec2::ZERO, tick == 0, false),
+                        WorldContact::ground_only(&ground),
+                    );
+                    if events.any(|event| {
+                        matches!(
+                            event,
+                            CombatEvent::Hit {
+                                victim: Side::Adversary,
+                                ..
+                            }
+                        )
+                    }) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if hit {
+                    best = best.max(gap);
+                }
+                step += 1;
+            }
+            best
+        };
+
+        let original = furthest_hit(false);
+        let found = furthest_hit(true);
+        assert!(original > 0.0, "the original weapon never connected");
+        assert!(
+            found > original + 0.3,
+            "the found weapon does not reach meaningfully further: {found} against {original}"
+        );
+    }
+
+    #[test]
+    fn the_reach_the_found_weapon_buys_costs_about_what_the_commitment_does() {
+        // The sidegrade relation, asserted as a relation and not as a
+        // bit-level lock: the extra closing time the reach buys against the
+        // adversary's approach is within a few ticks of the extra lock the
+        // longer action costs. Neither weapon is safer; they are different.
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let original_spec = *encounter.attack_spec(Side::Player);
+        let original_reach = encounter.aim_range_of(Side::Player);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        let found_spec = *encounter.attack_spec(Side::Player);
+        let found_reach = encounter.aim_range_of(Side::Player);
+
+        let adversary = *encounter.tuning().adversary();
+        let strike = adversary.strike_range();
+        let approach = adversary.approach_speed();
+        let close_ticks = |from: f32| -> f32 { (from - strike).max(0.0) / approach * 120.0 };
+        let bought = close_ticks(found_reach) - close_ticks(original_reach);
+        let paid = found_spec.total().saturating_sub(original_spec.total());
+        assert!(bought > 0.0, "the found weapon bought no closing time");
+        assert!(paid > 0, "the found weapon cost no extra commitment");
+        let paid = f64::from(paid);
+        assert!(
+            (f64::from(bought) - paid).abs() <= 8.0,
+            "the sidegrade relation broke: reach buys {bought:.1} ticks, commitment costs {paid:.1}"
+        );
+    }
+
+    /// COMBAT-005 and ARM-002 together, in the loop that combines them: an
+    /// adversary with the pressure lunge, facing a player that is identical in
+    /// every respect but the weapon in its hand, makes exactly the same
+    /// decisions tick for tick — the lunge, the primary, the spacing dodge, the
+    /// line and where its body goes.
+    ///
+    /// The player never swings here, so nothing the found weapon *does* can
+    /// reach the adversary; what is left is whether the brain *knows* what is
+    /// held, and it must not. The two runs differ only in whether the first
+    /// tick's press is an interact, which is the real exchange rule and the
+    /// only thing that can change an armament. Two scripts: a player that
+    /// stands and is hit, and one that walks a fixed pattern and dodges.
+    #[test]
+    fn the_adversary_decides_the_same_whichever_weapon_the_player_holds() {
+        let ground = ground();
+        let veto = NoVeto;
+        let pressure = fixture::pressure();
+        let separation = (pressure.select_min + pressure.select_max) * 0.5 + 1.0;
+        let mut setup = initiative(separation);
+        setup.reward = Some(fixture::reward_setup());
+        let site = setup.starts[Side::Player.index()];
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &veto, site);
+        let scripts: [fn(u32) -> Intent; 2] = [
+            |_| Intent::idle(),
+            |tick| {
+                let phase = tick % 240;
+                let across = if (tick / 240) % 2 == 0 { 1.0 } else { -1.0 };
+                match phase {
+                    0..60 => Intent::player(Vec2::new(0.0, -1.0), false, false),
+                    60..100 => Intent::player(Vec2::new(across, 0.0), false, phase == 70),
+                    100..160 => Intent::player(Vec2::new(0.0, 1.0), false, false),
+                    _ => Intent::idle(),
+                }
+            },
+        ];
+        for script in scripts {
+            let mut runs = [WeaponVariant::Original, WeaponVariant::Found].map(|variant| {
+                let mut encounter = armed(&setup, &ground);
+                let first = Intent::idle().interacting(variant == WeaponVariant::Found);
+                let _ = encounter.step(first, world);
+                assert_eq!(encounter.armament().player(), variant);
+                encounter
+            });
+            let mut lunges = 0_u32;
+            let mut spacing = 0_u32;
+            for tick in 1..3_000_u32 {
+                for encounter in &mut runs {
+                    let _ = encounter.step(script(tick), world);
+                }
+                let [original, found] = &runs;
+                let (a, b) = (
+                    original.combatant(Side::Adversary),
+                    found.combatant(Side::Adversary),
+                );
+                assert_eq!(
+                    original.brain().state(),
+                    found.brain().state(),
+                    "tick {tick}: the brain read the weapon"
+                );
+                assert_eq!(a.action(), b.action(), "tick {tick}: a different decision");
+                assert_eq!(a.position(), b.position(), "tick {tick}: a different place");
+                assert_eq!(
+                    a.state().facing.to_bits(),
+                    b.state().facing.to_bits(),
+                    "tick {tick}: a different line"
+                );
+                assert_eq!(
+                    original.combatant(Side::Player).health(),
+                    found.combatant(Side::Player).health()
+                );
+                lunges = original.counters().pressure_swings;
+                spacing = original.counters().dodges[Side::Adversary.index()];
+            }
+            // The comparison was over a fight, not over an idle adversary.
+            assert!(lunges > 0, "no lunge was compared");
+            let [original, found] = &runs;
+            assert_eq!(original.counters().swings[1], found.counters().swings[1]);
+            assert_eq!(spacing, found.counters().dodges[Side::Adversary.index()]);
+            assert_eq!(found.armament().player(), WeaponVariant::Found);
+        }
     }
 
     fn armed(setup: &EncounterSetup, ground: &dyn GroundSampler) -> Encounter {
