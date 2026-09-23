@@ -1,6 +1,6 @@
 # Combat Initiative / Spacing
 
-Status: **implemented and independently QA-passed on `feat/combat-initiative-spacing`; technical and self-QA gates green; OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23.** No pull request, nothing merged, no milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`. The owner's words and verdict are only in *Owner playtest* below; every other section is technical and self-QA evidence and stays that.
+Status: **complete.** Implementation complete; author self-QA complete; **OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS**, 2026-09-23; **independent QA: PASS**, 2026-09-23. Submitted to `main` by pull request from `feat/combat-initiative-spacing`; the merge record belongs to the post-merge handoff. No milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`. The owner's words and verdict are only in *Owner playtest* below; every other section is technical and self-QA evidence and stays that.
 
 ## Product question
 

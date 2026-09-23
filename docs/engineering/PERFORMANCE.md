@@ -258,7 +258,7 @@ Drained in `30.2` s, sampled at 1 Hz against a report published every five, so t
 
 ## Combat initiative, measured on the audited host
 
-On `feat/combat-initiative-spacing`, not merged. Release builds, `combat-probe bench 24000`, alternating a `main` binary and the branch binary four rounds each so a slow moment of the host lands on both:
+Measured on `feat/combat-initiative-spacing` before it was submitted to `main`. Release builds, `combat-probe bench 24000`, alternating a `main` binary and the branch binary four rounds each so a slow moment of the host lands on both:
 
 | measure | `main` | branch |
 |---|---|---|

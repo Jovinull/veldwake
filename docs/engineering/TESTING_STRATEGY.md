@@ -144,7 +144,7 @@ M8's own tests ask the plan and the compiler whether they agree with themselves.
 
 ## Combat initiative
 
-On `feat/combat-initiative-spacing`, not merged. The workspace there has **793 tests** that run by default and **798** with `--run-ignored all`: the three historical ignored fixtures plus `measure_the_lunge_band`, which prints the table the lunge's band and windup were chosen from, and `print_the_driven_schedule_at_the_clearing`, which prints the tick at which each frozen QA capture was taken. The branch adds 38 tests that run by default and changes none that `main` has.
+Combat initiative (`feat/combat-initiative-spacing`) brings the workspace to **793 tests** that run by default and **798** with `--run-ignored all`: the three historical ignored fixtures plus `measure_the_lunge_band`, which prints the table the lunge's band and windup were chosen from, and `print_the_driven_schedule_at_the_clearing`, which prints the tick at which each frozen QA capture was taken. It adds 38 tests that run by default and changes none that `main` already had.
 
 The tests answer five questions, each with an oracle that does not share code with the thing it judges:
 
