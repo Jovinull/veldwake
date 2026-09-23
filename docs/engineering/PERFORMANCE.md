@@ -371,3 +371,11 @@ session that offered an exchange built a whole second golden world — landmark
 plan included, `248`–`409` ms in release by KI-035's own range — just to log
 one line. The revisit computes the signature from the terrain the session
 already has, and only for the product site.
+
+**After the owner-approved found retune** (damage `28`, windup `36` ticks), same
+host, same method: combat tick `6.81`–`7.52` µs with the found weapon against
+initiative, `7.44`–`7.66` µs with the original and `7.50`–`8.26` µs for the
+historical encounter in the same hour — noise; the client unchanged at `60` FPS
+and `16.66`–`16.67` ms, `1,091,712` GPU bytes, `35`/`35` draws and `2,800`
+dynamic bytes a frame in the laboratory. A spec change touches no geometry, so
+none of the rendering numbers could have moved.

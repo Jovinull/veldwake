@@ -4,9 +4,11 @@ Status (M9 revisit, 2026-09-23): **ported onto combat initiative on
 `feat/m9-meaningful-reward-revisit`; technical gates and the headless pre-gate
 PASS; `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`: FAIL** — the found
 weapon was perceived as better overall and the original as offering no
-practical advantage, while combat initiative held with either weapon. A retune
-is **not** authorised; the causal investigation is recorded. Not merged and not
-complete. See [*M9 REVISIT*](#m9-revisit) at the end;
+practical advantage, while combat initiative held with either weapon. After the
+causal investigation the owner **approved one retune** of the found weapon
+(damage `32` → `28`, windup `31` → `36` ticks); it is implemented, re-measured
+and self-QA'd, and **ready for `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT
+2)`, not yet run.** Not merged and not complete. See [*M9 REVISIT*](#m9-revisit) at the end;
 everything between here and there is the original M9's record, unchanged.
 
 Original status (2026-09-22, frozen branch): **M9 PRODUCT GATE: FAIL — mechanical sidegrade exists, but the current
@@ -702,8 +704,9 @@ generalized equipment system; **and no two-handed pose or second-hand contact.**
 ## M9 REVISIT
 
 Status: **M9 REVISIT PRE-GATE: PASS; OWNER PLAYTEST — WEAPON CHOICE MATTERS
-(REVISIT): FAIL, 2026-09-23** (see *Result — 2026-09-23* below). Retune not
-authorised. Branch
+(REVISIT): FAIL, 2026-09-23** (see *Result — 2026-09-23* below); **approved
+retune implemented and re-measured, ready for REVISIT 2, not yet run** (see
+*APPROVED RETUNE AFTER REVISIT FAIL*). Branch
 `feat/m9-meaningful-reward-revisit`, cut from `docs/post-combat-initiative-handoff`
 at `0aeac9c849a27e71d249d5d013376d50e1896e9d` (`main` at
 `af475efc18139dfc4b86b3c41e165dcfd0d7393c` plus the post-merge handoff), on
@@ -778,7 +781,7 @@ The found weapon is **armament, not a third attack kind**. There is no
 | side | kind | spec |
 |---|---|---|
 | player, original | `Primary` | the historical player attack |
-| player, found | `Primary` | the found attack (`31` / `14` / `58` ticks, `32` damage) |
+| player, found | `Primary` | the found attack (`31` / `14` / `58` ticks, `32` damage as ported; `36` / `14` / `58`, `28` after the approved retune) |
 | adversary | `Primary` | the historical adversary primary, whatever the player holds |
 | adversary | `Pressure` | the `PressureSpec`, whatever the player holds |
 
@@ -1386,6 +1389,208 @@ laboratory: whether the owner names a situation for the original (a clean
 fight, a quick kill, a recovery after a bad read); whether the found weapon
 still reads as the big, heavy, easier-to-reach sword; whether "mais lenta" now
 feels like a price; and whether running in and attacking still fails with both.
+
+### APPROVED RETUNE AFTER REVISIT FAIL
+
+Approved by the owner after the causal investigation above, 2026-09-23, and
+implemented in `feat: retune the found weapon sidegrade` (`5e0e09d`). **Only the
+found weapon's `Primary` spec changed**, and only in two values:
+
+| | OLD | NEW |
+|---|---|---|
+| damage | `32` | `28` |
+| windup | `0.26` s → `31` ticks | `0.30` s → `36` ticks |
+
+Authored seconds compile to ticks at `120` Hz by rounding to the nearest tick:
+`0.26 × 120 = 31.2 → 31`, `0.30 × 120 = 36.0 → 36`. The compiled found swing is
+now `36 / 14 / 58` ticks, `108` in total, against the original's `22 / 12 / 41`
+and `75`. Active (`14`), recovery (`58`), stagger (`41`), hitstop (`10`),
+step-in (`0.30`), knockback (`0.50`), the descriptor, the geometry, the reach,
+the grip, the pose, the aim-assist derivation, the interaction radius, the
+reward site, `ArmamentState` and the exchange are exactly as before.
+
+**WHY:** the found weapon's reach gave a careful player easier contact at the
+distance a person naturally swings from, every fight, while its commitment was
+almost never charged to that player; and needing one hit fewer than the
+original compounded the advantage (*Causal investigation*, above).
+
+**Locks.** `FOUND_ENCOUNTER_SIGNATURE` `0x735a_9961_f661_8e7d` →
+`0xa5b7_8ee1_c589_a499`, and `REWARD_BEHAVIOR_SIGNATURE`
+`0x0f08_fbf7_08e3_206d` → `0x08ac_216e_2ef0_0962`, each re-locked once with an
+OLD/NEW/WHY paragraph beside the constant whose reason is exactly this retune:
+the first is the reference fight held with the found weapon, the second folds
+both compiled attack specs. Everything else is exact:
+`FOUND_WEAPON_GEOMETRY_FINGERPRINT` `0x0723_e9dd_aeff_d4d5`,
+`FOUND_WEAPON_IDENTITY_FINGERPRINT` `0xa09f_cd9b_fa45_d87a`, both golden weapon
+locks, `GOLDEN_ENCOUNTER_SIGNATURE` `0x6415_7522_d253_5658`,
+`COMBAT_INITIATIVE_SIGNATURE` `0x8238_2662_d859_8cf3`, and every world,
+traversal and landmark lock. `FOUND_WEAPON_PROFILE_VERSION` stays `1`: this is
+combat-spec tuning, and the visual profile it versions did not change.
+
+**One test changed its driver, not its claim.**
+`a_victory_leaves_the_armament_alone_too` (ARM-001, the victory case) won the
+historical encounter with a blind walk-and-swing only while the found weapon
+felled the adversary in three swings; with four it lost a round first
+(`resets = 1`). It now wins with the read policy, the M6 intentional player,
+and still asserts a victory under `Remain` with no reset and the found weapon
+still in hand.
+
+#### The same measurements, re-run
+
+Every table the investigation used, with the same policies, seeds, positions,
+terrain and adversary; nothing substituted.
+
+**Perceived distance** (a person who swings at a fixed distance, whatever it
+holds; six seeds):
+
+| swings at | original, mashing | found, mashing | original, stepping off the lunge | found, stepping off the lunge |
+|---|---|---|---|---|
+| `2.6` | 6/0, `468` hp | 6/0, `468` hp | 6/0, `576`, **`3,930`** ticks | 6/0, `576`, `4,731` ticks |
+| `3.0` | **0/6**, hit `13%` | **6/0**, `360` hp, hit `50%` | 6/0, `576`, `5,622` ticks, hit `44%` | 6/0, `576`, `5,553` ticks, hit `67%` |
+| `3.3` | **0/6**, hit `8%` | **6/0**, `360` hp, hit `50%` | 6/0, `576`, `6,540` ticks, hit `36%` | 6/0, `576`, **`5,478`** ticks, hit `67%` |
+| `3.6` | 0/6 | 0/6, hit `0%` | 6/0, **`576`** | 6/0, **`252`**, `18` hits taken while committed |
+
+The found weapon keeps its reach (hit map unchanged: `201` connecting cells
+against `162`, `3.4` against `2.9` inside the aim cone) and its contact at the
+distance a person swings from. Close in, the original is now the faster weapon;
+swinging from too far, the found weapon is now punished and the original is not.
+
+**Owner-spam:** original **2/4**, `156` hp; found **2/4**, `120` hp (before the
+retune `3/3`). By seed, the found weapon wins at misjudgement `-0.25` and `-0.15`
+(`60` hp each) and loses from `0.00` on, landing nothing at `+0.10` and beyond.
+Eighteen diagnostic seeds: `6/12` for each weapon.
+
+**Spam-read** (health out of `576`):
+
+| lag | original | found |
+|---|---|---|
+| 18 | 6/0, `576`, `5,071` ticks | 6/0, `558`, `7,770` ticks |
+| 24 | 6/0, `576`, `5,253` | 6/0, `522`, `7,426` |
+| 32 | 6/0, `576`, `4,975` | 6/0, `468`, `7,102` |
+| 48 | 6/0, `576`, `5,034` | **3/3, `144`**, `8,874`, `21` hits taken while committed |
+
+**Read-dodge and read-walk** (all 6/0 at `576` except read-walk 48, `3/3` and
+`288` for both; ticks):
+
+| lag | read-dodge original | read-dodge found | read-walk original | read-walk found |
+|---|---|---|---|---|
+| 18 | **`5,130`** | `5,694` | `5,220` | `5,322` |
+| 24 | **`5,124`** | `5,694` | `5,460` | `5,424` |
+| 32 | `5,694` | `5,700` | `5,646` | `5,610` |
+| 48 | `6,462` | **`6,042`** | **`5,262`** | `6,357` |
+
+**The late read** — the late reader who still swings, above — is where the two
+weapons now differ most: the original keeps full health at every lag; the found
+weapon loses `18` to `432` of `576` and, at `400` ms, half its fights. The
+original is never caught by a lunge while its own swing locks it past the escape
+deadline; the found weapon is `20` times of `20` under owner-spam and `17` under
+spam-read at `48` (`14` of them hit).
+
+**Pressure interruption:** a found charge now wins the race in **`1`** of the
+band's `77` cells (`4.35`, misjudgement `+0.25`; before the retune `10`); `0`
+lunges were cut in any measured fight with either weapon.
+
+**Primary:** the found weapon still interrupts the adversary's primary more
+often under spam-read (`15`–`18` cuts against `4`–`5`), and neither weapon is
+hit by a primary in any careful policy.
+
+**Whiff punish:** the opening probe with the found weapon's nominal reach still
+misses at every lag, as before; by answer distance the found weapon lands on
+recovery tick `78`–`119` from up to `3.2`, about five ticks later than before
+the retune, and at a `400` ms reaction it must answer from `2.9`–`3.2`; the
+original lands on `69`–`119` from up to `3.0`. Both still fit the `120`-tick
+opening.
+
+**In the laboratory**, golden world, six seeds: owner-spam `2/4` each;
+spam-read original `576` at every lag, found `558`, `522`, `468` and **`168`**
+(`4/2`) at `48`; read-dodge original faster at `18`–`24` (`5,382`, `5,370`
+against `5,946`, `5,940`), equal at `32`, found faster at `48`; COMBAT-005's
+counter `0`, no stall, no truncated spacing dodge.
+
+**COMBAT-005:** `the_adversary_decides_the_same_whichever_weapon_the_player_holds`
+passes unchanged — the brain still does not know which weapon the player holds.
+
+#### Assessment against the hard stops
+
+| stop | measured | result |
+|---|---|---|
+| A. found owner-spam `5/6` or `6/6` | `2/4` (and `6/12` over eighteen seeds) | not triggered |
+| B. found dominates in survivability, clean time, useful range and safety at once | useful range: found; survivability and safety under a late read: original; clean time: original at `2.6` and at read lags `18`–`24`, found at `3.3` and read `48` | not triggered |
+| C. the original has no useful regime | faster close in and in a quick clean read; full health under every late read; never caught locked by a lunge; safe when swinging from too far | not triggered |
+| D. the found weapon loses its range and contact advantage | hit map unchanged; mashing at `3.0`–`3.3` still `6/0` against the original's `0/6` | not triggered |
+| E. the found weapon becomes simply bad | equal or faster than the original for a careful player swinging from `3.0`–`3.3`; `6/0` in every careful policy | not triggered |
+| F. damage `28` no longer reads heavier than `24` | heavier per hit by the rules; **the eight-pip readout shows the same pips after the first two hits of either weapon** (`6`, `4`) and differs only at the third (`1` against `2`); the impact voice was already identical (KI-037); knockback `0.50` against `0.35`, stagger `41` against `36` ticks and hitstop `10` against `8` are unchanged and visible | not triggered — **the first risk for the owner's re-run** |
+| G. the adversary or pressure had to change | nothing outside the found spec changed | not triggered |
+| H. `COMBAT_INITIATIVE_SIGNATURE` moved | `0x8238_2662_d859_8cf3` | not triggered |
+| I. found geometry or identity moved | both exact | not triggered |
+| J. any other lock moved | only the two expected | not triggered |
+
+**The measured shape is the one the owner approved.** The original is the
+reactive, forgiving weapon — faster close in and in a quick clean read, safe
+after a late read, never caught by its own swing. The found weapon is the reach
+weapon — easier contact from where a person swings, faster from there, heavier
+per hit — and it now pays for a bad commitment. **What remains uncertain, and
+is the gate's question:** the clean-read speed difference is modest (about
+`10%`) and depends on the reaction lag, and the heavier hit may not read as
+heavier.
+
+#### Real-client self-QA, retuned
+
+Release client, `m4-golden`, the same serial harness; twelve runs plus two
+benchmarks, every one exit `0`, no `WARN`, `ERROR` or panic line.
+
+| evidence | what the run showed |
+|---|---|
+| original fights normally | live read driver: `16` swings, `16` hits, `16` lunge whiffs; the adversary's health `72 → 48 → 24 → 0`, four rounds in forty seconds |
+| found fights normally, correct damage | live read driver holding the found weapon: `15` hits; health `68 → 40 → 12 → 0`, three rounds in forty seconds |
+| correct timing | frozen `weapon-choice:read+found@216`: the found swing that started at tick `175` connects at `216` against the original's `200` from the same start |
+| found contact from further out | live spam driver holding the found weapon starts its swings from `3.26`–`3.49` u; the original's never from beyond `2.9` |
+| found longer commitment, and a bad one punished | frozen `@130`: the found weapon still `17` ticks into its `36`-tick windup while the lunge is at tick `60`; frozen `@137`: the lunge lands on the locked body; live spam holding the found weapon: `19` adversary hits, `3` rounds lost, `0` won |
+| original responding where the found weapon cannot | headless: the original is never locked past a lunge's escape deadline, the found weapon `20` of `20` times under owner-spam; live spam: original `1` round won, found `0` |
+| found whiff | frozen `@245`: the found blade extended in its recovery at `3.59` u |
+| clean punish with both | frozen `read@200` (original) and `read+found@216` (found): the adversary staggered in its spent pose |
+| found does not restore mashing | live spam holding the found weapon loses every round |
+| exchange both ways, meshes | person session: original → found → original → found, each one `armament-swapped` event; the carried and planted weapons swap places; no hit on any swap tick |
+| reset preserves the armament, round starts paused | `round reset; paused…`, `armed=false`, `player_weapon="found"` |
+| process restart | a new process reports `player_weapon="original"`, `site_weapon="found"` |
+
+**Visual findings.** The found weapon is still visibly the long dark-iron blade
+in the hand and in the ground; nothing about its silhouette, grip or pose moved.
+The longer windup reads as a held raise before the cut in the frozen frames. The
+frozen pairs again differ only above row `370` — distant terrain still
+streaming — and not where the bodies are.
+
+**Performance.** Vsync-bound `60` FPS and `16.66`–`16.67` ms in both
+`initiative:read` and `weapon-choice:read+found`, with the same `985,648` and
+`1,091,712` GPU bytes, `34` and `35` draws and `2,720` and `2,800` dynamic bytes
+a frame as before. Combat tick with the found weapon `6.81`–`7.52` µs against
+`7.44`–`7.66` µs for combat initiative with the original, on a host measuring
+the historical encounter at `7.50`–`8.26` µs the same hour: noise.
+
+### OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT 2): prepared, not run
+
+The same laboratory and protocol as the first revisit. **Not blind**: the owner
+knows both weapons and the previous test. The owner is **not** told the retune
+before playing.
+
+```text
+VELDWAKE_ENCOUNTER=weapon-choice cargo run --release -p veldwake-client
+```
+
+Instruction, and nothing else: *"Lute normalmente. Entre as lutas, você pode
+trocar de arma no ponto de início quando quiser."* Not said: that the original is
+safer, that the found weapon is slower, that its damage changed, or that each
+weapon is meant to win somewhere.
+
+1. **Phase A** — the original weapon, two or three fights.
+2. **Phase B** — the found weapon, two or three fights.
+3. **Phase C** — free choice, with swaps.
+
+Then, first and alone: *"o que você achou?"* — verbatim. Then the nine neutral
+questions of the first revisit, unchanged. PASS and FAIL conditions are the
+first revisit's. **Even on a PASS: stop** — no independent QA, no pull request,
+no merge; the spire still cannot host combat initiative (KI-043), and product
+integration is the owner's next decision.
 
 ### Remaining risks
 

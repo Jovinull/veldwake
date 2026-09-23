@@ -273,3 +273,13 @@ the gate), `a_round_reset_puts_the_body_back_beside_the_point_still_armed`,
 `a_paused_encounter_keeps_everything_and_fights_again_when_rearmed` (the fix
 the real-client self-QA forced), mode parsing, and that only the laboratory —
 not the owner's `initiative` session — offers the exchange.
+
+**After the owner-approved found retune** the counts are unchanged — `847` by
+default, `855` with the ignored measurements — and two tests changed, both for
+the retune's stated reason: `the_found_swing_compiles_to_the_longer_commitment_the_profile_claims`
+now asserts `36 / 14 / 58` ticks, `108` in total, damage `28`, four swings to
+fell the adversary with either weapon and a heavier found hit; and
+`a_victory_leaves_the_armament_alone_too` (ARM-001's victory case) reaches its
+victory with the read policy instead of a blind walk-and-swing, which won the
+historical encounter without a defeat only while the found weapon needed three
+swings. Its assertions are unchanged.

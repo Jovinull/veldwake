@@ -32,9 +32,11 @@ player is not carrying.
 
 The two are meant to be a **sidegrade**: the found weapon connects out to
 `3.4477` world units against `2.8835` against a standing body and commits for
-`103` ticks against `75`, and against the M6 adversary's approach the extra
-reach buys as much time as the extra commitment costs. One needs three connected
-swings and the other four.
+`103` ticks against `75` (`108` since the owner's retune), and against the M6
+adversary's approach the extra reach buys about as much time as the extra
+commitment costs. Before the retune one needed three connected swings and the
+other four; since it, both need four and the found weapon's hit is `28` against
+`24`.
 
 **That claim did not survive a person.** The M9 owner playtest on 2026-09-22
 failed: both weapons were perceived as different and both supported the same
@@ -44,8 +46,10 @@ adversary never made the player trade anything. Combat initiative
 measures the two weapons against it. Headless, the relation now looks like the
 intended one — the original weapon is the more forgiving after a late read, the
 found weapon the faster once the fight is read cleanly — and whether a person
-plays them differently is `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`,
-which has not run. See `M9_MEANINGFUL_REWARD.md`.
+plays them differently was `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`:
+**FAIL** on 2026-09-23 — the found weapon read as better overall. The owner then
+approved one retune of the found weapon (damage `28`, windup `36` ticks), which
+is measured and waits for REVISIT 2. See `M9_MEANINGFUL_REWARD.md`.
 
 Still not built, and still not prejudged: combos, heavy attacks, a second attack
 button, parries, blocks, stamina, status effects, elements, criticals, rarity, a

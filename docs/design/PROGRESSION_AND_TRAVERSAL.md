@@ -60,4 +60,7 @@ further than either weapon. The M9 revisit re-measures the guardrail against
 that adversary; its pre-gate found that with a clean read the difference
 reduces to the number of openings needed, and that the found weapon's longer
 commitment is what costs a late reader. Whether that is "same item, larger
-number" to a person is the revisit's owner gate to decide.
+number" to a person was the revisit's owner gate to decide, and it failed on
+2026-09-23: the found weapon read as better overall. The owner approved one
+retune — damage `28`, so both weapons need four hits, and a longer windup — which
+waits for its own owner gate (REVISIT 2).
