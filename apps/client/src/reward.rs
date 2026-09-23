@@ -97,12 +97,20 @@ pub const SITE_YAW: f32 = 0.0;
 /// See [`SITE_SPAN_OFFSET`]. Nothing else in the signature changed: same world,
 /// same weapons, same specs, same radius.
 ///
+/// **Old** `0x0f08_fbf7_08e3_206d`, **new** `0x08ac_216e_2ef0_0962`, **why**:
+/// the owner's approved retune after the M9 revisit's owner playtest failed
+/// (2026-09-23): the found attack's damage `32` -> `28` and windup `0.26` s ->
+/// `0.30` s (`31` -> `36` ticks), and nothing else. The signature folds both
+/// compiled attack specs, so the found one's windup and damage move it; the
+/// anchor, its ground, the radius, both weapon identities and
+/// `FOUND_WEAPON_PROFILE_VERSION` (still `1`) are unchanged.
+///
 /// **It is deliberately not part of any chunk-cache key.** A disk-cache entry
 /// answers one question — will the source produce the same chunk bytes? — and
 /// a weapon standing in a gate changes no chunk byte at all. Folding gameplay
 /// identity into the cache key would invalidate every cached chunk in the world
 /// for a change that generated nothing.
-pub const REWARD_BEHAVIOR_SIGNATURE: u64 = 0x0f08_fbf7_08e3_206d;
+pub const REWARD_BEHAVIOR_SIGNATURE: u64 = 0x08ac_216e_2ef0_0962;
 
 /// Where the fixed exchange stands in one world.
 #[derive(Clone, Copy, Debug, PartialEq)]

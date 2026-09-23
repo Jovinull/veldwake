@@ -1974,11 +1974,19 @@ mod tests {
         let mut encounter = armed(&setup, &ground);
         let _ = encounter.step(interact(), exchange_world(&ground, &veto));
 
-        // Walk in and attack whenever free until the adversary falls.
+        // Win the way the M6 intentional player does — the read policy, which
+        // beats the historical encounter without being hit — so the victory is
+        // reached with no defeat and no reset before it. (A blind walk-and-swing
+        // did this only while the found weapon felled the adversary in three
+        // swings; the owner's retune made it four.)
+        let reader = crate::oracle::OraclePolicy::Read {
+            lag: 24,
+            walk_only: false,
+            side: 1.0,
+        };
         let mut settled = false;
         for _ in 0..40_000 {
-            let free = encounter.combatant(Side::Player).action().is_free();
-            let intent = Intent::player(Vec2::new(0.0, -1.0), free, false);
+            let intent = reader.intent(&encounter);
             let _ = encounter.step(intent, exchange_world(&ground, &veto));
             if encounter.outcome_settled() {
                 settled = true;

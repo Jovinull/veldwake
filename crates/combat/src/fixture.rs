@@ -142,9 +142,9 @@ pub fn found_weapon_descriptor() -> WeaponDescriptor {
 
 /// The swing the found longblade executes.
 ///
-/// The sidegrade, in one table. Against [`player_attack`]: windup `0.26`
-/// against `0.18`, recovery `0.48` against `0.34`, damage `32` against `24`.
-/// Compiled that is `31 / 14 / 58` ticks and `103` total against `22 / 12 / 41`
+/// The sidegrade, in one table. Against [`player_attack`]: windup `0.30`
+/// against `0.18`, recovery `0.48` against `0.34`, damage `28` against `24`.
+/// Compiled that is `36 / 14 / 58` ticks and `108` total against `22 / 12 / 41`
 /// and `75`.
 ///
 /// The relationship the numbers were chosen for, and the one a test asserts:
@@ -152,23 +152,31 @@ pub fn found_weapon_descriptor() -> WeaponDescriptor {
 /// commitment costs. The adversary approaches at `2.40` u/s and commits at
 /// `2.20`, so swinging from the found weapon's connect-out rather than the
 /// original's buys roughly `28` ticks before the adversary is in its own range,
-/// and the longer action costs exactly `103 - 75 = 28` ticks of lock. Neither
-/// weapon is safer; they are differently shaped.
+/// and the longer action costs `108 - 75 = 33` ticks of lock (`28` before the
+/// retune below). Against that M6 approach the two are close to even; against
+/// combat initiative they were not, which is what the retune answers.
 ///
 /// `step_in` falls to `0.30` because a weapon that already reaches does not
 /// need to close as much, and `knockback` rises to `0.50` because a heavier
-/// blade that lands should buy space. Damage `32` fells a `96`-health adversary
-/// in three swings against the original's four; `36` was measured and rejected
-/// because it also gives three and only makes the weapon stronger.
+/// blade that lands should buy space.
+///
+/// **Retuned once, by the owner, after the M9 revisit's owner playtest failed
+/// (2026-09-23).** Old: damage `32` (three swings to fell `96` health) and a
+/// windup of `0.26` s (`31` ticks). New: damage `28` (four swings, like the
+/// original's `24`, each still heavier) and a windup of `0.30` s (`36` ticks).
+/// Why: the found weapon's reach gave a careful player easier contact every
+/// fight while its commitment was almost never charged, and needing one hit
+/// fewer compounded that; `docs/planning/M9_MEANINGFUL_REWARD.md` records the
+/// causal investigation. Nothing else about the weapon changed.
 #[must_use]
 pub fn found_attack() -> AuthoredAttack {
     AuthoredAttack {
-        windup_seconds: 0.26,
+        windup_seconds: 0.30,
         active_seconds: 0.12,
         recovery_seconds: 0.48,
         stagger_seconds: 0.34,
         hitstop_seconds: 0.08,
-        damage: 32,
+        damage: 28,
         step_in: 0.30,
         knockback: 0.50,
     }
@@ -872,7 +880,14 @@ pub const FOUND_WEAPON_IDENTITY_FINGERPRINT: u64 = 0xa09f_cd9b_fa45_d87a;
 /// as [`GOLDEN_ENCOUNTER_SIGNATURE`]**. It is a different fixture doing
 /// different work with a different weapon, so a different value is the expected
 /// result and not a regression; the two are never compared for equality.
-pub const FOUND_ENCOUNTER_SIGNATURE: u64 = 0x735a_9961_f661_8e7d;
+///
+/// **Old** `0x735a_9961_f661_8e7d`, **new** `0xa5b7_8ee1_c589_a499`, **why**:
+/// the owner's approved retune after the M9 revisit's owner playtest failed
+/// (2026-09-23): the found attack's damage `32` -> `28` and windup `0.26` s ->
+/// `0.30` s (`31` -> `36` ticks), and nothing else. The reference fight holds
+/// the found weapon, so its trace follows the new timing and damage; the found
+/// weapon's geometry and identity did not move.
+pub const FOUND_ENCOUNTER_SIGNATURE: u64 = 0xa5b7_8ee1_c589_a499;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]
@@ -1494,16 +1509,20 @@ mod tests {
         let Ok(original) = player_attack().compile() else {
             panic!("the player attack must compile");
         };
-        assert_eq!(found.windup(), 31);
+        // The owner's retune after the revisit's playtest: windup `31` -> `36`
+        // ticks, damage `32` -> `28`; active and recovery unchanged.
+        assert_eq!(found.windup(), 36);
         assert_eq!(found.active(), 14);
         assert_eq!(found.recovery(), 58);
-        assert_eq!(found.total(), 103);
-        assert_eq!(found.damage(), 32);
+        assert_eq!(found.total(), 108);
+        assert_eq!(found.damage(), 28);
         assert!(found.total() > original.total());
-        // Three swings to fell a ninety-six health adversary, against four.
+        // Four swings to fell a ninety-six health adversary with either
+        // weapon, and each found swing still hits harder.
         let swings = |spec: &crate::spec::AttackSpec| 96_u16.div_ceil(spec.damage());
-        assert_eq!(swings(&found), 3);
+        assert_eq!(swings(&found), 4);
         assert_eq!(swings(&original), 4);
+        assert!(found.damage() > original.damage());
     }
 
     #[test]
