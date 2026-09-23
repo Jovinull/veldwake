@@ -80,7 +80,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
 - [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the last merged milestone — what landmarks are, what the owner's session proved, and what branch QA re-derived
-- [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md): the active, unnumbered slice on `feat/combat-initiative-spacing` — the pressure lunge, the non-reactive spacing dodge and the outcome-dependent recovery, their oracles and evidence, owner-accepted (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS) and awaiting independent QA; its pose decision is [ADR-0010](adr/0010-sixth-action-keeps-the-keyed-layer.md)
+- [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md): Combat Initiative / Spacing, the unnumbered slice after M8 — the pressure lunge, the non-reactive spacing dodge and the outcome-dependent recovery, their oracles and evidence, the owner's gate (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS) and independent QA (PASS); its pose decision is [ADR-0010](adr/0010-sixth-action-keeps-the-keyed-layer.md)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)
