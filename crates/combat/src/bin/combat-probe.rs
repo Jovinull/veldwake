@@ -992,6 +992,44 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
         worst.as_secs_f64() * 1.0e6
     );
 
+    // The M9 revisit: the same fight with the found weapon in the player's
+    // hand, put there by the real exchange on each fight's first tick.
+    let armament =
+        veldwake_combat::oracle::armament_oracle_setup(veldwake_combat::CombatSeed::GOLDEN);
+    let site = armament.starts[Side::Player.index()];
+    let world = veldwake_combat::oracle::open_exchange_world(&ground, site);
+    let fresh_found = || -> Result<Encounter, String> {
+        let mut encounter = Encounter::new(&armament, Some(&ground))
+            .map_err(|error| format!("setup: {error}"))?;
+        encounter.arm();
+        let _ = encounter.step(Intent::idle().interacting(true), world);
+        if encounter.armament().player() != veldwake_combat::WeaponVariant::Found {
+            return Err("the found weapon was not taken".to_owned());
+        }
+        Ok(encounter)
+    };
+    let mut encounter = fresh_found()?;
+    let mut worst = Duration::ZERO;
+    let mut stepping = Duration::ZERO;
+    let mut fights = 0_u32;
+    for _ in 0..ticks {
+        let intent = policy.intent(&encounter);
+        let tick_started = Instant::now();
+        let _ = encounter.step(intent, world);
+        let spent = tick_started.elapsed();
+        stepping += spent;
+        worst = worst.max(spent);
+        if encounter.outcome().is_some() {
+            encounter = fresh_found()?;
+            fights += 1;
+        }
+    }
+    println!(
+        "combat initiative, found weapon, tick over {ticks} ticks ({fights} fights): mean {:.3} us, worst {:.3} us",
+        stepping.as_secs_f64() * 1.0e6 / ticks as f64,
+        worst.as_secs_f64() * 1.0e6
+    );
+
     // Ground queries, measured rather than counted by hand.
     let counting = veldwake_combat::encounter::CountingGround::new(&ground);
     let mut encounter =
