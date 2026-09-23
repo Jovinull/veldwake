@@ -4,7 +4,7 @@ Last updated: 2026-09-23
 
 ## Current position
 
-**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing` and passed the owner's playtest on 2026-09-23: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS.** Technical gates and real-client self-QA are green; the next step is an independent QA of the whole branch. No pull request is open, nothing is merged, and it has no milestone number — the owner approved it as an unnumbered slice. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
+**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing`, passed the owner's playtest on 2026-09-23 (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS), and passed independent QA on 2026-09-23.** No pull request is open, nothing is merged, and it has no milestone number — the owner approved it as an unnumbered slice. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
 
 **The one thing to hold:** the capability exists only when a tuning authors `adversary_pressure`. The historical encounter, every fixture, script and lock is byte-identical — `GOLDEN_ENCOUNTER_SIGNATURE` is still `0x6415_7522_d253_5658` — and the new behaviour is locked separately at `COMBAT_INITIATIVE_SIGNATURE = 0x8238_2662_d859_8cf3`. The two are never compared.
 
@@ -106,15 +106,15 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — independent QA of combat initiative
+## Continue here — combat initiative after independent QA
 
-**The owner gate is closed: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23.** The single next step is an **independent QA of the whole branch** — every commit in `main...HEAD`, code, tests and documents — and it is the owner's to start. Until it has run: no pull request, no merge, no retune, no milestone number.
+**The owner gate is closed: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23; independent QA is also PASS, 2026-09-23.** No pull request, merge, retune or milestone number follows automatically. The owner decides any next step.
 
 **What the owner judged, and only that.** The owner played `VELDWAKE_ENCOUNTER=initiative` on the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`, several fights, told only *"lute normalmente"*, knowing the concept beforehand — so the session was **not blind**. Unprompted: *"achei da hora o combate agora, foi muito divertido, gostei."* Asked directly: just running in and attacking does not work; the attack is perceived before it lands; they started dodging and choosing when to go in with the dash in order to win; the missed lunge is perceived; the backstep looks natural; once understood it can be predicted, but it is fun. The exact words, with translations, are in [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md#result--2026-09-23).
 
 **What the owner did not say**, and no document may say for them: that combat is final, that every enemy should use this, that the tuning is definitive, that the lunge is visually perfect, that KI-041 or KI-042 is resolved, that M9 passed, that the found weapon was tested — the owner asked for the great sword, and it was correctly absent — or that the game's combat is solved.
 
-**What independent QA should attack first**, because these are the places the branch decided something rather than derived it:
+**What independent QA attacked**, because these are the places the branch decided something rather than derived it:
 
 - **COMBAT-005.** Look for any input to `AdversaryBrain::decide` that depends on the player's action rather than its position. Then try to make `dodges_during_unresolved_swing` non-zero under the authored tuning — a player that swings on the first tick it is free is the obvious attempt — because non-reactivity is held by timing, not by a check.
 - **The historical contract.** Re-run `combat-probe signature` and every M5/M7/M8 lock, and look for a historical path that reaches the pressure spec, `total_for(true)` with a different answer, or the new counters in the encounter trace.

@@ -4,7 +4,7 @@ Last updated: 2026-09-23
 
 ## Stage
 
-**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing`, its technical and self-QA gates are green, and the owner's playtest passed on 2026-09-23: OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS.** The next step is an independent QA of the whole branch. It has no milestone number, no pull request is open and nothing is merged. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`; the owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`.
+**Combat Initiative / Spacing is implemented on `feat/combat-initiative-spacing`, its technical and self-QA gates are green, the owner's playtest passed on 2026-09-23 (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS), and independent QA passed on 2026-09-23.** It has no milestone number, no pull request is open and nothing is merged. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2`; the owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`.
 
 The branch answers one product question: *can the adversary create a readable situation in which attacking immediately is sometimes the wrong decision?* It adds three coupled mechanisms and nothing else — a **pressure lunge**, the adversary's second attack, committed from middle distance along a line locked at commit; a **spacing dodge**, the existing `Action::Dodge` requested only at the adversary's own first free tick after its own stagger or its own connected lunge, never in answer to the player; and a **recovery that depends on the outcome**, `12` ticks after a hit and `120` after a whiff. On flat ground under six seeds owner-spam — approach, face, attack whenever in range — goes from `6/0` at full health on the historical encounter to **`2/4`**, while a player that steps off the lunge's line and punishes the whiff wins `6/0` at full health at every reaction lag from `150` to `400` ms. The historical encounter is byte-identical: `GOLDEN_ENCOUNTER_SIGNATURE` did not move, and the capability exists only when a tuning authors it. Those numbers are headless and self-QA evidence. See [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md).
 
@@ -133,7 +133,7 @@ Git, Git LFS, GitHub CLI, Visual Studio 2022 Build Tools/MSVC, Windows SDK, LLVM
 
 ## Active milestone
 
-**No numbered milestone.** The active work is **Combat Initiative / Spacing** on `feat/combat-initiative-spacing`: implemented, self-QA'd and owner-accepted — **OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS**, 2026-09-23 — and waiting for an independent QA of the whole branch. It was approved by the owner as a slice with no number, and it must not be given one by an agent. See [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md) and [`agents/HANDOFF.md`](agents/HANDOFF.md).
+**No numbered milestone.** The active work is **Combat Initiative / Spacing** on `feat/combat-initiative-spacing`: implemented, self-QA'd, owner-accepted — **OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS**, 2026-09-23 — and independently QA-passed on 2026-09-23. It was approved by the owner as a slice with no number, and it must not be given one by an agent. See [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md) and [`agents/HANDOFF.md`](agents/HANDOFF.md).
 
 The paragraphs below describe the state M8 was proposed from and remain true of `main`.
 

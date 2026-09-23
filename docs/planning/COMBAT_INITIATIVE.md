@@ -1,6 +1,6 @@
 # Combat Initiative / Spacing
 
-Status: **implemented on `feat/combat-initiative-spacing`; technical and self-QA gates green; OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23. Next: independent QA of the whole branch.** No pull request, nothing merged, no milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`. The owner's words and verdict are only in *Owner playtest* below; every other section is technical and self-QA evidence and stays that.
+Status: **implemented and independently QA-passed on `feat/combat-initiative-spacing`; technical and self-QA gates green; OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23.** No pull request, nothing merged, no milestone number. Base: `main` at `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` (M8 merged through PR #12). The owner played the implementation head `fea74017cfdf97aa1cbb808ba24605282e7ed71d`. The owner's words and verdict are only in *Owner playtest* below; every other section is technical and self-QA evidence and stays that.
 
 ## Product question
 
@@ -248,6 +248,8 @@ On the audited Windows 11 host:
 | owner playtest | **PASS** — `OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS`, 2026-09-23, run after every row above on `fea74017cfdf97aa1cbb808ba24605282e7ed71d` (see *Owner playtest*) |
 
 KI-008's `LNK1104` linker lock appeared repeatedly and cleared on a plain re-run each time; the final `nextest` run needed a second attempt for it and no attempt failed a test.
+
+**Independent QA — PASS, 2026-09-23.** Cold-start audit confirmed `HEAD == origin`, the prescribed base, no open pull request and no ancestry from the frozen M9 or Combat Pressure branches. The first independent `nextest` link encountered one KI-008 `LNK1104`; its plain re-run passed `793/793`, and `--run-ignored all` passed `798/798`. `COMBAT_INITIATIVE_SIGNATURE` and all three historical combat fingerprints matched in debug and release. The audit independently exercised the flat-ground and golden-terrain oracles, structural non-reactivity tests, reset paths, frozen and live release-client sessions, and a clean alternating release A/B against `main`; it found no material performance regression. The real client reproduced read whiff→punish, connected pressure→short recovery→spacing, adversary stagger→spacing, and Primary. It also observed that at close normal follow-camera angles the player can partly occlude the adversary; that is an objective framing observation, not evidence about a person's legibility or a tuning change. The only correction was this document set's COMBAT-005 whitespace/paragraph formatting (`ea0d1d1`); it changed no behaviour or evidence.
 
 ## Owner playtest
 
