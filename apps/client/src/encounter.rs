@@ -948,6 +948,23 @@ impl EncounterScene {
                     self.trace_event(event);
                 }
             }
+            // The weapon-choice laboratory, played by a person, starts every
+            // round the way it started the first: paused, beside the exchange
+            // point, until the player does something — `E` included. Without
+            // this the adversary reaches its first lunge about a second and a
+            // half after a reset, and a press meant as a weapon change meets a
+            // stagger instead. A driver never pauses: nobody would unpause it.
+            if self.mode
+                == (EncounterMode::WeaponChoice {
+                    driver: InitiativeDriver::Person,
+                    freeze_at: None,
+                    take_found: false,
+                })
+                && events.any(|event| matches!(event, CombatEvent::EncounterReset))
+            {
+                self.encounter.pause();
+                info!("round reset; paused beside the exchange point until the next input");
+            }
         }
         FrameOutcome {
             ticks: due,
@@ -2037,6 +2054,80 @@ mod tests {
         assert_eq!(
             scene.encounter().counters().interacts[Side::Player.index()],
             1
+        );
+    }
+
+    /// Every round of the laboratory starts paused beside the exchange point,
+    /// so a person changes weapon between rounds with one deliberate press
+    /// instead of racing the first lunge — and the armament is untouched by
+    /// the reset in between (ARM-001).
+    #[test]
+    fn a_laboratory_round_starts_paused_so_the_weapon_can_be_changed() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = crate::traversal::TerrainWalkability::new(&generator);
+        let mut scene = match EncounterScene::new(
+            EncounterMode::WeaponChoice {
+                driver: super::InitiativeDriver::Person,
+                freeze_at: None,
+                take_found: false,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let Some(site) = scene.exchange_site() else {
+            panic!("the laboratory offers no exchange");
+        };
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &legality, site);
+        let mut input = InputState::default();
+        let camera = Camera::default();
+        let press = |input: &mut InputState| {
+            input.set_combat_action(CombatAction::Interact, true);
+            input.set_combat_action(CombatAction::Interact, false);
+        };
+        press(&mut input);
+        let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert_eq!(
+            scene.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Found
+        );
+        // Stand still until the round is lost and reset.
+        for _ in 0..4_000 {
+            let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+            if scene.encounter().counters().resets > 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            scene.encounter().counters().resets,
+            1,
+            "the round never reset"
+        );
+        assert!(!scene.encounter().is_armed(), "the new round did not pause");
+        // Paused: time passes and nothing happens to the body.
+        let health = scene.encounter().combatant(Side::Player).health();
+        for _ in 0..200 {
+            let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        }
+        assert_eq!(scene.encounter().combatant(Side::Player).health(), health);
+        assert_eq!(
+            scene.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Found,
+            "the reset took the weapon back"
+        );
+        press(&mut input);
+        let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert!(
+            scene.encounter().is_armed(),
+            "the press did not start the round"
+        );
+        assert_eq!(
+            scene.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Original,
+            "the press did not reach the exchange"
         );
     }
 

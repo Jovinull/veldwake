@@ -575,6 +575,18 @@ impl Encounter {
         self.armed = true;
     }
 
+    /// Returns an armed encounter to the paused state it started in.
+    ///
+    /// Nothing else changes: not the bodies, their health or actions, the
+    /// brain, the counters or the armament. A paused encounter breathes and
+    /// does not fight, exactly as before its first [`Self::arm`]. The M9
+    /// weapon-choice laboratory uses it to start every round paused beside
+    /// the exchange point, so a person can change weapon between rounds
+    /// without racing the adversary's first lunge.
+    pub fn pause(&mut self) {
+        self.armed = false;
+    }
+
     #[must_use]
     pub const fn is_armed(&self) -> bool {
         self.armed
@@ -2087,6 +2099,48 @@ mod tests {
             (f64::from(bought) - paid).abs() <= 8.0,
             "the sidegrade relation broke: reach buys {bought:.1} ticks, commitment costs {paid:.1}"
         );
+    }
+
+    #[test]
+    fn a_paused_encounter_keeps_everything_and_fights_again_when_rearmed() {
+        let ground = ground();
+        let veto = NoVeto;
+        let mut encounter = armed(&fixture::found_setup(), &ground);
+        let _ = encounter.step(interact(), exchange_world(&ground, &veto));
+        for _ in 0..30 {
+            let _ = encounter.step(Intent::idle(), WorldContact::ground_only(&ground));
+        }
+        encounter.pause();
+        assert!(!encounter.is_armed());
+        let before = (
+            encounter.armament(),
+            encounter.brain().state(),
+            *encounter.combatant(Side::Adversary).action(),
+            encounter.combatant(Side::Adversary).position(),
+            encounter.combatant(Side::Player).health(),
+        );
+        for _ in 0..240 {
+            let events = encounter.step(
+                Intent::player(Vec2::new(1.0, 0.0), true, true),
+                WorldContact::ground_only(&ground),
+            );
+            assert_eq!(events.len(), 0, "a paused encounter published an event");
+        }
+        let after = (
+            encounter.armament(),
+            encounter.brain().state(),
+            *encounter.combatant(Side::Adversary).action(),
+            encounter.combatant(Side::Adversary).position(),
+            encounter.combatant(Side::Player).health(),
+        );
+        assert_eq!(before, after, "pausing changed the fight");
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+        encounter.arm();
+        let _ = encounter.step(
+            Intent::player(Vec2::ZERO, true, false),
+            WorldContact::ground_only(&ground),
+        );
+        assert!(encounter.combatant(Side::Player).action().is_attacking());
     }
 
     /// COMBAT-005 and ARM-002 together, in the loop that combines them: an
