@@ -999,8 +999,8 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
     let site = armament.starts[Side::Player.index()];
     let world = veldwake_combat::oracle::open_exchange_world(&ground, site);
     let fresh_found = || -> Result<Encounter, String> {
-        let mut encounter = Encounter::new(&armament, Some(&ground))
-            .map_err(|error| format!("setup: {error}"))?;
+        let mut encounter =
+            Encounter::new(&armament, Some(&ground)).map_err(|error| format!("setup: {error}"))?;
         encounter.arm();
         let _ = encounter.step(Intent::idle().interacting(true), world);
         if encounter.armament().player() != veldwake_combat::WeaponVariant::Found {
