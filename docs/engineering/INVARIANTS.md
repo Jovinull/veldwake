@@ -41,6 +41,30 @@ A landmark writes its voxels only into air. It never replaces a terrain voxel, n
 **LAND-002 — A visible wall refuses a body, and an opening does not**
 Solid landmark geometry is untraversable: if a viewer can see stone there, `TraversalLegality` refuses a destination whose body would occupy it, with the same `MoveBlockReason::Traversal` water produces. The converse binds equally — where the drawn geometry leaves room for the body, traversal must admit it, which is why a gate's opening is proved walkable by a search over the real surface grid rather than assumed. The keep-out is the widest body's capsule, measured from the compiled rigs in the client; no character dimension appears in `veldwake-procedural`, and `GroundSampler` is unchanged, so a landmark is never a surface to stand on. Held up by oracles rather than by agreement: `qa_the_keep_out_agrees_with_the_voxels_a_viewer_can_see` checks the veto against the drawn solids in both directions, and `qa_a_real_encounter_walks_a_body_through_the_gate_and_into_its_pillars` drives the authoritative loop through the opening and into a pillar. Implemented and tested since M8.
 
+**ARM-001 — Session-acquired armament survives an encounter reset**
+An encounter reset restores both bodies' positions, their health, their actions,
+the adversary's brain and the resolution. It never restores the player's
+armament. The weapon a player exchanged for at the fixed site is **session**
+state: longer-lived than one round of the fight, shorter-lived than the process,
+and changed only by an authoritative exchange that the rules accepted. A new
+process reconstructs the authored initial armament — the player carries the
+original weapon and the found one stands at the site — and nothing is written to
+disk, because M9 is deliberately not persistence. Proved by driving a real
+defeat through the authoritative loop and reading the armament back on the far
+side of the hold and the reset, not by reading the reset's code. Implemented in
+`veldwake-combat` since M9; the reasoning is [ADR-0011](../adr/0011-session-acquired-state-in-the-authoritative-encounter.md) (written as ADR-0010 on the frozen M9 branch and renumbered by the M9 revisit).
+
+**ARM-002 — One weapon selector, and the adversary is outside it**
+Every weapon-dependent path — the world matrix, the blade segment the sweep
+follows, the sweep radius, the attack spec and the aim-assist range — resolves
+the weapon through one function, `Encounter::weapon_of`. The adversary always
+resolves to the original weapon whatever the player is holding, so a player's
+choice can never reach the adversary's reach, timing or balance. The exchange
+pair is the player's and the fixed site's; the adversary carries an independent
+third instance that is never exchanged, and "there are exactly two weapons in
+the world" is false and must not be written. Implemented and tested in
+`veldwake-combat` since M9 The M9 revisit ported both invariants onto combat initiative (`feat/m9-meaningful-reward-revisit`), where they meet **COMBAT-005** from the other side: the armament is Encounter and player-session state, and the adversary's brain never reads it — not the variant, not the weapon's identity, not its reach. The armament reaches exactly one spec, the player's `Primary`; the adversary's `Primary` and `Pressure` never pass through it. `the_adversary_decides_the_same_whichever_weapon_the_player_holds` proves that structurally, tick for tick, with the lunge, the spacing dodge and the primary all running.
+
 **PERF-001 — No blocking frame I/O**  
 Blocking disk or network I/O must not occur on the render/game-frame hot path.
 

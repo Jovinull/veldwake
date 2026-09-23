@@ -300,3 +300,74 @@ No in-process cache was added. `cargo nextest` runs one process per test, so a m
 Nothing measurable changed in streaming or rendering. Branch QA measured a walking traversal rather than a still: `59.98` FPS at `16.67` ms average wall frame, `render = 2,197` demanded against `507` presented and `501,922` GPU quads, `cpu_evictions = 66`, and `gaps_closed`, `ready_undrawn_max`, `upload_failures`, `commit_invariant_failures` and `hard_cap_blocks` all zero, with `render_radius = 6` and `Lod0Only` unchanged.
 
 A capture run at the overlook, `m4-golden`, twenty-six seconds after the window opened: `59.9` FPS at `16.69` ms average wall frame, `render = 2,197` demanded, `cpu_resident = 444`, `presented = 334`, `gpu_active = 193`, `gpu_quads = 343,812`, and `gaps_closed`, `upload_failures` and `commit_invariant_failures` all zero. The run had **not** reached idle coverage at that point — KI-017's minute to settle is unchanged — and the landmarks were drawn anyway, because at 62 and 63 units they are inside the first chunks to arrive. The three of them contribute 1,729 voxels to chunks that were already resident.
+
+## M9 — the weapon exchange, on the audited host
+
+Observations on the audited Windows 11 / D3D12 host, never targets. **This
+section is the frozen branch's record** (`feat/m9-meaningful-reward`,
+2026-09-22), kept as measured; the revisit's own numbers are in *The M9 revisit*
+below.
+
+| measure | before M9 | after M9 |
+|---|---|---|
+| `LandmarkPlan` derivation, release, five runs | `506`, `586`, `549`, `549`, `539` ms | `266`, `286`, `264`, `262`, `267` ms |
+| character GPU: actors / weapons / draws | `2` / `2` / `34` world, `34` shadow | `2` / **`3`** / `35` world, `35` shadow |
+| character GPU: static bytes | `985,648` | `1,091,712` |
+| dynamic upload per frame | `2,720` bytes | `2,800` bytes |
+| FPS at the gate, settled | — | `59.999`–`60.008`, vsync-bound |
+| `renderer_render_wall` mean / max | — | `10,560`–`10,838` µs / `14,723`–`16,347` µs |
+| time to idle | `63,032` ms (M7) | `66,805` ms |
+
+**The derivation numbers need their caveat stated first.** `crates/procedural`
+was not modified by M9, so the code that produces them is byte-identical and the
+difference is host load: the "before" set was taken immediately after a full
+`cargo nextest run --workspace`, and the "after" set on an idle machine. Both
+sets are real observations of the same code, and together they are a wider
+reproduction of exactly what KI-035 warns about — a single quiet measurement is
+not a range. The honest reading is that M9 adds no measurable world-construction
+cost, which is what deriving the anchor from one existing field rather than from
+a search was for.
+
+**The placed weapon costs exactly what it is.** `92,160` vertex bytes plus
+`13,824` index bytes plus one `80`-byte uniform is `106,064`, which is the whole
+difference in static bytes, and it adds one draw to the world pass and one to
+the shadow pass. The stats count three weapon instances and sum three weapons'
+bytes; an earlier version counted three and summed two, which is worse than
+either number on its own.
+
+## The M9 revisit — both weapons against combat initiative, on the audited host
+
+Observations on the audited Windows 11 / D3D12 host (Intel Iris Xe), 2026-09-23,
+on `feat/m9-meaningful-reward-revisit`, never targets.
+
+**Combat tick**, release, `combat-probe bench 24000`, four rounds on one idle
+host: the historical encounter `7.35`–`9.22` µs mean (the `9.22` round also had
+the only large worst case, `36` ms, a host stall), combat initiative with the
+original weapon `6.86`–`7.24` µs, and combat initiative with the found weapon
+taken through the real exchange `7.17`–`7.29` µs. No regression beyond noise:
+the found weapon adds one armament read per weapon-dependent path and nothing
+per tick that the original weapon does not do.
+
+**Client**, release, `m4-golden`, no captures, `RUST_LOG=info`, one process per
+configuration, armed with `J` after a twenty-second settle and read over nine
+five-second intervals (the first interval spans the start and is not quoted):
+
+| configuration | actors / weapons | GPU static bytes | draws world / shadow | dynamic bytes a frame | FPS / wall frame |
+|---|---|---|---|---|---|
+| `armed` (historical M6) | `2` / `2` | `985,648` | `34` / `34` | `2,720` | `59.97`–`60.02` / `16.66`–`16.67` ms |
+| `initiative:read` (original) | `2` / `2` | `985,648` | `34` / `34` | `2,720` | `59.99`–`60.02` / `16.66`–`16.67` ms |
+| `weapon-choice:read+found` | `2` / `3` | `1,091,712` | `35` / `35` | `2,800` | `59.99`–`60.02` / `16.66`–`16.67` ms |
+
+Every configuration is vsync-bound. The laboratory's cost is exactly the planted
+weapon the frozen branch measured — `106,064` static bytes, one draw per pass,
+`80` dynamic bytes a frame — whichever weapon is in the hand, because both
+meshes are resident and only matrices move. No optimisation was attempted and
+none is indicated.
+
+**One startup cost removed.** The frozen branch's `weapon exchange ready` log
+line passed `&TerrainGenerator::golden()` as an `unwrap_or` fallback inside
+`info!`, and a fallback argument is evaluated whether or not it is used: every
+session that offered an exchange built a whole second golden world — landmark
+plan included, `248`–`409` ms in release by KI-035's own range — just to log
+one line. The revisit computes the signature from the terrain the session
+already has, and only for the product site.

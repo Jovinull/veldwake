@@ -70,6 +70,56 @@ Sixteen cubes in the world, eight over each head, bright for health held and dar
 - **It is a function of a tick counter**, so a capture fixture reproduces it exactly and a frozen frame holds it.
 - **No lock-on, no field-of-view pulse, no occlusion solving.** The camera clamps to a minimum height above the ground under it and offsets to one side; that is all (KI-025).
 
+## M9 found-weapon profile
+
+**Additive, and `COMBAT_STYLE_VERSION` stays at `1`.** Every rule above binds
+the found weapon unchanged; nothing in this section widens or relaxes one. The
+version is deliberately not bumped, because it is folded into every
+`WeaponIdentity` and bumping it would move the historical M6 weapon's identity
+while its descriptor, its geometry and its behaviour are untouched — which is
+exactly the kind of silent redefinition this document exists to prevent. The
+profile carries its own narrow version instead,
+`fixture::FOUND_WEAPON_PROFILE_VERSION`, which participates in the M9 signatures
+and in nothing historical.
+
+**It is a longblade, not a two-handed sword, and must not be written as one.**
+The weapon hangs off `HandR` exactly as the original does and the free hand does
+nothing. M9 adds no second-hand contact, no two-handed pose and no animation of
+any kind. The grip is longer because a heavier blade wants more lever, not
+because a second fist is on it.
+
+| property | original | found | why the difference is this one |
+|---|---|---|---|
+| blade | `14 × 4 × 2` voxels, `1.1667` u | `20 × 6 × 2` voxels, `1.6667` u | `+42.9%` of blade is what a viewer reads at a glance; `20` is the longest length that still wins the reference fight under the pessimistic both-sides-armed measurement |
+| guard / grip / pommel | `6×2` / `5×2` / `4×2` | `8×2` / `6×2` / `4×2` | mass distribution, so the two silhouettes differ below the blade as well as along it |
+| grip pitch | `0.90` rad | `1.10` rad | measured, not chosen: at `0.90` a twenty-voxel blade's tip sits at `-0.029` world units in the carry pose — through the ground. `1.10` puts it at `+0.359`, clearing better than the original's `+0.276` |
+| palette | `KeenSteel` | `DarkIron` | a scheme this contract already declared and nothing drew. M9 uses it rather than authoring a second palette |
+| solids / quads | `212` / `352` | `392` / `576` | `+85%` of mass, which is the second half of the glance-test |
+| identifiers | `192..=224` | `192..=224` | the same range and the same table. A second weapon is not a second content domain |
+| specular | none | none | unchanged, on every material |
+
+The swing the found weapon executes is an `AttackSpec` and therefore not part of
+this contract's geometry rules; its numbers and the sidegrade relation they were
+chosen for live in [`../planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md).
+
+**A planted weapon is the same rigid part.** The weapon standing at the exchange
+site is drawn through the pipeline above with a world matrix instead of a hand
+matrix: no new pipeline, no new bind group, no new palette path, no new
+identifier range. Its height is solved rather than authored — the blade's own
+tip is put on the ground and sunk by `SITE_SINK = 0.25` world units — so a
+differently proportioned weapon plants itself correctly without a second number
+being edited.
+
 ## What this document does not cover
 
-Multiple weapons, weapon switching, sheathing, armour, equipment or any visual system for them; a second enemy or any creature that is not this adversary; blood, dismemberment or damage states; combos, parries, blocks or any attack this milestone does not have; music, reverb or ambience; and any HUD beyond the sixteen cubes above. Those are later work and must not be invented here.
+Weapon switching as a system, sheathing, armour, equipment or any visual system
+for them; a second-hand grip or any two-handed pose; a second enemy or any
+creature that is not this adversary; blood, dismemberment or damage states;
+combos, parries, blocks or any attack these two weapons do not have; music,
+reverb or ambience; and any HUD beyond the sixteen cubes above. Those are later
+work and must not be invented here.
+
+M9 adds a second accepted weapon and a fixed exchange between two of them. It
+does **not** make weapons a family, a generator or a category: there are exactly
+two accepted weapons, both named, both locked, and a third is a decision rather
+than a configuration.

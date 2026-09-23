@@ -105,3 +105,46 @@ Nothing new in the client's frame-loop telemetry, deliberately: a landmark is vo
 `terrain-probe landmarks` prints the plan and, before it, **re-derives the plan and refuses to print if the second derivation disagrees with the world's own** — determinism as a runtime check rather than as a claim. It reports the derivation's cost in the current build profile, the plan fingerprint, the overlook's column, ground face and clearing radius, and for each landmark its role, class, crown column, distance from the overlook, vertical bounds, footprint, height, opening columns and their height, the silhouette the world proxy measured with how much of it falls under the elevation limit, whether it is backed by sky, the descriptor and geometry fingerprints, which landmark reveals it, its voxel count by material, span axis, lean and seed.
 
 The `#[ignore]`d whole-region reachability report gained a landmark section: the overlook, and for each landmark the nearest standable column, how many steps it is from the route start and how far out the search had to look — which is how "can a player actually get there" is answered with the game's own movement rule rather than with a straight line. It also prints which landmark hosts the fight and what the hosted placement search returns.
+
+## The weapon exchange
+
+One line at startup, when a session offers an exchange:
+
+```text
+weapon exchange ready site="gate" column=(-7, 57) position=[-6.5, 57.5] ground=19.0
+  interact_radius=Some(1.75) signature=Some("0x0f08fbf708e3206d") locked=0x0f08fbf708e3206d
+```
+
+The measured signature and the locked one are printed side by side, so a
+disagreement is one line to read rather than a test to go looking for.
+
+The M9 revisit added `site`, because a second kind of session now offers an
+exchange. In the weapon-choice laboratory (`VELDWAKE_ENCOUNTER=weapon-choice`)
+the line reads `site="weapon-choice laboratory"` with the QA point beside the
+round start, and `signature=None`: `REWARD_BEHAVIOR_SIGNATURE` describes the
+product site at the gate and nothing else, so the laboratory is not measured
+against it. Before the revisit this line also built a whole golden world as an
+eagerly evaluated fallback argument every time it was logged; that was removed
+(see `LEARNINGS.md`). `encounter ready` gained `weapon_choice`, and its
+`weapons`, `gpu_bytes` and draw counts include the planted weapon wherever one is
+resident.
+
+In a combat initiative or weapon-choice session the `combat_event` debug line
+(`RUST_LOG=info,combat_event=debug`) now carries `weapon` — which one the player
+holds on that tick — and names the exchange `armament-swapped`, so a harness can
+tell which weapon met a lunge without waiting for the five-second report. A
+frozen replay (`combat initiative frozen at a tick`) reports `weapon` too.
+
+`combat state` gained six fields on the existing five-second cadence:
+`input_interact_latched`, `input_held_interact`, `player_weapon`, `site_weapon`,
+`interacts` and `interacts_refused`, plus `exchange_site`. The first two exist
+for the same reason the attack and dodge latches do — a latch still set several
+report intervals later is a stuck input. `player_weapon` and `site_weapon` are
+what make ARM-001 readable from a log: a defeat, its `2.5`-second hold and the
+reset all fit between two reports, so the armament has to be printed on both
+sides of the gap rather than inferred from the frames.
+
+`interacts_refused` counts presses the rules declined — out of range, or while
+busy. **Nothing appears on screen at the interaction boundary**: no prompt, no
+icon, no floating text and no marker, so the counter is the only way to tell a
+verb that never fires from a verb that never reaches the rules.

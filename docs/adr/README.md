@@ -28,3 +28,4 @@ Copy [`TEMPLATE.md`](TEMPLATE.md), assign the next four-digit ID, state evidence
 | [0008](0008-traversal-legality-separate-from-ground-contact.md) | Traversal legality separate from ground contact | Accepted | 2026-09-20 |
 | [0009](0009-two-level-landmark-visibility-and-eager-world-plan.md) | Two-level landmark visibility and an eagerly derived world plan | Accepted | 2026-09-21 |
 | [0010](0010-sixth-action-keeps-the-keyed-layer.md) | A sixth action keeps the keyed-curve layer | Accepted | 2026-09-23 |
+| [0011](0011-session-acquired-state-in-the-authoritative-encounter.md) | Session-acquired state in the authoritative encounter (written as 0010 on the frozen M9 branch; renumbered by the M9 revisit) | Accepted | 2026-09-22 |

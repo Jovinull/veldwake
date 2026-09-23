@@ -82,11 +82,17 @@ Can the adversary create a readable situation in which attacking immediately is 
 
 It is deliberately **not** a moveset, **not** an AI framework, **not** a player verb, **not** armor or poise, and **not** a navigation fix: stone behind the adversary turns it off (KI-041), and that is recorded rather than answered here. It is **not** "combat final" either: one adversary has one more attack and one more reason to move. It is what M9's failed weapon-choice gate lacked, and it makes a future re-run of that gate possible; M9 itself stays frozen and unmerged on `feat/m9-meaningful-reward`, and its found weapon has not been re-tested against the lunge.
 
+## M9 — Meaningful Reward (revisit)
+
+The first proof of Mastery: from the discovery overlook one direction ends in a fight and the other in a weapon worth carrying into it — a found longblade at the gate, exchanged for the weapon in hand by an explicit verb, a sidegrade of greater reach for greater commitment, surviving a defeat and not a restart.
+
+**The original M9 failed its product gate on 2026-09-22** (`OWNER PLAYTEST — WEAPON CHOICE MATTERS: FAIL`) and stays frozen on `feat/m9-meaningful-reward`: both weapons were perceived as different and both won by approaching and attacking. That finding produced combat initiative, above. **The M9 revisit** (`feat/m9-meaningful-reward-revisit`, not merged) ports M9 onto combat initiative unchanged, measures both weapons against the lunge in a headless pre-gate — **PASS** — and prepares the owner's re-run in a weapon-choice laboratory at the clearing. The owner has not played it. A PASS there would not complete M9 by itself: the product encounter at the spire does not host combat initiative yet (KI-043). See [`M9_MEANINGFUL_REWARD.md`](M9_MEANINGFUL_REWARD.md#m9-revisit).
+
 ## Later capability groups
 
 Persistence/world editing, aggregate/local world simulation, settlements/history/economy, richer procedural assets/audio/music, multiplayer transport, and WASM modding follow only after the central technical and fun risks are proven. Split and order them when earlier evidence exists; do not manufacture detailed milestones now.
 
-**This still holds after M8 and combat initiative, and the list is not a queue.** No numbered milestone has been chosen to follow M8. What follows combat initiative is a revisit of M9 against it — planned first and approved by the owner, not started from this list. The order above is the order it was written in, not a decision. M7 and M8 were both chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
+**This still holds after M8 and combat initiative, and the list is not a queue.** No numbered milestone has been chosen to follow M8. What follows combat initiative is the M9 revisit — planned, approved by the owner, ported and pre-gated, waiting for the owner's playtest — not something started from this list. The order above is the order it was written in, not a decision. M7 and M8 were both chosen against the state of the repository — the region existed, a body existed, a fight existed, and none of the three were connected — rather than by taking the next name off this list. A session that wants to build one of these groups proposes it first — scope, exit criteria, and what it deliberately will not build — and gets that accepted before writing code.
 
 ## Milestone exit rule
 

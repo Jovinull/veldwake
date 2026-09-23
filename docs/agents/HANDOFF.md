@@ -6,7 +6,9 @@ Last updated: 2026-09-23
 
 - **M8 — Discoverable Landmarks**: merged.
 - **Combat Initiative / Spacing**: merged and owner-tested.
-- **M9 — Meaningful Reward**: paused on `feat/m9-meaningful-reward`, unmerged, waiting to consume combat initiative and re-run its weapon-choice gate.
+- **M9 — Meaningful Reward**: the original stays frozen on `feat/m9-meaningful-reward` (technical PASS, owner FAIL 2026-09-22). The **M9 revisit** on `feat/m9-meaningful-reward-revisit` ports it onto combat initiative: technical gates and the headless pre-gate PASS, **ready for `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`, not yet run**. Unmerged, no pull request, no independent QA; M9 is not complete.
+
+**The M9 revisit is ready for its owner playtest, and nothing more.** `feat/m9-meaningful-reward-revisit`, cut from `docs/post-combat-initiative-handoff` at `0aeac9c849a27e71d249d5d013376d50e1896e9d`, is a fresh port of the frozen M9 onto combat initiative — no rebase, merge or cherry-pick; the old branch is untouched at `61cb43e76af9f307bb388cb1bdebff84e4425b2b`. The found weapon is the frozen branch's exactly, every M9 and historical lock is exact, `COMBAT_INITIATIVE_SIGNATURE` did not move, and the adversary provably decides the same whichever weapon the player holds (COMBAT-005, ARM-002). The headless pre-gate measured both weapons against the lunge and passed every hard stop: found owner-spam `3/3` against the original's `2/4`, the lunge cut by the found weapon in `10` of the band's `77` cells and in `0` of `24` fight lunges, the original more forgiving after a late read (spam-read at `400` ms keeps full health with it and loses `252` of `576` with the found weapon), the found weapon a quarter to a third faster for a clean reader at equal safety. The owner-facing session is a laboratory — `VELDWAKE_ENCOUNTER=weapon-choice`, combat initiative's clearing with the exchange beside the round start and every round starting paused — not the product world, where the spire still fights without initiative (KI-043). All of it is headless and self-QA evidence. See [`planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md#m9-revisit).
 
 **Combat Initiative / Spacing is complete and merged.** Implementation complete; author self-QA complete; **OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS**, 2026-09-23; **independent QA: PASS**, 2026-09-23. It landed through [PR #13](https://github.com/Jovinull/veldwake/pull/13) at merge commit `af475efc18139dfc4b86b3c41e165dcfd0d7393c`, whose parents are `ee35f62f97afbe3d001a27a576e9bae21e77c4d2` and `3c0c540f4ac486b7a8b45316da1b531835f65960`, after author self-QA, the owner's playtest (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS, 2026-09-23), independent QA (PASS, 2026-09-23), a green pull-request CI run ([run 35873074352](https://github.com/Jovinull/veldwake/actions/runs/35873074352)) and a green post-merge CI run on the merge commit ([run 35875711984](https://github.com/Jovinull/veldwake/actions/runs/35875711984)). The remote branch `feat/combat-initiative-spacing` is preserved at `3c0c540f4ac486b7a8b45316da1b531835f65960`, the head where the 793 tests and every gate were run. It has no milestone number — the owner approved it as an unnumbered slice. Read [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) before touching it: the three mechanisms, every number and the measurement that moved it, the oracles, the terrain results, the real-client evidence table, and what this agent could not verify.
 
@@ -14,7 +16,7 @@ Last updated: 2026-09-23
 
 **Combat initiative is not "combat final".** The owner did not say that combat is final, that every enemy should use this, that the tuning is definitive or that the lunge is visually finished, and KI-041 and KI-042 remain open.
 
-**M9 is frozen, unmerged, and next to be revisited — not by this branch.** `feat/m9-meaningful-reward` failed its product gate on 2026-09-22 because approaching and attacking won with either weapon; combat initiative is what that gate lacked. Its found weapon has not been re-tested against the lunge, and nothing here touches it. `feat/combat-pressure` stays blocked for its measured reason: combat initiative answers the same finding by acting **before** the player commits, where that branch reacted after.
+**The original M9 is frozen and stays so.** `feat/m9-meaningful-reward` failed its product gate on 2026-09-22 because approaching and attacking won with either weapon; combat initiative is what that gate lacked, and the revisit branch above is where M9 now continues. Nothing touches the frozen branch. `feat/combat-pressure` stays blocked for its measured reason: combat initiative answers the same finding by acting **before** the player commits, where that branch reacted after.
 
 **Combat initiative's pull request also carried the post-M8 handoff.** `docs/post-m8-handoff` (`658ebfbd618b1d7387eee7890d11af53b5f8e045`) was merged into `feat/combat-initiative-spacing` with every conflict resolved by hand, so the M8 record below reached `main` in one narrative, and `feat/m9-meaningful-reward`, which was built on that commit, now shares its base with `main`. That branch is preserved and needs no separate merge.
 
@@ -76,21 +78,22 @@ Read these before changing anything. They are the whole truth of the project; no
 18. [`../audiovisual/LANDMARK_STYLE.md`](../audiovisual/LANDMARK_STYLE.md) — the versioned, checkable constraints M8's one landmark family is held to, and what the implementation moved
 19. [`../audiovisual/COMBAT_STYLE.md`](../audiovisual/COMBAT_STYLE.md) — the versioned, checkable constraints M6 was held to: the weapon, the six action poses (the lunge is the sixth), the two effects, the readout, and what the camera may do
 20. [`../design/COMBAT.md`](../design/COMBAT.md) — the design intent combat aims at, most of which is still not built
-21. [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) — the most recent work, an unnumbered slice: the three mechanisms, every number, the owner's gate and independent QA; and [ADR-0010](../adr/0010-sixth-action-keeps-the-keyed-layer.md), why its lunge is still a keyed curve
-22. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the most recent numbered milestone: the composition, the owner's session, the branch QA section, and what nobody could verify
-23. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone before it: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
-24. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
-25. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
-26. [`../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md`](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — why landmark visibility is answered at two levels and why the world plan is derived eagerly and typed
-27. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
-28. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
-29. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
-30. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
-31. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
-32. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
-33. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
-34. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
-35. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
+21. [`../planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md) — M9: the original record and its owner FAIL, unchanged, and the M9 revisit at the end — the port, the pre-gate tables, the laboratory and the prepared owner protocol; with [ADR-0011](../adr/0011-session-acquired-state-in-the-authoritative-encounter.md) and ARM-001/ARM-002
+22. [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) — the most recent work, an unnumbered slice: the three mechanisms, every number, the owner's gate and independent QA; and [ADR-0010](../adr/0010-sixth-action-keeps-the-keyed-layer.md), why its lunge is still a keyed curve
+23. [`../planning/M8_DISCOVERABLE_LANDMARKS.md`](../planning/M8_DISCOVERABLE_LANDMARKS.md) — the most recent numbered milestone: the composition, the owner's session, the branch QA section, and what nobody could verify
+24. [`../planning/M7_TRAVERSABLE_REGION.md`](../planning/M7_TRAVERSABLE_REGION.md) — the milestone before it: the owner decisions it answers to, the two architectural corrections it carries, the whole-region reachability result, the named route and everything measured
+25. [`../planning/M6_COMBAT_SLICE.md`](../planning/M6_COMBAT_SLICE.md) — the milestone before it: its evidence, its measurements, the six branch-QA findings, the owner gates, and its limitations
+26. [`../planning/M5_PROCEDURAL_CHARACTER.md`](../planning/M5_PROCEDURAL_CHARACTER.md) — the milestone before it, and the character every combat pose is built on
+27. [`../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md`](../adr/0009-two-level-landmark-visibility-and-eager-world-plan.md) — why landmark visibility is answered at two levels and why the world plan is derived eagerly and typed
+28. [`../adr/0008-traversal-legality-separate-from-ground-contact.md`](../adr/0008-traversal-legality-separate-from-ground-contact.md) — why a traversal veto sits beside `GroundSampler` instead of changing it, and why the veto never reports a height
+29. [`../adr/0005-fixed-step-headless-combat-domain.md`](../adr/0005-fixed-step-headless-combat-domain.md) — why combat is integer-stepped and headless, and why two combatants are the whole entity model
+30. [`../adr/0006-action-pose-layer-beside-analytical-locomotion.md`](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) — why a tick-driven action layer sits beside distance-driven locomotion, and why ADR-0004 was not superseded
+31. [`../adr/0007-procedural-impact-audio-boundary.md`](../adr/0007-procedural-impact-audio-boundary.md) — why the synth has no I/O, and where the device boundary is
+32. [`../adr/0004-rigid-voxel-character-and-analytical-locomotion.md`](../adr/0004-rigid-voxel-character-and-analytical-locomotion.md) — why body parts are rigid and locomotion is analytical, and what that costs
+33. [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — every accepted limitation and every closed one, with the reason each was closed
+34. [`../LEARNINGS.md`](../LEARNINGS.md) — reusable discoveries below ADR scope
+35. [`EVIDENCE_HARNESS.md`](EVIDENCE_HARNESS.md) — how a capture is produced, what makes one invalid, and how it picks the right window
+36. [`WORKFLOW.md`](WORKFLOW.md) — how an agent is expected to work in this repository
 
 Then, as needed: [`../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md`](../planning/M4_BEAUTIFUL_TERRAIN_SLICE.md), the rest of the [ADRs](../adr/README.md), and [`../environment/SETUP.md`](../environment/SETUP.md) for gate commands and environment variables.
 
@@ -111,17 +114,22 @@ Then the code. Read it in this order, because it is the surface anything after M
 
 The shapes worth holding while reading: the domain is authoritative and headless, the client advances it in whole ticks, and every visible or audible consequence of a fight is derived from an event the rules published.
 
-## Continue here — revisit M9 against combat initiative
+## Continue here — the M9 revisit's owner playtest
 
-**The next step is a plan, not code, and it has not started.** Read `feat/m9-meaningful-reward` against the `main` that now contains combat initiative, and plan the safest way to bring it across — a rebase, or a port onto a fresh branch — for the owner to approve before anything moves. Do not rebase it, merge it, change its weapon or re-run its gate in the session that writes the plan.
+**The next step belongs to the owner: `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`.** The port and the headless pre-gate are done on `feat/m9-meaningful-reward-revisit` (pushed, no pull request). An agent does not run the playtest, does not award its verdict, and does not retune the found weapon without new owner approval.
 
-What the plan has to answer, at least:
+```text
+VELDWAKE_ENCOUNTER=weapon-choice cargo run --release -p veldwake-client
+```
 
-- **Its base.** M9 was built on `docs/post-m8-handoff` (`658ebfb`), which is now in `main` through [PR #13](https://github.com/Jovinull/veldwake/pull/13). Its five commits after that are not in `main`. Start the plan from `docs/post-combat-initiative-handoff`, which carries this record, the way M8 started from `docs/post-m7-handoff`.
-- **What collides.** Both touch `crates/combat` — M9 adds a weapon exchange to the domain; combat initiative adds a second attack kind, outcome-dependent recovery and the spacing dodge — and both edit the same state documents. List the files both change before choosing a strategy.
-- **What moved under it.** M9's oracles and locks were measured against the M6 adversary. Say which must hold unchanged and which described a fight the initiative session no longer runs.
-- **What the rerun gate asks.** M9 failed because approaching and attacking won with either weapon. The rerun asks whether weapon choice matters **against an adversary that now punishes that**; it needs its own protocol, and nobody has tested the found weapon against the lunge.
-- **What stays unique.** KI-037 to KI-039 belong to M9, KI-040 to Combat Pressure, KI-041 and KI-042 to combat initiative. A port keeps them.
+The session starts paused at the clearing with the adversary eight units ahead and the found weapon planted `1.25` u to the player's left; `E` beside it swaps weapons, and every round starts paused beside it again. The instruction is only *"Lute normalmente. Entre as lutas, você pode trocar de arma no ponto de início quando quiser."* Phases, the first question (*"o que você achou?"*), the nine neutral questions and the PASS/FAIL conditions are in [`../planning/M9_MEANINGFUL_REWARD.md`](../planning/M9_MEANINGFUL_REWARD.md#m9-revisit). Record the owner's words verbatim in that section, beside — never over — the original FAIL.
+
+**After the verdict, stop either way.**
+
+- **PASS**: do not call independent QA, open a pull request or merge. Return to the owner with the owner evidence, the technical evidence and what remains for the product world: the gate's exchange in `traverse` leads to a spire adversary that still fights without combat initiative (KI-043, KI-041, KI-038). That integration is the owner's next decision.
+- **FAIL**: record it the way the original FAIL was recorded, including what the owner did *not* say; do not retune. The measured causal levers are in the revisit section (the found weapon's windup and recovery set its commitment; its damage sets how many openings a clean reader needs).
+
+What the pre-gate leaves for the owner to judge, stated plainly: a player who reads the lunge cleanly takes no damage with either weapon and finishes a third sooner with the found one; the original's advantage is in imperfect play — a late read, an early swing, a late close punish.
 
 ### Combat initiative — how it was closed
 
@@ -166,6 +174,14 @@ VELDWAKE_ENCOUNTER=initiative cargo run --release -p veldwake-client
 ```
 
 It starts paused at the open clearing `(-69, 49)` with the adversary eight units away, and arms on the first input.
+
+To play the M9 revisit's weapon-choice laboratory (branch `feat/m9-meaningful-reward-revisit` only):
+
+```text
+VELDWAKE_ENCOUNTER=weapon-choice cargo run --release -p veldwake-client
+```
+
+The same clearing and adversary, the found weapon planted `1.25` u to the player's left, `E` to swap, and every round starting paused beside it.
 
 ### Where M8's code is, and in what order to read it
 
@@ -300,6 +316,11 @@ Nothing material about the project's real state exists only in a conversation. T
 
 ## Immediate risks
 
+- **The M9 revisit is ready for a person and for nothing else.** Pre-gate PASS is headless and self-QA evidence; it is not owner judgement, M9 is not complete, and an owner PASS in the laboratory does not authorise a merge (KI-043).
+- **Do not retune the found weapon without the owner.** Its windup, active, recovery, damage, step-in, knockback and reach are the frozen branch's, and `FOUND_ENCOUNTER_SIGNATURE` and `REWARD_BEHAVIOR_SIGNATURE` would move with any of them. No automatic retune was pre-authorised.
+- **Do not make the adversary weapon-aware.** The band, the lunge and the brain must never read the armament (COMBAT-005, ARM-002); `the_adversary_decides_the_same_whichever_weapon_the_player_holds` is the guard. If the found weapon breaks the band some day, the lever is the found weapon, not the adversary.
+- **`weapon-choice` is a laboratory.** Its QA exchange point and its paused round start exist for the owner's test; the owner's `initiative` session and the product `traverse` session are unchanged by it.
+- **No durable lock of the found weapon against initiative exists yet**, deliberately; decide after the owner's verdict whether one is warranted.
 - **Combat initiative is closed, and its numbers are still not owner judgement.** OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS and independent QA PASS, both 2026-09-23. The owner judged that pressure demands a response; every number in its document is headless, real-client self-QA or independent-QA evidence, and none becomes owner judgement by association. Do not retune it or give it a milestone number without the owner.
 - **Do not act on the owner's remarks as if they were work items.** *"Dá pra prever"* — predictable once understood, and still fun — is recorded as an observation next to the risk that spam-read wins cleanly. The request for the great sword belongs to M9, which is frozen on its own branch and was not part of this gate.
 - **Do not re-lock a historical value for this capability.** `GOLDEN_ENCOUNTER_SIGNATURE`, both weapon fingerprints and every M5/M7/M8 lock stayed byte-identical and must stay so; if one moves, the capability has leaked into the historical encounter. `COMBAT_INITIATIVE_SIGNATURE` is the lock that is allowed to move, with an OLD/NEW/WHY paragraph.
@@ -307,7 +328,7 @@ Nothing material about the project's real state exists only in a conversation. T
 - **Stone behind the adversary turns the capability off** (KI-041). The opt-in session stands in the open clearing on purpose; the M8 encounter at the spire does not use the capability, and moving it there is a navigation decision.
 - **`combat-shoulder` frames from behind the adversary** (KI-042). Do not use it as evidence of what the player sees.
 - **The golden-world initiative gates are slow in debug** — the open-clearing gate took `80` s and the spire gate `139` s under `cargo nextest` on the audited host, because each builds a world and plays dozens of sixty-second fights. They are not ignored; they are the terrain evidence.
-- **No numbered milestone is active, and the M9 revisit starts with a plan.** Propose before coding. Do not name a milestone, do not create a `feat/*` branch for M9 before the owner accepts the plan, and do not treat the roadmap's capability groups as a queue.
+- **No numbered milestone is active, and M9 is not complete.** The revisit was planned, approved and built; what it may become after the owner's verdict is the owner's call. Do not create another `feat/*` branch, name a milestone or treat the roadmap's capability groups as a queue.
 - **The owner judged M8's discovery and nothing else.** Two destinations noticed, read as different, one chosen, walked to, adversary found. Distances, contrast, the third landmark, the gate's passability, the weather comparison and KI-032 are all self-QA evidence. Promoting any of them to owner judgement is the M7 mistake repeated.
 - **The visual-simplicity and Cube-World observations are recorded, not actioned.** The owner said the structures are simple but sufficient, and that they still read close to familiar voxel-RPG architecture (KI-036). Neither is a work item on this branch: no props, no decoration, no second family, no second material system, no particles, no lights, no interiors.
 - **The landmark plan is derived when a world is built, not when a chunk is generated.** It costs `316`–`409` ms in release and about `1.5` s in debug per world (KI-035). `cargo nextest` runs one process per test, so no cache helps the suite; what helps is building one world per process, which is what `WorldSelection::build` and `TerrainGenerator::with_plan` are for. Do not reintroduce a lazy or global plan to make a number look better.

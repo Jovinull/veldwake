@@ -46,6 +46,33 @@ Descriptors may include category, material, craftsmanship, culture, age/wear, ge
 
 Loot should produce semantic objects—such as a culturally consistent weapon linked to an actual historical event—not adjective/stat permutations. Infinite combinations are not valuable if choices are indistinguishable.
 
+### What M9 added to the items domain
+
+M9 implemented the smallest fragment of the paragraph above and stopped there.
+
+**Real.** A second accepted weapon, compiled from a descriptor by the same
+compiler, in the same `VoxelId` range and the same material table, under a
+palette this repository already declared and had never drawn. Geometry that
+means something in play: a longer blade reaches further because the hit sweep
+follows the blade the viewer can see, not because a number says so. A weapon
+that exists as an object in the world — standing at a fixed place, drawn through
+the same rigid-part path, taken by an explicit verb — rather than only in a
+hand.
+
+**Not real, and deliberately not invented.** Category, craftsmanship, culture,
+age, wear, maker, previous owner, provenance, enchantment, rarity, loot tables,
+drops, inventory, item identifiers and any generator that produces a third
+weapon. There are exactly two accepted weapons, both named fixtures, both
+locked, and a third is a decision rather than a configuration.
+
+The honest statement of where this domain is: the found weapon has geometry that
+changes what the rules measure — reach, commitment, exposure — and no history
+whatsoever. Whether it changes a *decision* is a product question, and the M9
+owner playtest answered it with a FAIL against the M6 adversary; the revisit
+against combat initiative has not been played yet. Nothing in the world explains why
+it is standing in that gate — which is the same gap `WORLD_GENERATION.md`
+records for the gate itself.
+
 ## Shared validation
 
 All domains need canonical descriptors, explicit random streams, schema/generator/style versions, budget constraints, preview tools, rejection diagnostics, representative fixtures, cache keys, and reviewable outputs.

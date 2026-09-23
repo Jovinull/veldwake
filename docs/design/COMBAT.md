@@ -21,3 +21,34 @@ Combat is a core system, not content to add after an “engine” is complete. A
 - Does the enemy remain interesting after learning its pattern?
 
 Exact controls, stamina, lock-on, damage formulas, classes, PvP, and difficulty modes are TBD.
+
+## What M9 added, and what it deliberately did not
+
+M9 gives the player a **choice of weapon** and nothing else about combat moves.
+There are two accepted weapons, both named fixtures: the original longsword M6
+built and a found longblade standing at a fixed site in the world. An explicit
+verb exchanges them, one at a time, with the site keeping whichever one the
+player is not carrying.
+
+The two are meant to be a **sidegrade**: the found weapon connects out to
+`3.4477` world units against `2.8835` against a standing body and commits for
+`103` ticks against `75`, and against the M6 adversary's approach the extra
+reach buys as much time as the extra commitment costs. One needs three connected
+swings and the other four.
+
+**That claim did not survive a person.** The M9 owner playtest on 2026-09-22
+failed: both weapons were perceived as different and both supported the same
+natural strategy — approach, face, attack repeatedly, win — because the M6
+adversary never made the player trade anything. Combat initiative
+(`COMBAT_INITIATIVE.md`) was built to answer that and is merged; the M9 revisit
+measures the two weapons against it. Headless, the relation now looks like the
+intended one — the original weapon is the more forgiving after a late read, the
+found weapon the faster once the fight is read cleanly — and whether a person
+plays them differently is `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`,
+which has not run. See `M9_MEANINGFUL_REWARD.md`.
+
+Still not built, and still not prejudged: combos, heavy attacks, a second attack
+button, parries, blocks, stamina, status effects, elements, criticals, rarity, a
+second enemy, target lock, limb hit volumes (KI-022), camera occlusion (KI-025)
+and any two-handed grip or second-hand contact. The weapon in M9 hangs off the
+right hand exactly as M6's did.

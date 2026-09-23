@@ -159,3 +159,117 @@ The tests answer five questions, each with an oracle that does not share code wi
 **Does it survive the world?** `apps/client/src/initiative.rs` plays the same policies over `TerrainGround` and `TerrainWalkability` on the golden world, at the open clearing from four directions and at the spire along the derived route's last leg and from north and south. On every one of those approaches owner-spam wins at most two in six and read at least five, no fight stalls or draws, and no adversary dodge meets a live swing; at the clearing the health order read ≥ spam-read ≥ owner-spam is asserted too, and across the spire approaches owner-spam loses more than it wins. The two spire witnesses — stone behind the adversary, stone between the bodies — have their results **reported, not asserted**, because they record a limit (KI-041) rather than a promise; only their audit, no adversary dodge inside a live swing, is asserted. These two tests are the slowest in the workspace: each builds a world and plays dozens of sixty-second fights, a minute or more each in a debug build on the audited host.
 
 What the tests do not cover: whether a person perceives the lunge from the player's camera, and whether the fight is fun. The real-client self-QA and the owner playtest in [`../planning/COMBAT_INITIATIVE.md`](../planning/COMBAT_INITIATIVE.md) are the only evidence for either.
+
+## The weapon exchange
+
+On the frozen `feat/m9-meaningful-reward` M9 added forty-one tests across the
+domain and the client, for **799** there — 796 by default and three
+`#[ignore]`d. The M9 revisit ported every one of them onto combat initiative
+unchanged in meaning; the counts for the combined branch are in *The M9
+revisit* below.
+
+What the domain asserts, all through the authoritative tick loop rather than
+about the code:
+
+- an encounter with no reward configured cannot exchange, refuses nothing and
+  counts nothing, so every M6, M7 and M8 fixture is provably inert;
+- an exchange needs a world that offers a site, and is refused out of range,
+  while attacking, dodging, staggered or defeated;
+- **attack outranks dodge outranks interact**, and a press a swing consumed does
+  not fire later as a stale latch — asserted over two hundred following ticks;
+- the adversary resolves to the original weapon and the original spec in every
+  armament state (ARM-002);
+- the player's weapon, spec and swept blade all follow the armament;
+- the historical aim-assist range is **exactly** `2.9000` for both M6 bodies and
+  larger for the found weapon;
+- **ARM-001** by driving a real defeat: the reset restores the body, its
+  position, its facing and its health, and leaves the armament alone. The
+  victory case under `Remain` is asserted the same way;
+- an exchange is its own inverse, and a new encounter starts over;
+- the found weapon connects from further away **in the real loop**, measured by
+  a sandbox drill against a dormant target so only the player's weapon is in
+  play;
+- the sidegrade relation — the closing time the reach buys is within eight ticks
+  of the lock the commitment costs — asserted as a relation, not a lock.
+
+What the client asserts:
+
+- the anchor is the gate's own opening centre offset by one column along the
+  gate's span axis, still inside the footprint and off the walking line;
+- the site is dry, level to a voxel over the interaction radius, clear of final
+  vegetation, outside every landmark keep-out, standable and reachable on foot,
+  all from the **production adapters**;
+- a session does not begin inside its own reward;
+- the planted blade's tip lands on the ground it was put on, at the column
+  centre, the right way up and the right length;
+- **the gate is still walkable with the weapon standing in it**, in both
+  armament states, driven through a real encounter (LAND-002 re-proved);
+- **resolving a reward writes no voxel into the world**, by generating the
+  chunks around the gate from a generator the reward was resolved against and
+  one it was not and comparing them — the guard that a future change making
+  placement reach into generation would trip;
+- `E` maps to interact and no other key does;
+- an interact-only first input arms the session and is not swallowed, and an
+  interact is not suppressed while the adversary sleeps;
+- a held exchange key latches once per press.
+
+The M9 locks are `FOUND_WEAPON_GEOMETRY_FINGERPRINT`,
+`FOUND_WEAPON_IDENTITY_FINGERPRINT`, `FOUND_ENCOUNTER_SIGNATURE` and
+`REWARD_BEHAVIOR_SIGNATURE`. The found encounter uses the **same trace format**
+as `GOLDEN_ENCOUNTER_SIGNATURE` and is not expected to equal it.
+
+## The M9 revisit
+
+`feat/m9-meaningful-reward-revisit` ports M9 onto combat initiative and brings
+the workspace to **847 tests** that run by default and **855** with
+`--run-ignored all`: combat initiative's `793`, the frozen branch's `41`, and
+thirteen of the revisit's own, plus three new `#[ignore]`d measurements beside
+the five already there. Every one of the frozen branch's tests was ported with
+its meaning unchanged, and none that `main` already had was changed or weakened.
+
+The tests answer four questions, again with oracles that share no code with
+what they judge:
+
+**Did the port move anything?** Seven combat locks are asserted together by
+`every_locked_value_still_matches_what_the_rules_produce` and printed by
+`combat-probe signature`: the three M6 ones, `COMBAT_INITIATIVE_SIGNATURE` and
+the three M9 ones, all exact; `REWARD_BEHAVIOR_SIGNATURE` by its own client
+test. The stronger control is behavioural:
+`holding_the_original_weapon_is_the_historical_initiative_fight` runs every
+oracle family — owner-spam, spam-read, read-dodge and read-walk at every lag —
+through an encounter that *offers* the exchange and holds the original weapon,
+and requires every `FightReport` to equal the historical initiative fight's;
+`holding_the_original_weapon_is_the_historical_lunge_probe` does the same for
+the band probe. Only then does a difference measured with the found weapon mean
+the weapon.
+
+**Does the adversary know what the player holds?** Structurally, no:
+`the_adversary_decides_the_same_whichever_weapon_the_player_holds` runs two
+encounters identical but for the first tick's interact — the real exchange rule
+— for three thousand ticks under two player scripts, and requires the brain's
+state, the adversary's action, position and facing bits and the player's health
+to be equal on every tick, with lunges, primaries and spacing dodges happening.
+`with_the_found_weapon_no_spacing_dodge_starts_over_a_live_swing` keeps
+COMBAT-005's counter at `0` under every policy holding the found weapon.
+
+**What does each weapon do against the lunge?** Measured, not asserted:
+`measure_the_found_weapon_against_initiative` (flat ground, six seeds, every
+family and lag, both weapons), `measure_the_found_weapon_against_the_lunge_band`
+(the charge race at every `0.05` from `4.10` to `4.80` under eleven
+misjudgements, standing, swinging at once, stepping off by dodge and by walk,
+advancing then leaving, and where each weapon can actually punish a missed lunge
+from), and `measure_both_weapons_in_the_weapon_choice_laboratory` (the same
+families on the golden world exactly as the owner's session stands). The tables
+are in `planning/M9_MEANINGFUL_REWARD.md`. They are deliberately not turned into
+assertions of a product relation before the owner has played: a test that
+pinned "the found weapon wins three of six" would lock a number nobody has
+judged.
+
+**Does the laboratory work?** `the_weapon_choice_setup_is_the_initiative_fight_plus_the_exchange`,
+`the_weapon_choice_point_is_beside_the_start_and_out_of_the_fight` (inside the
+radius, outside the body, off the fight's line, on the start's level, far from
+the gate), `a_round_reset_puts_the_body_back_beside_the_point_still_armed`,
+`a_laboratory_round_starts_paused_so_the_weapon_can_be_changed` and
+`a_paused_encounter_keeps_everything_and_fights_again_when_rearmed` (the fix
+the real-client self-QA forced), mode parsing, and that only the laboratory —
+not the owner's `initiative` session — offers the exchange.

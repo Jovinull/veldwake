@@ -20,12 +20,12 @@ Questions are decisions not safely inferable from the transcript. Resolve at the
 8. Select voxel storage unit/scales, chunk dimensions, edit granularity, terrain topology, meshing baseline, and coordinate precision through prototypes. Everything here is settled except **edit granularity**, which remains untouched: nothing in the game can change a voxel.
 9. Decide finite-world topology/size and world-version compatibility policy.
 10. Define the first STYLE_BIBLE with concrete shape/palette/material examples and review ownership.
-11. Decide persistence guarantees for edited/generated chunks and recovery expectations. **Still open after M7**: a session leaves no trace at all, and M7 deliberately added none. Being open is not being chosen — no milestone has been selected to follow M7, and this entry is not a nomination.
+11. Decide persistence guarantees for edited/generated chunks and recovery expectations. **Still open after M9, and M9 is the first milestone that makes it concrete.** A session now holds one fact a player would mind losing — which of two weapons they are carrying, and which is at the site — and that fact is authoritative, survives an encounter reset and deliberately dies with the process (ARM-001, [ADR-0011](../adr/0011-session-acquired-state-in-the-authoritative-encounter.md)). The three lifetimes are now demonstrated rather than theorised: encounter state, session state, and nothing durable. Being open is still not being chosen.
 
 ## Before gameplay/product slices
 
 12. Combat camera, controls, defense/dodge/stamina model, difficulty/accessibility, and first weapon/enemy.
-13. Character creation versus generated identity, death/failure loop, and progression reset/respec policies. **Still open after M7.** M7 chose the smallest behaviour that keeps a session alive and nothing more: a defeated player returns to its configured start after the existing hold, and a defeated adversary stays where it fell. That is not a death system, a respawn system or a failure loop, and it decides nothing about what one should be.
+13. Character creation versus generated identity, death/failure loop, and progression reset/respec policies. **Still open after M9**, which deliberately answered only the narrowest part of it: a defeat costs the round and not the reward. M9 added no levels, stats, experience, respec or failure loop beyond M7's reset. M7 chose the smallest behaviour that keeps a session alive and nothing more: a defeated player returns to its configured start after the existing hold, and a defeated adversary stays where it fell. That is not a death system, a respawn system or a failure loop, and it decides nothing about what one should be.
 14. Minimum construction/world-editing scope and interaction with NPC rebuilding.
 15. Co-op player count, hosting model, griefing/ownership, offline progression, and PvP stance.
 16. Mod API scope, trust/signing/discovery, server authority, and distribution policy.
