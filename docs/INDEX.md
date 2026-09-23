@@ -45,7 +45,7 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`audiovisual/ART_DIRECTION.md`](audiovisual/ART_DIRECTION.md)
 - [`audiovisual/STYLE_BIBLE.md`](audiovisual/STYLE_BIBLE.md): the versioned, checkable constraint set the M4 generator and shaders are held to
 - [`audiovisual/CHARACTER_STYLE.md`](audiovisual/CHARACTER_STYLE.md): the versioned, checkable constraint set the M5 character compiler and locomotion are held to
-- [`audiovisual/COMBAT_STYLE.md`](audiovisual/COMBAT_STYLE.md): the versioned constraint set the M6 weapon, action motion, effects, readout and camera response are held to, and why it is a separate version from the character's
+- [`audiovisual/COMBAT_STYLE.md`](audiovisual/COMBAT_STYLE.md): the versioned constraint set the M6 weapon, action motion — six actions since the combat-initiative lunge — effects, readout and camera response are held to, and why it is a separate version from the character's
 - [`audiovisual/LANDMARK_STYLE.md`](audiovisual/LANDMARK_STYLE.md): the versioned constraint set the M8 landmark family is held to — silhouette classes, proportions, palette and what a landmark may never look like
 - [`audiovisual/RENDERING_VISION.md`](audiovisual/RENDERING_VISION.md)
 - [`audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md`](audiovisual/PROCEDURAL_AUDIO_AND_MUSIC.md)
@@ -79,7 +79,8 @@ This index points to canonical knowledge. The transcript under `source/` is hist
 - [`planning/M5_PROCEDURAL_CHARACTER.md`](planning/M5_PROCEDURAL_CHARACTER.md)
 - [`planning/M6_COMBAT_SLICE.md`](planning/M6_COMBAT_SLICE.md)
 - [`planning/M7_TRAVERSABLE_REGION.md`](planning/M7_TRAVERSABLE_REGION.md)
-- [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the active milestone, implemented, owner-accepted and branch-QA'd
+- [`planning/M8_DISCOVERABLE_LANDMARKS.md`](planning/M8_DISCOVERABLE_LANDMARKS.md): the last merged milestone — what landmarks are, what the owner's session proved, and what branch QA re-derived
+- [`planning/COMBAT_INITIATIVE.md`](planning/COMBAT_INITIATIVE.md): Combat Initiative / Spacing, the unnumbered slice after M8 — the pressure lunge, the non-reactive spacing dodge and the outcome-dependent recovery, their oracles and evidence, the owner's gate (OWNER PLAYTEST — PRESSURE DEMANDS RESPONSE: PASS) and independent QA (PASS); its pose decision is [ADR-0010](adr/0010-sixth-action-keeps-the-keyed-layer.md)
 - [`planning/RISK_REGISTER.md`](planning/RISK_REGISTER.md)
 - [`planning/OPEN_QUESTIONS.md`](planning/OPEN_QUESTIONS.md)
 - [`research/REFERENCES.md`](research/REFERENCES.md)

@@ -151,6 +151,30 @@ impl SwingId {
     }
 }
 
+/// Which of the two attacks a swing is.
+///
+/// Two, and that is the whole universe: no moveset, no registry, no list of
+/// attacks. `Primary` is the historical M6 swing every combatant has.
+/// `Pressure` is the adversary's lunge from middle distance, and exists only in
+/// an encounter whose tuning authors one
+/// ([`crate::spec::AuthoredPressure`]). The player only ever swings `Primary`.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum AttackKind {
+    #[default]
+    Primary,
+    Pressure,
+}
+
+impl AttackKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Pressure => "pressure",
+        }
+    }
+}
+
 /// Which phase of a swing a tick is in.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AttackPhase {
@@ -185,6 +209,10 @@ pub enum Action {
     Free,
     Attack {
         swing: SwingId,
+        /// Which of the two attacks this is. Everything that needs the spec
+        /// of a running swing reads it from here, so a swing cannot change
+        /// kind half way through.
+        kind: AttackKind,
         elapsed: Ticks,
         /// Which sides this swing has already hit, indexed by [`Side::index`].
         hits: [bool; SIDES.len()],
@@ -225,6 +253,27 @@ impl Action {
     #[must_use]
     pub const fn is_dodging(&self) -> bool {
         matches!(self, Self::Dodge { .. })
+    }
+
+    /// Which attack is running, if one is.
+    #[must_use]
+    pub const fn attack_kind(&self) -> Option<AttackKind> {
+        match self {
+            Self::Attack { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    /// Whether a running swing has connected with anybody.
+    ///
+    /// A swing can only ever hit the other body, so any mark means it
+    /// connected. This is what an outcome-dependent recovery is decided by.
+    #[must_use]
+    pub const fn connected(&self) -> bool {
+        match self {
+            Self::Attack { hits, .. } => hits[0] || hits[1],
+            _ => false,
+        }
     }
 
     /// The phase of a swing, given the spec that governs it.
@@ -287,12 +336,34 @@ impl Action {
             Self::Defeated { elapsed } => {
                 ActionOverlay::defeated(weapon_side, progress(*elapsed, DEFEAT_SAG_TICKS))
             }
-            Self::Attack { elapsed, .. } => ActionOverlay::attack(
+            Self::Attack {
+                kind: AttackKind::Primary,
+                elapsed,
+                ..
+            } => ActionOverlay::attack(
                 weapon_side,
                 progress(*elapsed, spec.total()),
                 spec.windup_fraction(),
                 spec.active_fraction(),
             ),
+            // A lunge is posed against the recovery it is actually running:
+            // the short one once it has connected, the long one otherwise.
+            // The windup and active keys are phase-local, so the total
+            // changing on the tick of a hit moves nothing that is on screen;
+            // only the recovery, which a hit can never interrupt, is shorter.
+            Self::Attack {
+                kind: AttackKind::Pressure,
+                elapsed,
+                ..
+            } => {
+                let total = spec.total_for(self.connected()).max(1);
+                ActionOverlay::lunge(
+                    weapon_side,
+                    progress(*elapsed, total),
+                    spec.windup() as f32 / total as f32,
+                    spec.active() as f32 / total as f32,
+                )
+            }
             Self::Dodge {
                 elapsed,
                 duration,
@@ -357,6 +428,8 @@ pub fn relative_angle(direction: Vec2, facing: f32) -> f32 {
 pub struct Intent {
     move_world: Vec2,
     attack: bool,
+    /// Which attack `attack` asks for. Always `Primary` for the player.
+    attack_kind: AttackKind,
     dodge: bool,
     face_foe: bool,
 }
@@ -378,6 +451,7 @@ impl Intent {
         Self {
             move_world: sanitise(move_world),
             attack,
+            attack_kind: AttackKind::Primary,
             dodge,
             face_foe: false,
         }
@@ -389,7 +463,35 @@ impl Intent {
         Self {
             move_world: sanitise(move_world),
             attack,
+            attack_kind: AttackKind::Primary,
             dodge: false,
+            face_foe: true,
+        }
+    }
+
+    /// The adversary commits its pressure lunge, standing where it is.
+    #[must_use]
+    pub(crate) fn adversary_pressure() -> Self {
+        Self {
+            move_world: Vec2::ZERO,
+            attack: true,
+            attack_kind: AttackKind::Pressure,
+            dodge: false,
+            face_foe: true,
+        }
+    }
+
+    /// The adversary takes its spacing dodge in `direction`.
+    ///
+    /// The same dodge the player has, run by the same rule: no new action, no
+    /// invulnerability, the same movement legality and the same cooldown.
+    #[must_use]
+    pub(crate) fn adversary_dodge(direction: Vec2) -> Self {
+        Self {
+            move_world: sanitise(direction),
+            attack: false,
+            attack_kind: AttackKind::Primary,
+            dodge: true,
             face_foe: true,
         }
     }
@@ -402,6 +504,11 @@ impl Intent {
     #[must_use]
     pub const fn attack(&self) -> bool {
         self.attack
+    }
+
+    #[must_use]
+    pub const fn attack_kind(&self) -> AttackKind {
+        self.attack_kind
     }
 
     #[must_use]
@@ -733,6 +840,7 @@ mod tests {
         let at = |elapsed| {
             Action::Attack {
                 swing: SwingId(0),
+                kind: crate::combatant::AttackKind::Primary,
                 elapsed,
                 hits: [false; 2],
             }
@@ -762,6 +870,7 @@ mod tests {
             (
                 Action::Attack {
                     swing: SwingId(1),
+                    kind: crate::combatant::AttackKind::Primary,
                     elapsed: 5,
                     hits: [false; 2],
                 },
@@ -771,6 +880,7 @@ mod tests {
             (
                 Action::Attack {
                     swing: SwingId(1),
+                    kind: crate::combatant::AttackKind::Primary,
                     elapsed: spec.active_start(),
                     hits: [false; 2],
                 },
@@ -780,6 +890,7 @@ mod tests {
             (
                 Action::Attack {
                     swing: SwingId(1),
+                    kind: crate::combatant::AttackKind::Primary,
                     elapsed: spec.active_end(),
                     hits: [false; 2],
                 },
@@ -815,6 +926,7 @@ mod tests {
         assert!(
             Action::Attack {
                 swing: SwingId(0),
+                kind: crate::combatant::AttackKind::Primary,
                 elapsed: 0,
                 hits: [false; 2]
             }
@@ -850,6 +962,7 @@ mod tests {
         let overlay = |elapsed| {
             Action::Attack {
                 swing: SwingId(0),
+                kind: crate::combatant::AttackKind::Primary,
                 elapsed,
                 hits: [false; 2],
             }

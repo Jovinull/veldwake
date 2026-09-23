@@ -98,6 +98,16 @@ Three seams M6 added, each one deliberate:
 - **The domain is the only authority and the client only reads it.** The client's frame advances whole ticks, hands in an `Intent`, and reacts to the `CombatEvent`s that come back. Every presentation response — damage, stagger, knockback, hitstop, the reaction pose, the impact chips, the sound and the camera impulse — originates from one event, so presentation cannot invent a hit the rules did not produce.
 - **Audio is a pure synth behind a thin device.** `apps/client/src/synth.rs` has no cpal, no threads and no I/O; `apps/client/src/audio.rs` is the only code in the repository that knows cpal exists, and the two communicate through a lock-free single-producer ring of atomics. That split is what makes every claim about the sound testable headlessly, and it is [ADR-0007](../adr/0007-procedural-impact-audio-boundary.md).
 
+### What combat initiative adds
+
+Combat initiative (`feat/combat-initiative-spacing`) keeps all three seams and adds no crate, no dependency and no type the client did not already see:
+
+- **A second attack is a field on the existing action, not a moveset.** `AttackKind` is `Primary` or `Pressure`, carried on `Action::Attack`; `Encounter::attack_spec_for(side, kind)` is the one place a kind becomes an `AttackSpec`. A `PressureSpec` is compiled from `AuthoredPressure` like every other spec and lives in `EncounterTuning` as an `Option`, so a tuning that does not author it — every historical one — runs exactly the M6 code path.
+- **Outcome-dependent recovery is a property of the spec, not of the brain.** `AttackSpec::total_for(connected)` is the only length an attack has; the encounter asks it with the action's own `connected()` bit, and a historical spec answers the same either way.
+- **The brain still produces an `Intent` and nothing else.** Its two additions — commit a lunge inside the band, owe a spacing dodge after its own stagger or its own connected lunge — read the brain's own `Action` and the player's position, and never the player's action (COMBAT-005).
+- **`veldwake-combat::oracle` is library code, not test code.** Its policies are an `Intent` source like the adversary's, and the client drives the opt-in `initiative:<driver>` sessions and the golden-world gates with the same functions the flat-ground tests use, so a headless number and a real-client session run one rule.
+- **The lunge pose is the character crate's.** Combat names `ActionKind::Lunge` and a progress; the curves, the level-blade rule and the clamps are in `veldwake-character` ([ADR-0010](../adr/0010-sixth-action-keeps-the-keyed-layer.md)).
+
 ## The landmark boundaries
 
 M8 added world content that has to be visible, solid and drawn, which touches three domains at once. The boundaries it drew are the reason it did not become a fourth crate.

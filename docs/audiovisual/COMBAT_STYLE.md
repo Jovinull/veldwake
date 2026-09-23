@@ -26,7 +26,7 @@ A weapon is a physical object and nothing else. Dimensions, bands, palette, grip
 
 Locomotion is driven by distance travelled, because stride is the thing that is specified and a sliding foot is then a bug rather than a setting. An action is the other category: a swing takes the same time whether the attacker is standing still or running, so its progress is a tick count. [ADR-0006](../adr/0006-action-pose-layer-beside-analytical-locomotion.md) records why those two live side by side rather than one inside the other.
 
-Five actions, and adding a sixth is a deliberate edit rather than a configuration:
+Six actions. The sixth was a deliberate edit, and [ADR-0010](../adr/0010-sixth-action-keeps-the-keyed-layer.md) records it; a seventh is the point to re-argue the layer:
 
 | action | what it has to read as |
 |---|---|
@@ -35,6 +35,7 @@ Five actions, and adding a sixth is a deliberate edit rather than a configuratio
 | `Dodge` | a committed crouching step. No roll, no spin, no invulnerability |
 | `Stagger` | a recoil away from where the blow came from, which is what makes a hit read as a consequence rather than as a number |
 | `Defeated` | beaten. Knees give, torso folds, blade drops. Not a death animation and not a ragdoll |
+| `Lunge` | a thrust along a line that is visible before the body moves: blade level and pointing, free hand down the line, then extension, then a spent pose — low, forward, point and head down — held through a missed lunge's recovery. The adversary's pressure attack only |
 
 ### Rules the curves answer to
 
@@ -42,6 +43,7 @@ Five actions, and adding a sixth is a deliberate edit rather than a configuratio
 - **A rigid weapon points where `shoulder_pitch + elbow_flex + wrist_pitch` plus the grip's own pitch says it points.** All three joints turn about the same axis, so the keys are chosen by what that sum does and not by what each joint looks like alone. Carry is `0.90`, the top of the windup `1.95`, the end of the cut `0.20`.
 - **A swing sweeps from raised to low through horizontal**, and the phase boundaries are the authoritative tick counts, so the pose keys land exactly where the rules change phase and the blade cannot jump when it does.
 - **No nominal action may depend on a joint clamp to look right.** The clamp is a safety net for hostile input. A nominal attack that reaches a joint limit is a curve to fix, and a test asserts the raw curves stay inside every range.
+- **A thrust stays level.** The blade's angle from straight down is the torso's forward lean plus `shoulder_pitch + elbow_flex + wrist_pitch` plus the grip's `0.90`; the lunge keys hold that sum near a quarter turn in every phase, and hold the torso's yaw from guard to extension so the point travels along its line instead of sweeping across it. A test asserts the blade level, at chest height and on the line while it can connect.
 - **A collapse eases over the whole window it is given.** Easing over a quarter of it finished the sag in six ticks of the twenty-four the constant promised and read as a snap.
 
 ## What an effect is

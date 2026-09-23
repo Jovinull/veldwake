@@ -954,6 +954,44 @@ fn bench(iterations: Option<&str>) -> Result<(), String> {
         total.as_secs_f64() * 1.0e6 / ticks as f64 * f64::from(COMBAT_TICK_HZ)
     );
 
+    // The same measurement with combat initiative: the lunge, the spacing
+    // dodge and the outcome-dependent recovery all running, driven by the read
+    // policy and starting a fresh fight whenever one ends.
+    let policy = veldwake_combat::oracle::OraclePolicy::Read {
+        lag: 24,
+        walk_only: false,
+        side: 1.0,
+    };
+    let initiative =
+        veldwake_combat::oracle::initiative_oracle_setup(veldwake_combat::CombatSeed::GOLDEN);
+    let fresh = || -> Result<Encounter, String> {
+        let mut encounter = Encounter::new(&initiative, Some(&ground))
+            .map_err(|error| format!("setup: {error}"))?;
+        encounter.arm();
+        Ok(encounter)
+    };
+    let mut encounter = fresh()?;
+    let mut worst = Duration::ZERO;
+    let mut stepping = Duration::ZERO;
+    let mut fights = 0_u32;
+    for _ in 0..ticks {
+        let intent = policy.intent(&encounter);
+        let tick_started = Instant::now();
+        let _ = encounter.step(intent, WorldContact::ground_only(&ground));
+        let spent = tick_started.elapsed();
+        stepping += spent;
+        worst = worst.max(spent);
+        if encounter.outcome().is_some() {
+            encounter = fresh()?;
+            fights += 1;
+        }
+    }
+    println!(
+        "combat initiative tick over {ticks} ticks ({fights} fights): mean {:.3} us, worst {:.3} us",
+        stepping.as_secs_f64() * 1.0e6 / ticks as f64,
+        worst.as_secs_f64() * 1.0e6
+    );
+
     // Ground queries, measured rather than counted by hand.
     let counting = veldwake_combat::encounter::CountingGround::new(&ground);
     let mut encounter =

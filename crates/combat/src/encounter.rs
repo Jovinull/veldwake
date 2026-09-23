@@ -51,7 +51,7 @@ use veldwake_character::{
 };
 
 use crate::adversary::AdversaryBrain;
-use crate::combatant::{Action, Combatant, Health, Intent, SIDES, Side};
+use crate::combatant::{Action, AttackKind, Combatant, Health, Intent, SIDES, Side};
 use crate::event::{CombatEvent, StepEvents};
 use crate::hit::{Segment, Sweep, moving_substeps, sweep_moving_capsule};
 use crate::hurt::HurtVolume;
@@ -253,9 +253,32 @@ pub struct CombatCounters {
     /// Hits landed *by* each side.
     pub hits: [u32; SIDES.len()],
     pub whiffs: [u32; SIDES.len()],
+    /// Pressure lunges started, landed and missed. Only the adversary has one,
+    /// so these are the adversary's; `swings[1] - pressure_swings` is how many
+    /// of its swings were the historical primary.
+    pub pressure_swings: u32,
+    pub pressure_hits: u32,
+    pub pressure_whiffs: u32,
     pub dodges: [u32; SIDES.len()],
     /// Dodges asked for and refused, by cooldown or by a running action.
     pub dodges_refused: [u32; SIDES.len()],
+    /// Dodges that started while the **other** body had a swing under way that
+    /// had not yet resolved — begun, active window not yet over, and not yet
+    /// connected with this body.
+    ///
+    /// For the player this is the ordinary use of a dodge. For the adversary
+    /// it is the audit that its spacing dodge is not a reaction to a swing:
+    /// the brain takes that dodge only after its own stagger or its own
+    /// connected lunge, and this counter must stay at zero for it.
+    pub dodges_during_unresolved_swing: [u32; SIDES.len()],
+    /// Dodges whose realised displacement fell short of
+    /// [`TRUNCATED_DODGE_FRACTION`] of the authored distance, because the
+    /// world refused part of it.
+    pub dodges_truncated: [u32; SIDES.len()],
+    /// Moves refused outright, or resolved one axis at a time, while dodging.
+    /// A subset of `blocked_moves` and `slid_moves`.
+    pub dodge_blocked_moves: [u32; SIDES.len()],
+    pub dodge_slid_moves: [u32; SIDES.len()],
     pub staggers: [u32; SIDES.len()],
     /// Swings that were turned onto the other body as they started. Countable
     /// because an assist that fires on every swing, or on none, is a tuning
@@ -318,6 +341,14 @@ impl GroundSampler for CountingGround<'_> {
     }
 }
 
+/// How much of a dodge's authored distance has to be realised for it not to
+/// count as truncated.
+///
+/// Three quarters: a dodge that slid a little along a slope still read as a
+/// dodge in every capture, and one stopped short by stone at under three
+/// quarters of its length did not.
+pub const TRUNCATED_DODGE_FRACTION: f32 = 0.75;
+
 /// One fight between two combatants.
 pub struct Encounter {
     tuning: EncounterTuning,
@@ -335,6 +366,10 @@ pub struct Encounter {
     armed: bool,
     resolution: Resolution,
     counters: CombatCounters,
+    /// Where each body's running dodge started, so its realised displacement
+    /// can be measured when it ends. Diagnostic only: nothing reads it back
+    /// into a rule.
+    dodge_origins: [Option<Vec2>; SIDES.len()],
 }
 
 impl Encounter {
@@ -391,6 +426,7 @@ impl Encounter {
             armed: false,
             resolution: Resolution::Fighting,
             counters: CombatCounters::default(),
+            dodge_origins: [None; SIDES.len()],
         };
         // Give both bodies their carry pose and a blade to sweep from, so the
         // first armed tick does not sweep from nowhere.
@@ -466,9 +502,54 @@ impl Encounter {
         matches!(self.resolution, Resolution::Settled(_))
     }
 
-    /// The attack spec that governs one side's swings.
+    /// The attack spec that governs one side's running swing, or its primary
+    /// when it is not swinging.
+    ///
+    /// Read from the kind the running `Action::Attack` carries, so a lunge is
+    /// timed, moved, posed and recovered by the lunge's spec from its first
+    /// tick to its last, and nothing can ask the wrong one half way through.
     #[must_use]
     pub fn attack_spec(&self, side: Side) -> &AttackSpec {
+        let kind = self.combatants[side.index()]
+            .action()
+            .attack_kind()
+            .unwrap_or(AttackKind::Primary);
+        match self.attack_spec_for(side, kind) {
+            Some(spec) => spec,
+            None => self.primary_spec(side),
+        }
+    }
+
+    /// The spec of one of a side's two attacks, if that side has it.
+    ///
+    /// Every side has a primary. Only the adversary can have a pressure lunge,
+    /// and only when its tuning authors one.
+    #[must_use]
+    pub fn attack_spec_for(&self, side: Side, kind: AttackKind) -> Option<&AttackSpec> {
+        match (side, kind) {
+            (_, AttackKind::Primary) => Some(self.primary_spec(side)),
+            (Side::Adversary, AttackKind::Pressure) => self
+                .tuning
+                .adversary_pressure()
+                .map(crate::spec::PressureSpec::attack),
+            (Side::Player, AttackKind::Pressure) => None,
+        }
+    }
+
+    /// The dodge one side runs.
+    ///
+    /// The shared historical dodge, except for an adversary with a pressure
+    /// lunge, whose only dodge is its spacing dodge. One action and one rule
+    /// either way; only the distance and the time differ.
+    #[must_use]
+    pub fn dodge_spec(&self, side: Side) -> &crate::spec::DodgeSpec {
+        match (side, self.tuning.adversary_pressure()) {
+            (Side::Adversary, Some(pressure)) => pressure.spacing(),
+            _ => self.tuning.dodge(),
+        }
+    }
+
+    fn primary_spec(&self, side: Side) -> &AttackSpec {
         match side {
             Side::Player => self.tuning.player_attack(),
             Side::Adversary => self.tuning.adversary_attack(),
@@ -538,8 +619,13 @@ impl Encounter {
             Intent::idle()
         } else {
             let (me, foe) = (&self.combatants[1], &self.combatants[0]);
-            self.brain
-                .decide(me, foe, self.tuning.adversary(), self.tuning.movement())
+            self.brain.decide(
+                me,
+                foe,
+                self.tuning.adversary(),
+                self.tuning.movement(),
+                self.tuning.adversary_pressure(),
+            )
         };
         let intents = [player_intent, adversary_intent];
 
@@ -614,12 +700,21 @@ impl Encounter {
     /// - **No camera involvement at all.** The camera is not consulted and not
     ///   moved; this is a rule of the domain and applies identically to both
     ///   sides, which keeps "both run the same rules" true.
-    fn aim_at_the_other_body(&mut self, side: Side) {
+    ///
+    /// A pressure lunge is aimed by the same rule, with the one difference its
+    /// distance demands: its range is the far edge of the band it is chosen
+    /// from rather than [`AIM_ASSIST_RANGE`]. The facing a lunge ends up with is
+    /// then locked for the whole action, which is what makes the line a line.
+    fn aim_at_the_other_body(&mut self, side: Side, kind: AttackKind) {
         let index = side.index();
         let from = self.combatants[index].position();
         let to = self.combatants[side.other().index()].position();
         let offset = to - from;
-        if offset.length() > AIM_ASSIST_RANGE {
+        let range = match (kind, self.tuning.adversary_pressure()) {
+            (AttackKind::Pressure, Some(pressure)) => pressure.select_max(),
+            _ => AIM_ASSIST_RANGE,
+        };
+        if offset.length() > range {
             return;
         }
         let Some(bearing) = facing_of(offset) else {
@@ -646,14 +741,28 @@ impl Encounter {
         // Attack wins over dodge when both arrive in one tick: committing is the
         // decision the slice is about, and a tie has to resolve somewhere.
         if intent.attack() {
-            self.aim_at_the_other_body(side);
+            // A kind the side does not have is its primary. Only a brain with
+            // a pressure spec ever asks for one, so this is a guard, not a rule.
+            let kind = match intent.attack_kind() {
+                AttackKind::Pressure
+                    if self.attack_spec_for(side, AttackKind::Pressure).is_some() =>
+                {
+                    AttackKind::Pressure
+                }
+                _ => AttackKind::Primary,
+            };
+            self.aim_at_the_other_body(side, kind);
             let swing = self.combatants[index].take_swing_id();
             self.combatants[index].set_action(Action::Attack {
                 swing,
+                kind,
                 elapsed: 0,
                 hits: [false; SIDES.len()],
             });
             self.counters.swings[index] = self.counters.swings[index].saturating_add(1);
+            if kind == AttackKind::Pressure {
+                self.counters.pressure_swings = self.counters.pressure_swings.saturating_add(1);
+            }
             events.push(CombatEvent::SwingStarted { side, swing });
             return;
         }
@@ -663,7 +772,19 @@ impl Encounter {
                     self.counters.dodges_refused[index].saturating_add(1);
                 return;
             }
-            let dodge = *self.tuning.dodge();
+            let dodge = *self.dodge_spec(side);
+            // The audit: was the other body in the middle of a swing that had
+            // not resolved yet? Counted, never consulted.
+            let other = side.other();
+            let other_spec = *self.attack_spec(other);
+            if let Action::Attack { elapsed, hits, .. } = *self.combatants[other.index()].action()
+                && elapsed < other_spec.active_end()
+                && !hits[index]
+            {
+                self.counters.dodges_during_unresolved_swing[index] =
+                    self.counters.dodges_during_unresolved_swing[index].saturating_add(1);
+            }
+            self.dodge_origins[index] = Some(self.combatants[index].position());
             // A dodge with no direction goes straight backwards, which is what a
             // player who pressed it while standing still means by it.
             let facing = self.combatants[index].state().facing;
@@ -693,6 +814,7 @@ impl Encounter {
         let spec = *self.attack_spec(side);
         let Action::Attack {
             swing,
+            kind,
             elapsed,
             hits,
         } = *self.combatants[index].action()
@@ -703,6 +825,9 @@ impl Encounter {
             events.push(CombatEvent::SwingActive { side, swing });
         } else if elapsed == spec.active_end() && !hits[side.other().index()] {
             self.counters.whiffs[index] = self.counters.whiffs[index].saturating_add(1);
+            if kind == AttackKind::Pressure {
+                self.counters.pressure_whiffs = self.counters.pressure_whiffs.saturating_add(1);
+            }
             events.push(CombatEvent::SwingWhiffed { side, swing });
         }
     }
@@ -731,12 +856,21 @@ impl Encounter {
                     let ticks = spec.active_end().max(1);
                     let forward = veldwake_character::pose::facing_direction(facing);
                     let per_tick = spec.step_in() / ticks as f32;
-                    Vec2::new(forward.x, forward.z) * (per_tick / step)
+                    let mut velocity = Vec2::new(forward.x, forward.z) * (per_tick / step);
+                    // A lunge travels its whole distance along the committed
+                    // line over its last ticks, so the threat arrives with the
+                    // blade. Every historical attack has no lunge and skips
+                    // this, bit for bit.
+                    if spec.is_lunging(elapsed) {
+                        let lunge_per_tick = spec.lunge() / spec.lunge_ticks().max(1) as f32;
+                        velocity += Vec2::new(forward.x, forward.z) * (lunge_per_tick / step);
+                    }
+                    velocity
                 } else {
                     intent.move_world() * movement.speed() * movement.recovery_speed_scale()
                 }
             }
-            Action::Dodge { direction, .. } => direction * self.tuning.dodge().speed(),
+            Action::Dodge { direction, .. } => direction * self.dodge_spec(side).speed(),
             Action::Stagger { .. } | Action::Defeated { .. } => Vec2::ZERO,
         };
 
@@ -757,6 +891,16 @@ impl Encounter {
         if result.slid {
             self.counters.slid_moves[index] = self.counters.slid_moves[index].saturating_add(1);
         }
+        if action.is_dodging() {
+            if result.blocked {
+                self.counters.dodge_blocked_moves[index] =
+                    self.counters.dodge_blocked_moves[index].saturating_add(1);
+            }
+            if result.slid {
+                self.counters.dodge_slid_moves[index] =
+                    self.counters.dodge_slid_moves[index].saturating_add(1);
+            }
+        }
 
         // The gait's phase advances with the distance actually travelled, not
         // with the distance asked for. Without this a body pushed against a wall
@@ -775,8 +919,13 @@ impl Encounter {
         } else {
             facing_of(intent.move_world())
         };
+        // A primary swing may turn again once its blade is spent. A lunge may
+        // not, from its first tick to its last: its line is the promise its
+        // telegraph made, and a missed lunge that swung round to face the body
+        // that stepped aside would not look exposed.
         let turnable = matches!(action, Action::Free)
-            || matches!(action, Action::Attack { elapsed, .. } if elapsed >= spec.active_end());
+            || matches!(action, Action::Attack { elapsed, kind: AttackKind::Primary, .. }
+                if elapsed >= spec.active_end());
         if turnable && let Some(target) = target {
             let turned = turn_toward(facing, target, max_turn);
             self.combatants[index].state_mut().facing = turned;
@@ -848,7 +997,13 @@ impl Encounter {
             return;
         }
         let spec = *self.attack_spec(attacker);
-        let Action::Attack { elapsed, hits, .. } = *self.combatants[index].action() else {
+        let Action::Attack {
+            elapsed,
+            hits,
+            kind,
+            ..
+        } = *self.combatants[index].action()
+        else {
             return;
         };
         if !spec.is_active(elapsed) {
@@ -894,6 +1049,9 @@ impl Encounter {
             return;
         }
         self.counters.hits[index] = self.counters.hits[index].saturating_add(1);
+        if kind == AttackKind::Pressure {
+            self.counters.pressure_hits = self.counters.pressure_hits.saturating_add(1);
+        }
 
         let damage = spec.damage();
         let remaining = self.combatants[victim_index].health_mut().apply(damage);
@@ -992,6 +1150,7 @@ impl Encounter {
             let state = start_state(self.starts, self.facing_offsets[side.index()], side, ground);
             self.combatants[side.index()].reset(state);
         }
+        self.dodge_origins = [None; SIDES.len()];
         self.brain.reset();
         self.resolution = Resolution::Fighting;
         self.counters.resets = self.counters.resets.saturating_add(1);
@@ -1022,10 +1181,12 @@ impl Encounter {
             Action::Free => Action::Free,
             Action::Attack {
                 swing,
+                kind,
                 elapsed,
                 hits,
             } => Action::Attack {
                 swing,
+                kind,
                 elapsed: elapsed.saturating_add(1),
                 hits,
             },
@@ -1052,7 +1213,9 @@ impl Encounter {
             },
         };
         let over = match advanced {
-            Action::Attack { elapsed, .. } => elapsed >= spec.total(),
+            // The recovery a swing runs depends on what it met. For every
+            // primary the two are equal and this is `spec.total()`.
+            Action::Attack { elapsed, .. } => elapsed >= spec.total_for(advanced.connected()),
             Action::Dodge {
                 elapsed, duration, ..
             }
@@ -1062,7 +1225,24 @@ impl Encounter {
             // A defeat holds until the encounter resets it.
             Action::Free | Action::Defeated { .. } => false,
         };
+        if over && advanced.is_dodging() {
+            self.measure_dodge(side);
+        }
         self.combatants[index].set_action(if over { Action::Free } else { advanced });
+    }
+
+    /// How far one finished dodge actually carried the body, against how far
+    /// it was authored to.
+    fn measure_dodge(&mut self, side: Side) {
+        let index = side.index();
+        let Some(origin) = self.dodge_origins[index].take() else {
+            return;
+        };
+        let realised = (self.combatants[index].position() - origin).length();
+        if realised < self.dodge_spec(side).distance() * TRUNCATED_DODGE_FRACTION {
+            self.counters.dodges_truncated[index] =
+                self.counters.dodges_truncated[index].saturating_add(1);
+        }
     }
 }
 
@@ -1106,7 +1286,7 @@ pub const AIM_ASSIST_RANGE: f32 = 2.90;
 pub fn action_duration(action: &Action, spec: &AttackSpec) -> Ticks {
     match action {
         Action::Free => 0,
-        Action::Attack { .. } => spec.total(),
+        Action::Attack { .. } => spec.total_for(action.connected()),
         Action::Dodge { duration, .. } | Action::Stagger { duration, .. } => *duration,
         Action::Defeated { .. } => 0,
     }
@@ -1118,7 +1298,7 @@ mod tests {
         AIM_ASSIST_CONE, AIM_ASSIST_RANGE, CountingGround, Encounter, EncounterError,
         EncounterSetup, PlayerVictoryPolicy, TraversalLegality, WorldContact, action_duration,
     };
-    use crate::combatant::{Action, Intent, SIDES, Side};
+    use crate::combatant::{Action, AttackKind, Intent, SIDES, Side};
     use crate::event::CombatEvent;
     use crate::fixture;
     use crate::spec::AuthoredTuning;
@@ -1282,6 +1462,7 @@ mod tests {
             action_duration(
                 &Action::Attack {
                     swing: crate::combatant::SwingId::first(),
+                    kind: crate::combatant::AttackKind::Primary,
                     elapsed: 0,
                     hits: [false; 2]
                 },
@@ -2880,5 +3061,205 @@ mod tests {
                 assert!(combatant.state().speed < 20.0);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Combat initiative
+    // -----------------------------------------------------------------------
+
+    /// The initiative tuning on open flat ground, the two bodies `separation`
+    /// apart and facing each other.
+    fn initiative(separation: f32) -> EncounterSetup {
+        let mut setup = fixture::golden_setup();
+        setup.tuning = fixture::initiative_tuning();
+        setup.arena = None;
+        setup.starts = [
+            Vec2::new(0.0, separation * 0.5),
+            Vec2::new(0.0, -separation * 0.5),
+        ];
+        setup
+    }
+
+    fn middle_of_the_band() -> f32 {
+        let pressure = fixture::pressure();
+        (pressure.select_min + pressure.select_max) * 0.5
+    }
+
+    #[test]
+    fn a_lunge_is_run_by_its_own_spec_along_the_line_it_committed_to() {
+        let ground = ground();
+        let mut encounter = armed(&initiative(middle_of_the_band()), &ground);
+        let pressure = *encounter
+            .tuning()
+            .adversary_pressure()
+            .unwrap_or_else(|| panic!("the initiative tuning has a lunge"))
+            .attack();
+        let primary = *encounter.tuning().adversary_attack();
+        assert_eq!(
+            *encounter.attack_spec(Side::Adversary),
+            primary,
+            "not swinging: primary"
+        );
+        let mut start = None;
+        let mut facing = None;
+        let mut dodged = false;
+        for _ in 0..400 {
+            let adversary = encounter.combatant(Side::Adversary);
+            let lunging = adversary.action().attack_kind() == Some(AttackKind::Pressure);
+            if lunging {
+                assert_eq!(*encounter.attack_spec(Side::Adversary), pressure);
+                let now = adversary.state().facing;
+                let locked = *facing.get_or_insert(now);
+                assert!(
+                    (now - locked).abs() < 1.0e-6,
+                    "the line turned during the lunge"
+                );
+                start.get_or_insert(adversary.position());
+            } else if start.is_some() {
+                break;
+            }
+            // The player steps off the line early, so the lunge meets nothing
+            // and travels its whole distance.
+            let press = lunging && !dodged && adversary.action().elapsed() >= 20;
+            dodged |= press;
+            let _ = encounter.step(
+                Intent::player(Vec2::new(1.0, 0.0), false, press),
+                WorldContact::ground_only(&ground),
+            );
+            if let Some(origin) = start
+                && !encounter.combatant(Side::Adversary).action().is_attacking()
+            {
+                let travelled = (encounter.combatant(Side::Adversary).position() - origin).length();
+                assert!(
+                    (travelled - pressure.lunge()).abs() < 0.05,
+                    "travelled {travelled}, authored {}",
+                    pressure.lunge()
+                );
+            }
+        }
+        assert!(start.is_some(), "the lunge never started");
+        assert_eq!(encounter.counters().pressure_swings, 1);
+        assert_eq!(encounter.counters().pressure_whiffs, 1);
+        assert_eq!(encounter.counters().pressure_hits, 0);
+    }
+
+    #[test]
+    fn a_connected_lunge_recovers_briefly_and_a_missed_one_does_not() {
+        let ground = ground();
+        for dodge in [false, true] {
+            let mut encounter = armed(&initiative(middle_of_the_band()), &ground);
+            let spec = *encounter
+                .tuning()
+                .adversary_pressure()
+                .unwrap_or_else(|| panic!("the initiative tuning has a lunge"))
+                .attack();
+            // Every tick on which the lunge was the adversary's action,
+            // including the one that started it and the one it ended on.
+            let mut steps = 0_u32;
+            let mut dodged = false;
+            for _ in 0..500 {
+                let before = encounter.combatant(Side::Adversary).action().attack_kind()
+                    == Some(AttackKind::Pressure);
+                let press = dodge
+                    && before
+                    && !dodged
+                    && encounter.combatant(Side::Adversary).action().elapsed() >= 20;
+                dodged |= press;
+                // Standing still unless dodging: a walk sideways would escape
+                // the lunge on its own.
+                let across = if dodge {
+                    Vec2::new(1.0, 0.0)
+                } else {
+                    Vec2::ZERO
+                };
+                let _ = encounter.step(
+                    Intent::player(across, false, press),
+                    WorldContact::ground_only(&ground),
+                );
+                let after = encounter.combatant(Side::Adversary).action().attack_kind()
+                    == Some(AttackKind::Pressure);
+                if before || after {
+                    steps += 1;
+                }
+                if before && !after {
+                    break;
+                }
+            }
+            let connected = encounter.counters().pressure_hits == 1;
+            assert_eq!(connected, !dodge);
+            // A hit freezes both bodies for the hitstop, and a frozen tick
+            // does not advance the action.
+            let frozen = if connected { spec.hitstop() } else { 0 };
+            assert_eq!(
+                steps,
+                spec.total_for(connected) + frozen,
+                "connected {connected}: the lunge ran {steps} ticks"
+            );
+        }
+    }
+
+    #[test]
+    fn the_adversary_spaces_with_its_own_dodge_and_the_player_keeps_the_historical_one() {
+        let ground = ground();
+        let encounter = armed(&initiative(6.0), &ground);
+        let spacing = *encounter
+            .tuning()
+            .adversary_pressure()
+            .unwrap_or_else(|| panic!("the initiative tuning has a lunge"))
+            .spacing();
+        assert_eq!(*encounter.dodge_spec(Side::Adversary), spacing);
+        assert_eq!(
+            *encounter.dodge_spec(Side::Player),
+            *encounter.tuning().dodge()
+        );
+        let historical = armed(&fixture::golden_setup(), &ground);
+        assert_eq!(
+            *historical.dodge_spec(Side::Adversary),
+            *historical.tuning().dodge(),
+            "without a lunge the adversary's dodge is the shared one"
+        );
+    }
+
+    #[test]
+    fn a_spacing_dodge_on_open_ground_opens_its_whole_distance() {
+        let ground = ground();
+        // Close enough that the player's first swing lands and staggers the
+        // adversary, which is the spacing dodge's trigger.
+        let mut encounter = armed(&initiative(2.4), &ground);
+        let mut dodge_started = None;
+        let mut swung = false;
+        for _ in 0..400 {
+            let swing = !swung && encounter.combatant(Side::Player).can_act();
+            swung |= swing;
+            let events = encounter.step(
+                Intent::player(Vec2::ZERO, swing, false),
+                WorldContact::ground_only(&ground),
+            );
+            if events.any(|event| {
+                matches!(
+                    event,
+                    CombatEvent::DodgeStarted {
+                        side: Side::Adversary,
+                        ..
+                    }
+                )
+            }) {
+                dodge_started = Some(encounter.combatant(Side::Adversary).position());
+            }
+            if dodge_started.is_some()
+                && !encounter.combatant(Side::Adversary).action().is_dodging()
+            {
+                break;
+            }
+        }
+        assert!(
+            dodge_started.is_some(),
+            "the stagger was never answered with space"
+        );
+        let counters = encounter.counters();
+        assert_eq!(counters.dodges[1], 1);
+        assert_eq!(counters.dodges_truncated[1], 0);
+        assert_eq!(counters.dodge_blocked_moves[1], 0);
+        assert_eq!(counters.dodges_during_unresolved_swing[1], 0);
     }
 }

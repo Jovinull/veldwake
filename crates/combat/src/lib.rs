@@ -61,13 +61,16 @@ pub mod hit;
 pub mod hurt;
 pub mod material;
 pub mod movement;
+pub mod oracle;
 pub mod script;
 pub mod spec;
 pub mod tick;
 pub mod weapon;
 
 pub use adversary::{AdversaryBrain, AdversaryState};
-pub use combatant::{Action, AttackPhase, Combatant, Health, Intent, SIDES, Side, SwingId};
+pub use combatant::{
+    Action, AttackKind, AttackPhase, Combatant, Health, Intent, SIDES, Side, SwingId,
+};
 pub use encounter::{
     CombatCounters, CountingGround, Encounter, EncounterError, EncounterSetup, PlayerVictoryPolicy,
     WorldContact,
@@ -84,8 +87,8 @@ pub use script::{
     EncounterScript, MomentKind, NAMED_MOMENTS, NamedMoment, ScriptRunner, at_moment,
 };
 pub use spec::{
-    ArenaSpec, AttackSpec, AuthoredTuning, CombatSeed, DodgeSpec, EncounterTuning, MovementSpec,
-    SpecError,
+    ArenaSpec, AttackSpec, AuthoredPressure, AuthoredTuning, CombatSeed, DodgeSpec,
+    EncounterTuning, MovementSpec, PressureSpec, SpecError,
 };
 pub use tick::{COMBAT_TICK_HZ, CombatClock, MAX_TICKS_PER_FRAME, Ticks};
 pub use weapon::{

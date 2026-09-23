@@ -584,6 +584,10 @@ pub fn overlay_for(named: &NamedActionPose) -> ActionOverlay {
         ActionKind::Dodge => ActionOverlay::dodge(Side::Right, named.progress, named.direction),
         ActionKind::Stagger => ActionOverlay::stagger(Side::Right, named.progress, named.direction),
         ActionKind::Defeated => ActionOverlay::defeated(Side::Right, named.progress),
+        // No named lunge pose exists in the locked set, so this arm only makes
+        // the match exhaustive; the lunge's phase fractions are the combat
+        // initiative fixture's, and its evidence lives in `veldwake-combat`.
+        ActionKind::Lunge => ActionOverlay::lunge(Side::Right, named.progress, 0.39, 0.10),
     }
 }
 

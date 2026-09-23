@@ -6,6 +6,7 @@ mod character;
 mod debug;
 mod diagnostics;
 mod encounter;
+mod initiative;
 mod input;
 // Mostly evidence machinery: the binary draws landmarks through the ordinary
 // chunk path and only asks this module for a named capture pose, while the

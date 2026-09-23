@@ -9,7 +9,7 @@
 //! this is a small keyed layer rather than an animation system.
 //!
 //! There is no graph, no clip, no sampler, no transition table and no additive
-//! stack. There are four named actions, each a handful of keys interpolated by
+//! stack. There are six named actions, each a handful of keys interpolated by
 //! progress:
 //!
 //! | action | what it is for |
@@ -18,6 +18,11 @@
 //! | [`ActionKind::Attack`] | anticipation, the swing, and the follow through |
 //! | [`ActionKind::Dodge`] | a committed crouching step, with no roll |
 //! | [`ActionKind::Stagger`] | the recoil that makes a hit read as a hit |
+//! | [`ActionKind::Defeated`] | beaten: the body sags and the sword goes down |
+//! | [`ActionKind::Lunge`] | a thrust along a line that is visible before the body moves |
+//!
+//! The sixth is the point ADR-0006 named for re-arguing this layer; ADR-0010
+//! records why it is still a keyed curve table and what would end that.
 //!
 //! `Carry` exists because of arithmetic rather than taste. A rigid weapon in a
 //! hand driven only by the gait's arm swing hangs straight down with the arm,
@@ -53,6 +58,15 @@ pub enum ActionKind {
     /// pose, so the frame showed it standing there with its sword out, looking
     /// exactly like a body about to swing.
     Defeated,
+    /// A thrust along a line: the blade is drawn back level and the free hand
+    /// points down the line first, the body then drives the point along it,
+    /// and a lunge that met nothing stays low and forward, spent, before it
+    /// comes back.
+    ///
+    /// Its own curves rather than a faster `Attack`, because the thing it has
+    /// to communicate is different: an overhead cut says *when*, and a lunge
+    /// has to say *where* before it goes.
+    Lunge,
 }
 
 impl ActionKind {
@@ -64,6 +78,7 @@ impl ActionKind {
             Self::Dodge => "dodge",
             Self::Stagger => "stagger",
             Self::Defeated => "defeated",
+            Self::Lunge => "lunge",
         }
     }
 }
@@ -191,6 +206,28 @@ impl ActionOverlay {
         }
     }
 
+    /// One lunge. `windup_fraction` and `active_fraction` are its phase
+    /// boundaries as fractions of the whole action, and the whole action is
+    /// the one it is actually running: a lunge that connected recovers sooner
+    /// than one that missed, so its caller passes the shorter total once it
+    /// has connected. Every key below is phase-local, so that change moves no
+    /// key before the recovery.
+    #[must_use]
+    pub fn lunge(
+        weapon_side: Side,
+        progress: f32,
+        windup_fraction: f32,
+        active_fraction: f32,
+    ) -> Self {
+        let windup = clamp01(windup_fraction);
+        let active = clamp01(active_fraction).min(1.0 - windup);
+        Self {
+            windup_fraction: windup,
+            active_fraction: active,
+            ..Self::base(ActionKind::Lunge, progress, weapon_side)
+        }
+    }
+
     /// A dodge. `direction` is the travel direction relative to the body's own
     /// facing, in radians; zero is straight ahead.
     #[must_use]
@@ -256,6 +293,9 @@ impl ActionOverlay {
             ActionKind::Dodge => dodge_pose(self.progress, self.direction),
             ActionKind::Stagger => stagger_pose(self.progress, self.direction),
             ActionKind::Defeated => defeated_pose(self.progress),
+            ActionKind::Lunge => {
+                lunge_pose(self.progress, self.windup_fraction, self.active_fraction)
+            }
         }
     }
 }
@@ -464,6 +504,169 @@ fn defeated_pose(progress: f32) -> ActionPose {
     }
 }
 
+// **The blade's world angle from straight down is the torso's forward lean
+// plus `hand_pitch` plus the grip's `0.90`**: all of them turn about the same
+// axis. Every lunge key is chosen so that sum stays near a quarter turn — the
+// blade level — because a thrust is read by its line, and a point that climbs
+// as the arm drives forward passes over the head it was aimed at. The first
+// draft of these keys did exactly that and the no-bluff probe caught it: no
+// stationary target was hit at any distance.
+
+/// The lunge's guard: blade drawn back beside the hip and held level along the
+/// line, elbow closed. `hand_pitch` `0.60`, which with the guard's lean of
+/// `0.16` puts the blade five degrees above level.
+const LUNGE_GUARD_ARM: ArmAngles = ArmAngles::new(-0.35, 0.00, 1.40, -0.45);
+/// Deeper into the guard, the moment before the body leaves. `0.58`.
+const LUNGE_COIL_ARM: ArmAngles = ArmAngles::new(-0.45, 0.00, 1.55, -0.52);
+/// Full extension: arm driven forward and straight, the wrist holding the
+/// blade level against the extension's lean of `0.54`. `0.12`.
+const LUNGE_EXTEND_ARM: ArmAngles = ArmAngles::new(0.62, 0.00, 0.00, -0.50);
+/// Spent: the arm has sagged and the point has dropped below level. `-0.22`.
+const LUNGE_SPENT_ARM: ArmAngles = ArmAngles::new(0.30, 0.00, 0.00, -0.52);
+
+/// The free arm pointing down the line, which is the first thing a lunge
+/// shows and the clearest statement of where it is going.
+const LUNGE_POINT_ARM: ArmAngles = ArmAngles::new(1.05, 0.15, 0.10, 0.0);
+/// The free arm thrown back to balance the extension.
+const LUNGE_BALANCE_ARM: ArmAngles = ArmAngles::new(-0.70, 0.30, 0.20, 0.0);
+
+fn lerp_pose(from: ActionPose, to: ActionPose, t: f32) -> ActionPose {
+    let mix = |a: f32, b: f32| (b - a).mul_add(t, a);
+    ActionPose {
+        weapon_arm: from.weapon_arm.lerp(to.weapon_arm, t),
+        free_arm: from.free_arm.lerp(to.free_arm, t),
+        free_arm_weight: mix(from.free_arm_weight, to.free_arm_weight),
+        spine_yaw: mix(from.spine_yaw, to.spine_yaw),
+        chest_yaw: mix(from.chest_yaw, to.chest_yaw),
+        spine_pitch: mix(from.spine_pitch, to.spine_pitch),
+        chest_pitch: mix(from.chest_pitch, to.chest_pitch),
+        head_pitch: mix(from.head_pitch, to.head_pitch),
+        pelvis_rise: mix(from.pelvis_rise, to.pelvis_rise),
+        pelvis_sway: mix(from.pelvis_sway, to.pelvis_sway),
+        pelvis_roll: mix(from.pelvis_roll, to.pelvis_roll),
+    }
+}
+
+/// Low, blade level and drawn back along the line, the free hand pointing down
+/// it.
+///
+/// The torso holds the same small twist — weapon shoulder a little forward —
+/// from here to the extension. A side-on guard was tried first and read as a
+/// thrust, but twisting back out of it swept the point across the line during
+/// the active window, which made stepping to the weapon side fail where
+/// stepping to the other side worked: an escape that depends on which side a
+/// person picks is not a line.
+fn lunge_guard() -> ActionPose {
+    ActionPose {
+        weapon_arm: LUNGE_GUARD_ARM,
+        free_arm: LUNGE_POINT_ARM,
+        free_arm_weight: 1.0,
+        spine_yaw: 0.10,
+        chest_yaw: 0.14,
+        spine_pitch: 0.06,
+        chest_pitch: 0.10,
+        head_pitch: 0.05,
+        pelvis_rise: -0.9,
+        pelvis_sway: 0.0,
+        pelvis_roll: -0.05,
+    }
+}
+
+fn lunge_coil() -> ActionPose {
+    ActionPose {
+        weapon_arm: LUNGE_COIL_ARM,
+        free_arm: ArmAngles::new(1.15, 0.12, 0.05, 0.0),
+        free_arm_weight: 1.0,
+        spine_yaw: 0.10,
+        chest_yaw: 0.14,
+        spine_pitch: 0.10,
+        chest_pitch: 0.12,
+        head_pitch: 0.08,
+        pelvis_rise: -1.4,
+        pelvis_sway: 0.0,
+        pelvis_roll: -0.08,
+    }
+}
+
+/// Weapon shoulder driven through, torso leaning into the travel, the free arm
+/// thrown back.
+fn lunge_extend() -> ActionPose {
+    ActionPose {
+        weapon_arm: LUNGE_EXTEND_ARM,
+        free_arm: LUNGE_BALANCE_ARM,
+        free_arm_weight: 1.0,
+        spine_yaw: 0.12,
+        chest_yaw: 0.16,
+        spine_pitch: 0.24,
+        chest_pitch: 0.30,
+        head_pitch: -0.10,
+        pelvis_rise: -1.4,
+        pelvis_sway: 0.0,
+        pelvis_roll: 0.08,
+    }
+}
+
+/// Overextended: still low, still forward, the point down and the head down.
+/// This is the frame a missed lunge holds, and it is the opening.
+fn lunge_spent() -> ActionPose {
+    ActionPose {
+        weapon_arm: LUNGE_SPENT_ARM,
+        free_arm: ArmAngles::new(-0.45, 0.25, 0.30, 0.0),
+        free_arm_weight: 1.0,
+        spine_yaw: 0.10,
+        chest_yaw: 0.16,
+        spine_pitch: 0.30,
+        chest_pitch: 0.34,
+        head_pitch: 0.20,
+        pelvis_rise: -1.4,
+        pelvis_sway: 0.0,
+        pelvis_roll: 0.06,
+    }
+}
+
+/// Where in the windup the guard is complete and the coil begins.
+const LUNGE_GUARD_AT: f32 = 0.6;
+/// Where in the recovery the body reaches the spent pose, and where it starts
+/// to come back from it.
+const LUNGE_SPENT_AT: f32 = 0.25;
+const LUNGE_RETURN_AT: f32 = 0.6;
+
+/// A lunge: guard, coil, extension, spent, back to the carry.
+///
+/// Every segment is phase-local. The windup is split at `LUNGE_GUARD_AT` so the
+/// line is established early — blade level, free hand pointing down it — and
+/// only then deepened, which is what lets a person see where it will go before
+/// it goes. The extension is not eased at its start, for the same reason the
+/// cut is not: a thrust that accelerates into its target reads as a push.
+fn lunge_pose(progress: f32, windup_fraction: f32, active_fraction: f32) -> ActionPose {
+    let windup_end = windup_fraction;
+    let active_end = windup_fraction + active_fraction;
+    let guard_at = windup_end * LUNGE_GUARD_AT;
+    if progress <= guard_at {
+        let t = ease(segment(progress, 0.0, guard_at));
+        lerp_pose(carry_pose(), lunge_guard(), t)
+    } else if progress <= windup_end {
+        let t = ease(segment(progress, guard_at, windup_end));
+        lerp_pose(lunge_guard(), lunge_coil(), t)
+    } else if progress <= active_end {
+        let t = segment(progress, windup_end, active_end);
+        lerp_pose(lunge_coil(), lunge_extend(), t * (2.0 - t))
+    } else {
+        let recovery = 1.0 - active_end;
+        let spent_at = recovery.mul_add(LUNGE_SPENT_AT, active_end);
+        let return_at = recovery.mul_add(LUNGE_RETURN_AT, active_end);
+        if progress <= spent_at {
+            let t = ease(segment(progress, active_end, spent_at));
+            lerp_pose(lunge_extend(), lunge_spent(), t)
+        } else if progress <= return_at {
+            lunge_spent()
+        } else {
+            let t = ease(segment(progress, return_at, 1.0));
+            lerp_pose(lunge_spent(), carry_pose(), t)
+        }
+    }
+}
+
 /// Composes an action over a set of locomotion angles.
 ///
 /// The weapon arm is replaced, the free arm is replaced by as much as the
@@ -543,8 +746,8 @@ pub fn apply(mut angles: JointAngles, overlay: &ActionOverlay) -> JointAngles {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionKind, ActionOverlay, CARRY_ARM, STRIKE_ARM, WINDUP_ARM, apply, dodge_pose,
-        stagger_pose,
+        ActionKind, ActionOverlay, CARRY_ARM, LUNGE_EXTEND_ARM, LUNGE_GUARD_ARM, STRIKE_ARM,
+        WINDUP_ARM, apply, dodge_pose, stagger_pose,
     };
     use crate::descriptor::CharacterDescriptor;
     use crate::locomotion::{
@@ -567,6 +770,9 @@ mod tests {
         for step in 0..=40 {
             let progress = step as f32 / 40.0;
             overlays.push(ActionOverlay::attack(Side::Right, progress, 0.29, 0.16));
+            // Both totals a lunge runs: the whiffed one and the connected one.
+            overlays.push(ActionOverlay::lunge(Side::Right, progress, 0.39, 0.10));
+            overlays.push(ActionOverlay::lunge(Side::Right, progress, 0.68, 0.18));
             for direction in [0.0, FRAC_PI_2, PI, -FRAC_PI_2, 0.8] {
                 overlays.push(ActionOverlay::dodge(Side::Right, progress, direction));
                 overlays.push(ActionOverlay::stagger(Side::Right, progress, direction));
@@ -788,8 +994,111 @@ mod tests {
             ActionKind::Attack,
             ActionKind::Dodge,
             ActionKind::Stagger,
+            ActionKind::Defeated,
+            ActionKind::Lunge,
         ] {
             assert!(!kind.name().is_empty());
         }
+    }
+
+    #[test]
+    fn the_lunge_starts_and_ends_at_the_carry() {
+        for (windup, active) in [(0.39, 0.10), (0.68, 0.18)] {
+            let start = ActionOverlay::lunge(Side::Right, 0.0, windup, active).pose();
+            let end = ActionOverlay::lunge(Side::Right, 1.0, windup, active).pose();
+            for pose in [start, end] {
+                let arm = pose.weapon_arm;
+                assert!((arm.shoulder_pitch - CARRY_ARM.shoulder_pitch).abs() < 1.0e-6);
+                assert!((arm.elbow_flex - CARRY_ARM.elbow_flex).abs() < 1.0e-6);
+                assert!((arm.wrist_pitch - CARRY_ARM.wrist_pitch).abs() < 1.0e-6);
+                assert!(pose.free_arm_weight.abs() < 1.0e-6);
+                assert!(pose.pelvis_rise.abs() < 1.0e-6);
+                assert!(pose.chest_yaw.abs() < 1.0e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn the_lunge_is_continuous_across_its_phase_boundaries() {
+        // Same reason as the cut: a blade that jumps between two ticks lets a
+        // sweep find a hit in geometry nobody was shown.
+        for (windup, active) in [(0.39, 0.10), (0.68, 0.18)] {
+            let samples = 4_000;
+            let mut previous = ActionOverlay::lunge(Side::Right, 0.0, windup, active).pose();
+            let mut worst = 0.0_f32;
+            for step in 1..=samples {
+                let progress = step as f32 / samples as f32;
+                let pose = ActionOverlay::lunge(Side::Right, progress, windup, active).pose();
+                for (a, b) in [
+                    (
+                        pose.weapon_arm.shoulder_pitch,
+                        previous.weapon_arm.shoulder_pitch,
+                    ),
+                    (pose.weapon_arm.elbow_flex, previous.weapon_arm.elbow_flex),
+                    (pose.weapon_arm.wrist_pitch, previous.weapon_arm.wrist_pitch),
+                    (pose.chest_yaw, previous.chest_yaw),
+                    (pose.chest_pitch, previous.chest_pitch),
+                    (pose.pelvis_rise / 4.0, previous.pelvis_rise / 4.0),
+                ] {
+                    worst = worst.max((a - b).abs());
+                }
+                previous = pose;
+            }
+            // The largest single excursion is the arm driving forward, about
+            // 1.6 radians over the active window; a step many times one
+            // sample's share of that would be a jump.
+            let share = 1.6 / (samples as f32 * active);
+            assert!(worst < share * 3.0, "largest lunge step {worst}");
+        }
+    }
+
+    #[test]
+    fn the_lunge_shows_its_line_before_it_moves() {
+        // By the end of the guard the free hand points down the line and the
+        // blade is held level beside the body: forward, not raised. That is
+        // the whole readability claim, so it is asserted where the curves are.
+        let (windup, active) = (0.39_f32, 0.10_f32);
+        let guard = ActionOverlay::lunge(Side::Right, windup * 0.6, windup, active).pose();
+        assert!((guard.weapon_arm.hand_pitch() - LUNGE_GUARD_ARM.hand_pitch()).abs() < 1.0e-6);
+        assert!(
+            guard.free_arm.shoulder_pitch > 0.9,
+            "the free hand points forward"
+        );
+        assert!(guard.free_arm_weight > 0.99);
+        // The torso's yaw is held from the guard to the extension, so the
+        // point travels along the line instead of sweeping across it.
+        let extended_yaw = ActionOverlay::lunge(Side::Right, windup + active, windup, active)
+            .pose()
+            .chest_yaw;
+        assert!(
+            (guard.chest_yaw - extended_yaw).abs() < 0.05,
+            "the torso twists across the line"
+        );
+        // A raised cut lives near `1.95`; a level blade near the grip's
+        // complement. The guard must be much closer to level than to raised.
+        assert!(guard.weapon_arm.hand_pitch() < 1.0);
+        let extended = ActionOverlay::lunge(Side::Right, windup + active, windup, active).pose();
+        assert!((extended.weapon_arm.hand_pitch() - LUNGE_EXTEND_ARM.hand_pitch()).abs() < 1.0e-6);
+        assert!(
+            extended.weapon_arm.shoulder_pitch - guard.weapon_arm.shoulder_pitch > 0.9,
+            "the arm is driven forward"
+        );
+        assert!(
+            extended.chest_pitch > 0.25,
+            "the body leans into the travel"
+        );
+    }
+
+    #[test]
+    fn a_missed_lunge_holds_the_spent_pose_before_it_comes_back() {
+        // The opening has to be visible, not only long: through the middle of
+        // the recovery the body is still low and forward.
+        let (windup, active) = (0.39_f32, 0.10_f32);
+        let recovery_start = windup + active;
+        let middle = (1.0 - recovery_start).mul_add(0.45, recovery_start);
+        let pose = ActionOverlay::lunge(Side::Right, middle, windup, active).pose();
+        assert!(pose.pelvis_rise < -1.3);
+        assert!(pose.chest_pitch > 0.3);
+        assert!(pose.head_pitch > 0.15, "head down, not watching");
     }
 }
