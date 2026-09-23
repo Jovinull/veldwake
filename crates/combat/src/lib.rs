@@ -61,6 +61,7 @@ pub mod hit;
 pub mod hurt;
 pub mod material;
 pub mod movement;
+pub mod oracle;
 pub mod script;
 pub mod spec;
 pub mod tick;
