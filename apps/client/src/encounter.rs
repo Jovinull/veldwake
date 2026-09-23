@@ -24,9 +24,10 @@
 use std::time::Duration;
 
 use glam::Vec3;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use veldwake_character::GroundSampler;
+use veldwake_combat::oracle::OraclePolicy;
 use veldwake_combat::{
     AdversaryState, CombatClock, CombatEvent, Encounter, EncounterError, Intent,
     MAX_EVENTS_PER_TICK, MAX_TICKS_PER_FRAME, MomentKind, NamedMoment, ScriptRunner, Side, Ticks,
@@ -36,6 +37,7 @@ use veldwake_procedural::TerrainGenerator;
 
 use crate::arena;
 use crate::camera::Camera;
+use crate::initiative;
 use crate::input::InputState;
 use crate::traversal;
 
@@ -58,6 +60,68 @@ const MOMENT_SEARCH_TICKS: u64 = fixture::GOLDEN_RUN_TICKS * 2;
 
 /// Most events one frame can carry, which is the tick bound times the tick cap.
 pub const MAX_FRAME_EVENTS: usize = MAX_TICKS_PER_FRAME as usize * MAX_EVENTS_PER_TICK;
+
+/// Who fights the player's side of a combat initiative session.
+///
+/// A person, or one of the oracle policies the headless evidence is made of,
+/// run through exactly the path a played tick takes. The drivers exist so a
+/// capture shows the thing the evidence claims — a lunge stepped around, an
+/// opening taken, a stagger answered with space — rather than whatever a
+/// scripted key press happened to line up with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InitiativeDriver {
+    Person,
+    /// Observes, steps off the lunge's line, punishes the opening.
+    Read,
+    /// The owner's approach-and-attack strategy.
+    Spam,
+    /// Spam that has learned to step off the line.
+    SpamRead,
+}
+
+impl InitiativeDriver {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Read => "read",
+            Self::Spam => "spam",
+            Self::SpamRead => "spam-read",
+        }
+    }
+
+    /// The oracle policy this driver is, when it is not a person.
+    ///
+    /// The headless evidence's typical reaction and no misjudgement, stepping
+    /// to the adversary's free-hand side.
+    #[must_use]
+    pub const fn policy(self) -> Option<OraclePolicy> {
+        match self {
+            Self::Person => None,
+            Self::Read => Some(OraclePolicy::Read {
+                lag: 24,
+                walk_only: false,
+                side: 1.0,
+            }),
+            Self::Spam => Some(OraclePolicy::OwnerSpam { misjudgement: 0.0 }),
+            Self::SpamRead => Some(OraclePolicy::SpamRead {
+                misjudgement: 0.0,
+                lag: 24,
+                side: 1.0,
+            }),
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "" | "person" | "play" => Some(Self::Person),
+            "read" => Some(Self::Read),
+            "spam" => Some(Self::Spam),
+            "spam-read" | "spamread" => Some(Self::SpamRead),
+            _ => None,
+        }
+    }
+}
 
 /// What the client does with the encounter.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -89,6 +153,18 @@ pub enum EncounterMode {
     /// of runs reconstructs the swing exactly rather than at whatever interval a
     /// screen capture happened to land on.
     Moment(&'static NamedMoment, u32),
+    /// **Combat initiative**, opt-in: the historical fight plus the pressure
+    /// lunge, at the open clearing. Starts paused and arms on the first input,
+    /// like `armed`; a defeat on either side starts another round.
+    ///
+    /// `driver` says who plays the player's side. `freeze_at`, only with a
+    /// driver, runs the fight headless from arming to that encounter tick and
+    /// holds it there, which is how a pose inside a lunge is photographed —
+    /// the same reason `moment:` exists.
+    Initiative {
+        driver: InitiativeDriver,
+        freeze_at: Option<u32>,
+    },
 }
 
 impl EncounterMode {
@@ -117,6 +193,7 @@ impl EncounterMode {
             "armed" | "play" | "playable" => Some(Self::Armed),
             "script" | "scripted" => Some(Self::Script),
             "traverse" | "traversal" | "walk" => Some(Self::Traverse),
+            other if other.starts_with("initiative") => Self::parse_initiative(other),
             other => {
                 let tail = other
                     .strip_prefix("moment:")
@@ -134,6 +211,30 @@ impl EncounterMode {
         }
     }
 
+    /// `initiative`, `initiative:<driver>`, or `initiative:<driver>@<tick>`.
+    fn parse_initiative(value: &str) -> Option<Self> {
+        let rest = value.strip_prefix("initiative")?;
+        let rest = match rest.strip_prefix(':') {
+            Some(rest) => rest,
+            None if rest.is_empty() || rest.starts_with('@') => rest,
+            None => return None,
+        };
+        let (driver, freeze_at) = match rest.split_once('@') {
+            Some((driver, tick)) => (driver, Some(tick.trim().parse::<u32>().ok()?)),
+            None => (rest, None),
+        };
+        let driver = InitiativeDriver::parse(driver.trim())?;
+        // A person cannot be replayed to a tick; only a driver can.
+        if driver == InitiativeDriver::Person && freeze_at.is_some() {
+            return None;
+        }
+        // Sixty seconds, the length of an oracle fight. More is a typo.
+        if freeze_at.is_some_and(|tick| tick > veldwake_combat::oracle::ORACLE_FIGHT_TICKS) {
+            return None;
+        }
+        Some(Self::Initiative { driver, freeze_at })
+    }
+
     #[must_use]
     pub fn name(self) -> String {
         match self {
@@ -143,7 +244,32 @@ impl EncounterMode {
             Self::Traverse => "traverse".to_owned(),
             Self::Moment(moment, 0) => format!("moment:{}", moment.name),
             Self::Moment(moment, offset) => format!("moment:{}+{offset}", moment.name),
+            Self::Initiative {
+                driver: InitiativeDriver::Person,
+                ..
+            } => "initiative".to_owned(),
+            Self::Initiative {
+                driver,
+                freeze_at: None,
+            } => format!("initiative:{}", driver.name()),
+            Self::Initiative {
+                driver,
+                freeze_at: Some(tick),
+            } => format!("initiative:{}@{tick}", driver.name()),
         }
+    }
+
+    /// Whether this is a combat initiative session.
+    #[must_use]
+    pub const fn is_initiative(self) -> bool {
+        matches!(self, Self::Initiative { .. })
+    }
+
+    /// Whether the fight is held inside a disc. Only the M6 duel modes are;
+    /// a traversal and a combat initiative session are bounded by the world.
+    #[must_use]
+    pub const fn has_arena(self) -> bool {
+        matches!(self, Self::Armed | Self::Script | Self::Moment(..))
     }
 
     #[must_use]
@@ -160,7 +286,15 @@ impl EncounterMode {
     /// Whether the player drives the fight.
     #[must_use]
     pub const fn is_played(self) -> bool {
-        matches!(self, Self::Armed | Self::Traverse)
+        matches!(
+            self,
+            Self::Armed
+                | Self::Traverse
+                | Self::Initiative {
+                    driver: InitiativeDriver::Person,
+                    ..
+                }
+        )
     }
 
     /// Whether this mode is a walk across the region rather than a duel in a
@@ -267,6 +401,9 @@ pub struct EncounterScene {
     /// because a gate that fires on every press, or on none, is a defect either
     /// way and only the number says which.
     dodges_suppressed: u32,
+    /// The oracle policy playing the player's side, in a driven combat
+    /// initiative session.
+    driver: Option<OraclePolicy>,
 }
 
 impl EncounterScene {
@@ -306,11 +443,12 @@ impl EncounterScene {
         // changes about the setup.
         let setup = if mode.is_traversal() {
             traversal::traversal_setup()
+        } else if mode.is_initiative() {
+            initiative::initiative_setup_at(initiative::InitiativeSite::from_environment())
         } else {
             fixture::setup(arena::centre(), arena::ARENA_RADIUS)
         };
         let encounter = Encounter::new(&setup, ground)?;
-        let _ = generator;
         let mut scene = Self {
             mode,
             encounter,
@@ -323,9 +461,47 @@ impl EncounterScene {
             events: FrameEvents::new(),
             ticks: 0,
             dodges_suppressed: 0,
+            driver: None,
         };
         match mode {
             EncounterMode::Off | EncounterMode::Armed | EncounterMode::Traverse => {}
+            EncounterMode::Initiative { driver, freeze_at } => {
+                scene.driver = driver.policy();
+                if let (Some(policy), Some(tick)) = (scene.driver, freeze_at) {
+                    // Headless from arming to the tick asked for, over the same
+                    // terrain and the same veto the frame loop uses, then held.
+                    // The fight is deterministic from arming, so the frame is
+                    // the one the headless schedule names.
+                    let legality = crate::traversal::TerrainWalkability::new(generator);
+                    let world = match ground {
+                        Some(ground) => WorldContact::terrain(ground, &legality),
+                        None => WorldContact::none(),
+                    };
+                    scene.encounter.arm();
+                    for _ in 0..tick {
+                        let intent = policy.intent(&scene.encounter);
+                        let _ = scene.encounter.step(intent, world);
+                        scene.ticks += 1;
+                    }
+                    scene.frozen = true;
+                    let adversary = scene.encounter.combatant(Side::Adversary);
+                    info!(
+                        tick,
+                        adversary_action = adversary
+                            .action()
+                            .label(scene.encounter.attack_spec(Side::Adversary)),
+                        adversary_kind = adversary.action().attack_kind().map(|kind| kind.name()),
+                        adversary_elapsed = adversary.action().elapsed(),
+                        player_action = scene
+                            .encounter
+                            .combatant(Side::Player)
+                            .action()
+                            .label(scene.encounter.attack_spec(Side::Player)),
+                        distance = scene.encounter.separation_distance(),
+                        "combat initiative frozen at a tick"
+                    );
+                }
+            }
             EncounterMode::Script => {
                 scene.encounter.arm();
                 scene.runner = Some(ScriptRunner::new(
@@ -541,15 +717,30 @@ impl EncounterScene {
         }
 
         for _ in 0..due {
-            let intent = match self.runner.as_mut() {
-                Some(runner) => {
+            let intent = match (self.runner.as_mut(), self.driver) {
+                (Some(runner), _) => {
                     let intent = runner.next_intent(&self.encounter);
                     if runner.finished() {
                         runner.restart();
                     }
                     intent
                 }
-                None => {
+                (None, Some(policy)) => {
+                    // A driven session arms on the first input like a played
+                    // one, so the settle is not a fight nobody watched; after
+                    // that the policy plays and the keys do nothing.
+                    let pressed = latches.0 || latches.1 || {
+                        let axes = input.movement_axes();
+                        axes.forward != 0.0 || axes.right != 0.0
+                    };
+                    latches = (false, false);
+                    if !self.encounter.is_armed() && pressed {
+                        self.encounter.arm();
+                        info!("encounter armed by the first input");
+                    }
+                    policy.intent(&self.encounter)
+                }
+                (None, None) => {
                     // The played path. The latch belongs to the first tick of the
                     // frame: a press is one swing, not one per catch-up tick.
                     let axes = input.movement_axes();
@@ -589,12 +780,55 @@ impl EncounterScene {
             self.ticks += 1;
             for event in events.iter() {
                 self.events.push(event);
+                if self.mode.is_initiative() {
+                    self.trace_event(event);
+                }
             }
         }
         FrameOutcome {
             ticks: due,
             dropped_ticks: self.clock.dropped() - before,
         }
+    }
+
+    /// One line per combat event in a combat initiative session, at `debug`
+    /// and under its own target, so it costs nothing unless a QA run asks for
+    /// it with `RUST_LOG=combat_event=debug`. It is what lets a harness react
+    /// to a lunge within a frame instead of waiting five seconds for a report.
+    fn trace_event(&self, event: CombatEvent) {
+        let encounter = &self.encounter;
+        let player = encounter.combatant(Side::Player);
+        let adversary = encounter.combatant(Side::Adversary);
+        let (name, side) = match event {
+            CombatEvent::SwingStarted { side, .. } => ("swing-started", side),
+            CombatEvent::SwingActive { side, .. } => ("swing-active", side),
+            CombatEvent::SwingWhiffed { side, .. } => ("swing-whiffed", side),
+            CombatEvent::DodgeStarted { side, .. } => ("dodge-started", side),
+            CombatEvent::Hit { attacker, .. } => ("hit", attacker),
+            CombatEvent::Staggered { side } => ("staggered", side),
+            CombatEvent::Defeated { side } => ("defeated", side),
+            _ => ("other", Side::Player),
+        };
+        debug!(
+            target: "combat_event",
+            tick = encounter.tick_index(),
+            event = name,
+            side = side.name(),
+            kind = encounter
+                .combatant(side)
+                .action()
+                .attack_kind()
+                .map(|kind| kind.name()),
+            distance = encounter.separation_distance(),
+            player_x = player.position().x,
+            player_z = player.position().y,
+            adversary_x = adversary.position().x,
+            adversary_z = adversary.position().y,
+            adversary_facing_degrees = adversary.state().facing.to_degrees(),
+            player_health = player.health().current(),
+            adversary_health = adversary.health().current(),
+            "combat event"
+        );
     }
 
     /// Whether the two bodies are close enough for a swing to matter, for the
@@ -1307,5 +1541,174 @@ mod tests {
             MAX_FRAME_EVENTS,
             veldwake_combat::MAX_TICKS_PER_FRAME as usize * veldwake_combat::MAX_EVENTS_PER_TICK
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Combat initiative
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_initiative_modes_parse_and_name_themselves() {
+        use super::InitiativeDriver;
+        let cases = [
+            ("initiative", InitiativeDriver::Person, None, "initiative"),
+            (
+                "INITIATIVE:person",
+                InitiativeDriver::Person,
+                None,
+                "initiative",
+            ),
+            (
+                "initiative:read",
+                InitiativeDriver::Read,
+                None,
+                "initiative:read",
+            ),
+            (
+                "initiative:spam",
+                InitiativeDriver::Spam,
+                None,
+                "initiative:spam",
+            ),
+            (
+                "initiative:spam-read",
+                InitiativeDriver::SpamRead,
+                None,
+                "initiative:spam-read",
+            ),
+            (
+                "initiative:read@412",
+                InitiativeDriver::Read,
+                Some(412),
+                "initiative:read@412",
+            ),
+        ];
+        for (spelling, driver, freeze_at, name) in cases {
+            let mode = EncounterMode::parse(spelling);
+            assert_eq!(
+                mode,
+                Some(EncounterMode::Initiative { driver, freeze_at }),
+                "{spelling}"
+            );
+            let Some(mode) = mode else { continue };
+            assert_eq!(mode.name(), name);
+            assert!(mode.is_initiative());
+            assert!(!mode.has_arena() && !mode.is_traversal() && !mode.is_off());
+            assert!(mode.follows_the_player());
+            assert_eq!(mode.is_played(), driver == InitiativeDriver::Person);
+        }
+        for refused in [
+            "initiative:person@10",
+            "initiative:nobody",
+            "initiative:read@",
+            "initiative:read@-1",
+            "initiative:read@99999",
+            "initiativex",
+        ] {
+            assert!(
+                EncounterMode::parse(refused).is_none(),
+                "{refused} was accepted"
+            );
+        }
+        for mode in [
+            EncounterMode::Armed,
+            EncounterMode::Script,
+            EncounterMode::Traverse,
+        ] {
+            assert!(!mode.is_initiative());
+        }
+        assert!(EncounterMode::Armed.has_arena());
+    }
+
+    #[test]
+    fn an_initiative_scene_has_the_lunge_and_no_other_mode_does() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        for (mode, expected) in [
+            (EncounterMode::Armed, false),
+            (EncounterMode::Traverse, false),
+            (
+                EncounterMode::Initiative {
+                    driver: super::InitiativeDriver::Person,
+                    freeze_at: None,
+                },
+                true,
+            ),
+        ] {
+            let scene = match EncounterScene::new(mode, &generator, Some(&ground)) {
+                Ok(scene) => scene,
+                Err(error) => panic!("{error}"),
+            };
+            assert_eq!(
+                scene.encounter().tuning().adversary_pressure().is_some(),
+                expected,
+                "{}",
+                mode.name()
+            );
+            assert!(
+                !scene.encounter().is_armed(),
+                "{} armed itself",
+                mode.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_driven_initiative_scene_arms_on_the_first_input_and_then_plays_itself() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = crate::traversal::TerrainWalkability::new(&generator);
+        let mode = EncounterMode::Initiative {
+            driver: super::InitiativeDriver::Spam,
+            freeze_at: None,
+        };
+        let mut scene = match EncounterScene::new(mode, &generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let camera = Camera::at(glam::Vec3::ZERO, 0.0, 0.0);
+        let mut input = InputState::default();
+        let world = WorldContact::terrain(&ground, &legality);
+        let tick = Duration::from_nanos(1_000_000_000 / u64::from(veldwake_combat::COMBAT_TICK_HZ));
+        let _ = scene.update(tick * 4, &mut input, &camera, world);
+        assert!(
+            !scene.encounter().is_armed(),
+            "it armed with nobody pressing anything"
+        );
+        input.set_combat_action(CombatAction::Attack, true);
+        let _ = scene.update(tick * 4, &mut input, &camera, world);
+        assert!(scene.encounter().is_armed());
+        let start = scene.encounter().combatant(Side::Player).position();
+        for _ in 0..60 {
+            let _ = scene.update(tick * 4, &mut input, &camera, world);
+        }
+        let moved = (scene.encounter().combatant(Side::Player).position() - start).length();
+        assert!(moved > 1.0, "the driver never walked: {moved}");
+    }
+
+    #[test]
+    fn a_frozen_initiative_scene_holds_the_tick_it_was_asked_for() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let mode = EncounterMode::Initiative {
+            driver: super::InitiativeDriver::Read,
+            freeze_at: Some(90),
+        };
+        let mut scene = match EncounterScene::new(mode, &generator, Some(&ground)) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(scene.is_frozen());
+        assert_eq!(scene.encounter().tick_index(), 90);
+        let legality = crate::traversal::TerrainWalkability::new(&generator);
+        let camera = Camera::at(glam::Vec3::ZERO, 0.0, 0.0);
+        let mut input = InputState::default();
+        let _ = scene.update(
+            Duration::from_millis(100),
+            &mut input,
+            &camera,
+            WorldContact::terrain(&ground, &legality),
+        );
+        assert_eq!(scene.encounter().tick_index(), 90, "a frozen scene stepped");
     }
 }

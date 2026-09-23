@@ -287,16 +287,25 @@ impl App {
                 // A traversal session has no arena: the region and the water
                 // veto are its bounds, and printing a disc it does not have
                 // would be a line that reads plausibly and is false.
-                arena = ?if encounter_mode.is_traversal() {
-                    None
-                } else {
+                arena = ?if encounter_mode.has_arena() {
                     Some(arena::centre().to_array())
-                },
-                arena_radius = ?if encounter_mode.is_traversal() {
-                    None
                 } else {
-                    Some(arena::ARENA_RADIUS)
+                    None
                 },
+                arena_radius = ?if encounter_mode.has_arena() {
+                    Some(arena::ARENA_RADIUS)
+                } else {
+                    None
+                },
+                initiative = encounter_mode.is_initiative(),
+                initiative_site = encounter_mode
+                    .is_initiative()
+                    .then(|| crate::initiative::InitiativeSite::from_environment().name()),
+                pressure_band = ?scene
+                    .encounter()
+                    .tuning()
+                    .adversary_pressure()
+                    .map(|pressure| [pressure.select_min(), pressure.select_max()]),
                 player_start = ?player.position().to_array(),
                 adversary_start = ?adversary.position().to_array(),
                 tick_hz = veldwake_combat::COMBAT_TICK_HZ,
@@ -998,6 +1007,7 @@ fn report_combat(
         adversary_action = adversary
             .action()
             .label(encounter.attack_spec(Side::Adversary)),
+        adversary_attack_kind = adversary.action().attack_kind().map(|kind| kind.name()),
         adversary_elapsed = adversary.action().elapsed(),
         adversary_health = adversary.health().current(),
         adversary_x = adversary.position().x,
@@ -1052,6 +1062,17 @@ fn report_combat(
         // assist, and this is how that is seen.
         player_aim_assists = counters.aim_assists[0],
         adversary_aim_assists = counters.aim_assists[1],
+        // Combat initiative. All zero in every historical mode, because only
+        // the initiative tuning has a lunge to throw or a spacing dodge to take.
+        pressure_swings = counters.pressure_swings,
+        pressure_hits = counters.pressure_hits,
+        pressure_whiffs = counters.pressure_whiffs,
+        adversary_primary_swings = counters.swings[1].saturating_sub(counters.pressure_swings),
+        adversary_dodges = counters.dodges[1],
+        adversary_dodges_truncated = counters.dodges_truncated[1],
+        adversary_dodge_blocked_moves = counters.dodge_blocked_moves[1],
+        adversary_dodge_slid_moves = counters.dodge_slid_moves[1],
+        adversary_dodges_during_unresolved_swing = counters.dodges_during_unresolved_swing[1],
         defeats_player = counters.defeats[0],
         defeats_adversary = counters.defeats[1],
         resets = counters.resets,
