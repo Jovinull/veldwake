@@ -17,12 +17,23 @@
 //!
 //! Nothing here moves the M8 adversary, changes the world or builds navigation.
 //! See `docs/planning/COMBAT_INITIATIVE.md`.
+//!
+//! **The M9 weapon-choice laboratory** lives here too, because it is this
+//! clearing's fight and nothing else: the same bodies, the same lunge and the
+//! same adversary, with the M9 exchange offered at a QA point beside the
+//! player's round start so a person can change weapon between rounds. It is
+//! test infrastructure for `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`,
+//! not a second product reward site: the product exchange stays at the gate
+//! (`crate::reward`), and nothing in the world marks this point. See
+//! `docs/planning/M9_MEANINGFUL_REWARD.md`.
 
 use glam::Vec2;
 
-use veldwake_combat::{EncounterSetup, PlayerVictoryPolicy, fixture};
+use veldwake_character::GroundSampler;
+use veldwake_combat::{EncounterSetup, PlayerVictoryPolicy, Side, fixture};
 
 use crate::arena;
+use crate::reward::RewardSite;
 use crate::traversal;
 
 /// How far from the adversary the player starts, in world units.
@@ -30,6 +41,19 @@ use crate::traversal;
 /// Outside the lunge's band, so the first thing a player meets is the approach
 /// and the choice of how to make it.
 pub const START_SEPARATION: f32 = 8.0;
+
+/// Where the weapon-choice exchange point stands, from the player's round start,
+/// in world units.
+///
+/// To the player's **left**: the player faces the adversary down `-Z` with its
+/// weapon hand on `+X`, and the follow camera sits behind and to the right, so
+/// a weapon planted on the left is neither between the camera and the body nor
+/// beside the blade the body carries. `1.25` is inside the M9 interact radius
+/// of `1.75`, so a body standing on its start can exchange without walking,
+/// and outside the widest body's `0.86` keep-out radius, so the planted blade
+/// does not stand in the body — the M9 gate's lesson, that one unit off the
+/// line a body and a camera use is what keeps a planted weapon legible.
+pub const WEAPON_CHOICE_SITE_OFFSET: Vec2 = Vec2::new(-1.25, 0.0);
 
 /// Environment variable choosing where a combat initiative session stands.
 const SITE_VARIABLE: &str = "VELDWAKE_INITIATIVE_SITE";
@@ -106,6 +130,45 @@ pub fn initiative_setup_at(site: InitiativeSite) -> EncounterSetup {
     setup.arena = None;
     setup.player_victory = PlayerVictoryPolicy::ResetEncounter;
     setup
+}
+
+/// The weapon-choice laboratory: the opt-in combat initiative fight at the
+/// clearing, offering the M9 exchange. The tuning, bodies and starts are the
+/// initiative session's exactly; the only addition is the reward.
+#[must_use]
+pub fn weapon_choice_setup() -> EncounterSetup {
+    let mut setup = initiative_setup_at(InitiativeSite::Clearing);
+    setup.reward = Some(fixture::reward_setup());
+    setup
+}
+
+/// Where the weapon-choice exchange point stands: beside the player's round
+/// start, which is where every reset puts the body back.
+#[must_use]
+pub fn weapon_choice_site() -> Vec2 {
+    initiative_setup_at(InitiativeSite::Clearing).starts[Side::Player.index()]
+        + WEAPON_CHOICE_SITE_OFFSET
+}
+
+/// The weapon-choice exchange point as a [`RewardSite`], for the renderer to
+/// plant a weapon on, or `None` if the ground under it does not exist.
+#[must_use]
+pub fn weapon_choice_reward_site(ground: &dyn GroundSampler) -> Option<RewardSite> {
+    let position = weapon_choice_site();
+    let ground = ground.surface(f64::from(position.x), f64::from(position.y))?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a column index in a finite region is a small integer"
+    )]
+    let column = (
+        f64::from(position.x).floor() as i64,
+        f64::from(position.y).floor() as i64,
+    );
+    Some(RewardSite {
+        column,
+        position,
+        ground,
+    })
 }
 
 #[cfg(test)]
@@ -448,6 +511,181 @@ mod tests {
     /// The schedule a driven session at the clearing follows from arming, for
     /// choosing `initiative:<driver>@<tick>` captures. Deterministic, so the
     /// client frozen at a tick shows exactly what this prints for it.
+    // -----------------------------------------------------------------------
+    // M9 revisit — the weapon-choice laboratory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_weapon_choice_setup_is_the_initiative_fight_plus_the_exchange() {
+        let lab = super::weapon_choice_setup();
+        let initiative = initiative_setup_at(InitiativeSite::Clearing);
+        assert_eq!(
+            lab.tuning, initiative.tuning,
+            "the fight must be the owner's"
+        );
+        assert_eq!(lab.starts, initiative.starts);
+        assert_eq!(lab.arena, initiative.arena);
+        assert_eq!(lab.player_victory, initiative.player_victory);
+        assert_eq!(lab.reward, Some(fixture::reward_setup()));
+        assert!(
+            initiative.reward.is_none(),
+            "the initiative session stays M9-free"
+        );
+    }
+
+    /// Where the QA exchange point stands: close enough to the round start to
+    /// use without walking, clear of the body, off the line the fight is
+    /// fought along, on the same level dry ground, and nowhere near the
+    /// product site at the gate.
+    #[test]
+    fn the_weapon_choice_point_is_beside_the_start_and_out_of_the_fight() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = TerrainWalkability::new(&generator);
+        let setup = super::weapon_choice_setup();
+        let start = setup.starts[Side::Player.index()];
+        let adversary = setup.starts[Side::Adversary.index()];
+        let point = super::weapon_choice_site();
+        let radius = fixture::reward_setup().interact_radius;
+        let from_start = (point - start).length();
+        assert!(
+            from_start < radius - 0.25,
+            "{from_start} is not comfortably inside the interact radius {radius}"
+        );
+        assert!(
+            from_start > 0.86,
+            "{from_start}: the planted blade is in the body"
+        );
+        // Distance from the segment the two bodies start on.
+        let line = adversary - start;
+        let along = ((point - start).dot(line) / line.length_squared()).clamp(0.0, 1.0);
+        let off_line = (point - (start + line * along)).length();
+        assert!(
+            off_line >= 1.0,
+            "{off_line}: the point is on the fight's line"
+        );
+        let (x, z) = (f64::from(point.x), f64::from(point.y));
+        assert!(legality.walkable(x, z), "the point is not walkable ground");
+        let Some(site) = super::weapon_choice_reward_site(&ground) else {
+            panic!("no ground under the laboratory point");
+        };
+        let start_ground = ground
+            .surface(f64::from(start.x), f64::from(start.y))
+            .unwrap_or(f64::NAN);
+        assert!(
+            (site.ground - start_ground).abs() < 0.5,
+            "the point is not on the start's level: {} against {start_ground}",
+            site.ground
+        );
+        let Some(gate) = crate::reward::site(&generator) else {
+            panic!("the golden world must have its product site");
+        };
+        assert!(
+            (gate.position - point).length() > 30.0,
+            "the laboratory point could be mistaken for the gate's"
+        );
+    }
+
+    /// The round loop the owner's protocol depends on, in the real encounter
+    /// over the real world: take the found weapon at the laboratory point,
+    /// lose the round, and come back beside the point still holding it —
+    /// then put it back with one more press.
+    #[test]
+    fn a_round_reset_puts_the_body_back_beside_the_point_still_armed() {
+        use veldwake_combat::{Encounter, Intent, WeaponVariant};
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = TerrainWalkability::new(&generator);
+        let setup = super::weapon_choice_setup();
+        let point = super::weapon_choice_site();
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &legality, point);
+        let mut encounter = match Encounter::new(&setup, Some(&ground)) {
+            Ok(encounter) => encounter,
+            Err(error) => panic!("{error}"),
+        };
+        encounter.arm();
+        let press = Intent::idle().interacting(true);
+        let _ = encounter.step(press, world);
+        assert_eq!(encounter.armament().player(), WeaponVariant::Found);
+        // Stand still until the adversary wins the round and the hold resets it.
+        let mut resets = 0;
+        for _ in 0..20_000 {
+            let _ = encounter.step(Intent::idle(), world);
+            resets = encounter.counters().resets;
+            if resets > 0 && encounter.combatant(Side::Player).can_act() {
+                break;
+            }
+        }
+        assert!(resets > 0, "the round never reset");
+        assert_eq!(
+            encounter.armament().player(),
+            WeaponVariant::Found,
+            "the reset took the weapon back (ARM-001)"
+        );
+        let back = encounter.combatant(Side::Player).position();
+        assert!(
+            (back - setup.starts[Side::Player.index()]).length() < 1.0e-4,
+            "the body did not return to its start"
+        );
+        let _ = encounter.step(press, world);
+        assert_eq!(
+            encounter.armament().player(),
+            WeaponVariant::Original,
+            "the point was out of reach after the reset"
+        );
+    }
+
+    /// The pre-gate's terrain table: both weapons, every policy family, in the
+    /// laboratory exactly as the owner will play it — the clearing, the
+    /// round start, the adversary eight units away, the exchange beside the
+    /// start — under the six oracle seeds.
+    #[test]
+    #[ignore = "measurement: prints the weapon-choice laboratory table on the golden world"]
+    fn measure_both_weapons_in_the_weapon_choice_laboratory() {
+        use veldwake_combat::WeaponVariant;
+        use veldwake_combat::oracle::{OracleFamily, run_fight_holding};
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = TerrainWalkability::new(&generator);
+        let point = super::weapon_choice_site();
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &legality, point);
+        for family in OracleFamily::all() {
+            let name = family.name();
+            for holding in [WeaponVariant::Original, WeaponVariant::Found] {
+                let reports: Vec<FightReport> = ORACLE_SEEDS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, seed)| {
+                        let mut setup = super::weapon_choice_setup();
+                        setup.player_victory = PlayerVictoryPolicy::Remain;
+                        setup.tuning.seed = *seed;
+                        match run_fight_holding(
+                            &setup,
+                            world,
+                            family.policy(index),
+                            ORACLE_FIGHT_TICKS,
+                            holding,
+                        ) {
+                            Ok(report) => report,
+                            Err(error) => panic!("{name}: {error}"),
+                        }
+                    })
+                    .collect();
+                let t = tally(&reports);
+                let ticks: u32 = reports.iter().map(|r| r.ticks).sum();
+                let cut: u32 = reports.iter().map(|r| r.pressure_interrupted).sum();
+                let committed: u32 = reports.iter().map(|r| r.hits_taken_committed).sum();
+                let whiffs: u32 = reports.iter().map(|r| r.counters.whiffs[0]).sum();
+                println!(
+                    "{} | ticks {ticks} whiffs {whiffs} lunge-cut {cut} hit-while-committed {committed}",
+                    describe(&format!("lab {name} {}", holding.name()), &t)
+                );
+                assert_eq!(t.unresolved, 0, "{name}: a spacing dodge met a live swing");
+                assert_eq!(t.stuck, 0, "{name}: KI-038 at the clearing");
+            }
+        }
+    }
+
     #[test]
     #[ignore = "measurement: prints the driven fights' event schedule at the clearing"]
     fn print_the_driven_schedule_at_the_clearing() {

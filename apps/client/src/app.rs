@@ -26,7 +26,7 @@ use crate::{
     camera::{Camera, CameraController, FollowController, HitShake},
     character::{CharacterScene, CharacterSelection, TerrainGround, spawn_character_camera},
     debug::{DebugMode, combat_primitives, debug_primitives},
-    encounter::{EncounterMode, EncounterScene},
+    encounter::{self, EncounterMode, EncounterScene},
     input::{CameraAction, CombatAction, CombatLatches, InputState},
     lighting::Weather,
     readout::{self, READOUT_INSTANCES},
@@ -307,7 +307,14 @@ impl App {
                 renderer.upload_placed_weapon(found).map_err(|error| {
                     AppRunError(format!("the found weapon did not upload: {error}"))
                 })?;
-                let Some(resolved) = self.terrain.as_ref().and_then(reward::site) else {
+                // The same resolution the scene used, so the planted blade and
+                // the rule cannot disagree about where the site is: the gate in
+                // a traversal, the laboratory point in a weapon-choice session.
+                let resolved = self.terrain.as_ref().and_then(|terrain| {
+                    let ground = TerrainGround::new(terrain);
+                    encounter::resolve_exchange(scene.mode(), terrain, Some(&ground))
+                });
+                let (Some(resolved), Some(terrain)) = (resolved, self.terrain.as_ref()) else {
                     return Err(AppRunError(
                         "the exchange site resolved for the encounter and not for the renderer"
                             .to_owned(),
@@ -317,20 +324,24 @@ impl App {
                     original: reward::site_matrix(&resolved, scene.encounter().weapon()),
                     found: reward::site_matrix(&resolved, found),
                 });
+                // `REWARD_BEHAVIOR_SIGNATURE` describes the product site at the
+                // gate; the laboratory point is not part of it and says so.
+                let product = scene.mode().is_traversal();
+                let signature = product.then(|| {
+                    reward::reward_signature(
+                        terrain,
+                        &resolved,
+                        &veldwake_combat::fixture::reward_setup(),
+                        &veldwake_combat::fixture::weapon_descriptor(),
+                    )
+                });
                 info!(
+                    site = if product { "gate" } else { "weapon-choice laboratory" },
                     column = ?resolved.column,
                     position = ?site.to_array(),
                     ground = resolved.ground,
                     interact_radius = ?scene.encounter().interact_radius(),
-                    signature = format_args!(
-                        "{:#018x}",
-                        reward::reward_signature(
-                            self.terrain.as_ref().unwrap_or(&veldwake_procedural::TerrainGenerator::golden()),
-                            &resolved,
-                            &veldwake_combat::fixture::reward_setup(),
-                            &veldwake_combat::fixture::weapon_descriptor(),
-                        )
-                    ),
+                    signature = ?signature.map(|value| format!("{value:#018x}")),
                     locked = format_args!("{:#018x}", reward::REWARD_BEHAVIOR_SIGNATURE),
                     "weapon exchange ready"
                 );
@@ -354,9 +365,15 @@ impl App {
                     None
                 },
                 initiative = encounter_mode.is_initiative(),
-                initiative_site = encounter_mode
-                    .is_initiative()
-                    .then(|| crate::initiative::InitiativeSite::from_environment().name()),
+                // The weapon-choice laboratory always stands at the clearing.
+                initiative_site = encounter_mode.is_initiative().then(|| {
+                    if encounter_mode.is_weapon_choice() {
+                        crate::initiative::InitiativeSite::Clearing.name()
+                    } else {
+                        crate::initiative::InitiativeSite::from_environment().name()
+                    }
+                }),
+                weapon_choice = encounter_mode.is_weapon_choice(),
                 pressure_band = ?scene
                     .encounter()
                     .tuning()

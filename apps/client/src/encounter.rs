@@ -166,6 +166,23 @@ pub enum EncounterMode {
         driver: InitiativeDriver,
         freeze_at: Option<u32>,
     },
+    /// **M9 weapon choice**, opt-in: the combat initiative fight at the same
+    /// clearing, against the same adversary, offering the M9 exchange at a QA
+    /// point beside the player's round start
+    /// ([`initiative::WEAPON_CHOICE_SITE_OFFSET`]). Every reset puts the body
+    /// back beside it, so a person can change weapon between rounds with `E`;
+    /// the armament survives the reset (ARM-001). This is the laboratory for
+    /// `OWNER PLAYTEST — WEAPON CHOICE MATTERS (REVISIT)`, not product content.
+    ///
+    /// `driver` and `freeze_at` mean what they mean for `initiative`.
+    /// `take_found`, only with a driver, has the driver press interact on its
+    /// first armed tick — the real exchange rule — so QA can drive and freeze
+    /// the fight holding the found weapon.
+    WeaponChoice {
+        driver: InitiativeDriver,
+        freeze_at: Option<u32>,
+        take_found: bool,
+    },
 }
 
 impl EncounterMode {
@@ -195,6 +212,7 @@ impl EncounterMode {
             "script" | "scripted" => Some(Self::Script),
             "traverse" | "traversal" | "walk" => Some(Self::Traverse),
             other if other.starts_with("initiative") => Self::parse_initiative(other),
+            other if other.starts_with("weapon-choice") => Self::parse_weapon_choice(other),
             other => {
                 let tail = other
                     .strip_prefix("moment:")
@@ -236,6 +254,38 @@ impl EncounterMode {
         Some(Self::Initiative { driver, freeze_at })
     }
 
+    /// `weapon-choice`, `weapon-choice:<driver>[+found]`, or
+    /// `weapon-choice:<driver>[+found]@<tick>`.
+    fn parse_weapon_choice(value: &str) -> Option<Self> {
+        let rest = value.strip_prefix("weapon-choice")?;
+        let rest = match rest.strip_prefix(':') {
+            Some(rest) => rest,
+            None if rest.is_empty() || rest.starts_with('@') => rest,
+            None => return None,
+        };
+        let (driver, freeze_at) = match rest.split_once('@') {
+            Some((driver, tick)) => (driver, Some(tick.trim().parse::<u32>().ok()?)),
+            None => (rest, None),
+        };
+        let (driver, take_found) = match driver.trim().strip_suffix("+found") {
+            Some(driver) => (driver, true),
+            None => (driver.trim(), false),
+        };
+        let driver = InitiativeDriver::parse(driver)?;
+        // A person takes the found weapon with `E`; only a driver needs telling.
+        if driver == InitiativeDriver::Person && (freeze_at.is_some() || take_found) {
+            return None;
+        }
+        if freeze_at.is_some_and(|tick| tick > veldwake_combat::oracle::ORACLE_FIGHT_TICKS) {
+            return None;
+        }
+        Some(Self::WeaponChoice {
+            driver,
+            freeze_at,
+            take_found,
+        })
+    }
+
     #[must_use]
     pub fn name(self) -> String {
         match self {
@@ -257,13 +307,34 @@ impl EncounterMode {
                 driver,
                 freeze_at: Some(tick),
             } => format!("initiative:{}@{tick}", driver.name()),
+            Self::WeaponChoice {
+                driver: InitiativeDriver::Person,
+                ..
+            } => "weapon-choice".to_owned(),
+            Self::WeaponChoice {
+                driver,
+                freeze_at,
+                take_found,
+            } => format!(
+                "weapon-choice:{}{}{}",
+                driver.name(),
+                if take_found { "+found" } else { "" },
+                freeze_at.map_or_else(String::new, |tick| format!("@{tick}"))
+            ),
         }
     }
 
-    /// Whether this is a combat initiative session.
+    /// Whether this is a combat initiative session: the opt-in fight at the
+    /// clearing, with or without the M9 weapon choice.
     #[must_use]
     pub const fn is_initiative(self) -> bool {
-        matches!(self, Self::Initiative { .. })
+        matches!(self, Self::Initiative { .. } | Self::WeaponChoice { .. })
+    }
+
+    /// Whether this is the M9 weapon-choice laboratory.
+    #[must_use]
+    pub const fn is_weapon_choice(self) -> bool {
+        matches!(self, Self::WeaponChoice { .. })
     }
 
     /// Whether the fight is held inside a disc. Only the M6 duel modes are;
@@ -292,6 +363,10 @@ impl EncounterMode {
             Self::Armed
                 | Self::Traverse
                 | Self::Initiative {
+                    driver: InitiativeDriver::Person,
+                    ..
+                }
+                | Self::WeaponChoice {
                     driver: InitiativeDriver::Person,
                     ..
                 }
@@ -373,6 +448,29 @@ pub struct FrameOutcome {
     pub dropped_ticks: u64,
 }
 
+/// Where a mode's weapon exchange stands, when it offers one.
+///
+/// The product exchange, at the gate the world composed, belongs to the
+/// traversal; the weapon-choice laboratory has its QA point beside the round
+/// start at the clearing; every other mode offers none, so the rule refuses
+/// every press rather than inventing a place. A world position is a client
+/// fact, so this is the client's to answer — the rule that uses it is the
+/// domain's.
+#[must_use]
+pub fn resolve_exchange(
+    mode: EncounterMode,
+    generator: &TerrainGenerator,
+    ground: Option<&dyn GroundSampler>,
+) -> Option<reward::RewardSite> {
+    if mode.is_traversal() {
+        reward::site(generator)
+    } else if mode.is_weapon_choice() {
+        ground.and_then(initiative::weapon_choice_reward_site)
+    } else {
+        None
+    }
+}
+
 /// The client's encounter, its clock, and what drives it.
 pub struct EncounterScene {
     mode: EncounterMode,
@@ -412,6 +510,9 @@ pub struct EncounterScene {
     /// The oracle policy playing the player's side, in a driven combat
     /// initiative session.
     driver: Option<OraclePolicy>,
+    /// A driven weapon-choice session that still owes its one interact: the
+    /// driver presses it on its first armed tick, through the real rule.
+    take_found_pending: bool,
 }
 
 impl EncounterScene {
@@ -451,6 +552,10 @@ impl EncounterScene {
         // changes about the setup.
         let setup = if mode.is_traversal() {
             traversal::traversal_setup()
+        } else if mode.is_weapon_choice() {
+            // Always the clearing: the laboratory is the owner's initiative
+            // fight and nowhere else.
+            initiative::weapon_choice_setup()
         } else if mode.is_initiative() {
             initiative::initiative_setup_at(initiative::InitiativeSite::from_environment())
         } else {
@@ -460,11 +565,7 @@ impl EncounterScene {
         // The exchange site is a world position and therefore the client's to
         // resolve. A world that composed no gate simply has no exchange, and
         // the rule refuses every press rather than inventing a place.
-        let exchange_site = if mode.is_traversal() {
-            reward::site(generator).map(|site| site.position)
-        } else {
-            None
-        };
+        let exchange_site = resolve_exchange(mode, generator, ground).map(|site| site.position);
         let mut scene = Self {
             mode,
             encounter,
@@ -479,24 +580,42 @@ impl EncounterScene {
             ticks: 0,
             dodges_suppressed: 0,
             driver: None,
+            take_found_pending: false,
         };
         match mode {
             EncounterMode::Off | EncounterMode::Armed | EncounterMode::Traverse => {}
-            EncounterMode::Initiative { driver, freeze_at } => {
+            EncounterMode::Initiative { driver, freeze_at }
+            | EncounterMode::WeaponChoice {
+                driver, freeze_at, ..
+            } => {
+                let take_found = matches!(
+                    mode,
+                    EncounterMode::WeaponChoice {
+                        take_found: true,
+                        ..
+                    }
+                );
                 scene.driver = driver.policy();
+                scene.take_found_pending = take_found && scene.driver.is_some();
                 if let (Some(policy), Some(tick)) = (scene.driver, freeze_at) {
                     // Headless from arming to the tick asked for, over the same
                     // terrain and the same veto the frame loop uses, then held.
                     // The fight is deterministic from arming, so the frame is
                     // the one the headless schedule names.
                     let legality = crate::traversal::TerrainWalkability::new(generator);
-                    let world = match ground {
-                        Some(ground) => WorldContact::terrain(ground, &legality),
-                        None => WorldContact::none(),
+                    let world = match (ground, scene.exchange_site) {
+                        (Some(ground), Some(site)) => {
+                            WorldContact::terrain_with_weapon_exchange(ground, &legality, site)
+                        }
+                        (Some(ground), None) => WorldContact::terrain(ground, &legality),
+                        (None, _) => WorldContact::none(),
                     };
                     scene.encounter.arm();
                     for _ in 0..tick {
-                        let intent = policy.intent(&scene.encounter);
+                        let intent = policy
+                            .intent(&scene.encounter)
+                            .interacting(scene.take_found_pending);
+                        scene.take_found_pending = false;
                         let _ = scene.encounter.step(intent, world);
                         scene.ticks += 1;
                     }
@@ -515,6 +634,7 @@ impl EncounterScene {
                             .action()
                             .label(scene.encounter.attack_spec(Side::Player)),
                         distance = scene.encounter.separation_distance(),
+                        weapon = scene.encounter.armament().player().name(),
                         "combat initiative frozen at a tick"
                     );
                 }
@@ -765,7 +885,13 @@ impl EncounterScene {
                         self.encounter.arm();
                         info!("encounter armed by the first input");
                     }
-                    policy.intent(&self.encounter)
+                    // A driven weapon-choice session takes the found weapon on
+                    // its first armed tick, through the real exchange rule.
+                    let take = self.take_found_pending && self.encounter.is_armed();
+                    if take {
+                        self.take_found_pending = false;
+                    }
+                    policy.intent(&self.encounter).interacting(take)
                 }
                 (None, None) => {
                     // The played path. The latch belongs to the first tick of the
@@ -1759,6 +1885,212 @@ mod tests {
             WorldContact::terrain(&ground, &legality),
         );
         assert_eq!(scene.encounter().tick_index(), 90, "a frozen scene stepped");
+    }
+
+    // -----------------------------------------------------------------------
+    // M9 revisit — the weapon-choice laboratory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_weapon_choice_modes_parse_and_name_themselves() {
+        use super::InitiativeDriver;
+        let cases = [
+            ("weapon-choice", InitiativeDriver::Person, None, false),
+            (
+                "WEAPON-CHOICE:person",
+                InitiativeDriver::Person,
+                None,
+                false,
+            ),
+            ("weapon-choice:read", InitiativeDriver::Read, None, false),
+            (
+                "weapon-choice:read+found",
+                InitiativeDriver::Read,
+                None,
+                true,
+            ),
+            (
+                "weapon-choice:spam+found@300",
+                InitiativeDriver::Spam,
+                Some(300),
+                true,
+            ),
+            (
+                "weapon-choice:spam-read@90",
+                InitiativeDriver::SpamRead,
+                Some(90),
+                false,
+            ),
+        ];
+        for (spelling, driver, freeze_at, take_found) in cases {
+            let mode = EncounterMode::parse(spelling);
+            let expected = EncounterMode::WeaponChoice {
+                driver,
+                freeze_at,
+                take_found,
+            };
+            assert_eq!(mode, Some(expected), "{spelling}");
+            assert_eq!(EncounterMode::parse(&expected.name()), Some(expected));
+            assert!(expected.is_initiative() && expected.is_weapon_choice());
+            assert!(!expected.has_arena() && !expected.is_traversal());
+            assert_eq!(expected.is_played(), driver == InitiativeDriver::Person);
+        }
+        for refused in [
+            "weapon-choice:person+found",
+            "weapon-choice:person@10",
+            "weapon-choice:nobody",
+            "weapon-choice:read@99999",
+            "weapon-choicex",
+        ] {
+            assert!(EncounterMode::parse(refused).is_none(), "{refused}");
+        }
+        for mode in [
+            EncounterMode::Armed,
+            EncounterMode::Traverse,
+            EncounterMode::Initiative {
+                driver: InitiativeDriver::Person,
+                freeze_at: None,
+            },
+        ] {
+            assert!(!mode.is_weapon_choice(), "{}", mode.name());
+        }
+    }
+
+    /// Only the laboratory offers the laboratory point; the owner's initiative
+    /// session is exactly what it was, with no reward and nowhere to exchange.
+    #[test]
+    fn only_the_weapon_choice_scene_offers_the_laboratory_exchange() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let initiative = match EncounterScene::new(
+            EncounterMode::Initiative {
+                driver: super::InitiativeDriver::Person,
+                freeze_at: None,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(initiative.exchange_site().is_none());
+        assert!(!initiative.encounter().has_reward());
+        let lab = match EncounterScene::new(
+            EncounterMode::WeaponChoice {
+                driver: super::InitiativeDriver::Person,
+                freeze_at: None,
+                take_found: false,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let Some(site) = lab.exchange_site() else {
+            panic!("the laboratory offers no exchange");
+        };
+        assert!((site - crate::initiative::weapon_choice_site()).length() < 1.0e-6);
+        assert!(lab.encounter().has_reward());
+        assert!(lab.encounter().tuning().adversary_pressure().is_some());
+        assert_eq!(
+            lab.encounter().tuning(),
+            initiative.encounter().tuning(),
+            "the laboratory fights a different adversary"
+        );
+        assert!(!lab.encounter().is_armed(), "the laboratory armed itself");
+    }
+
+    /// A person in the laboratory exchanges with `E` from where the round
+    /// starts, and the first press is what arms the session.
+    #[test]
+    fn a_person_takes_the_found_weapon_from_the_round_start_with_one_press() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let legality = crate::traversal::TerrainWalkability::new(&generator);
+        let mut scene = match EncounterScene::new(
+            EncounterMode::WeaponChoice {
+                driver: super::InitiativeDriver::Person,
+                freeze_at: None,
+                take_found: false,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let Some(site) = scene.exchange_site() else {
+            panic!("the laboratory offers no exchange");
+        };
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &legality, site);
+        let mut input = InputState::default();
+        let camera = Camera::default();
+        input.set_combat_action(CombatAction::Interact, true);
+        input.set_combat_action(CombatAction::Interact, false);
+        let _ = scene.update(Duration::from_millis(20), &mut input, &camera, world);
+        assert!(scene.encounter().is_armed());
+        assert_eq!(
+            scene.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Found
+        );
+        assert_eq!(
+            scene.encounter().counters().interacts[Side::Player.index()],
+            1
+        );
+    }
+
+    /// QA's driven laboratory takes the found weapon through the real rule on
+    /// its first armed tick, live and frozen alike.
+    #[test]
+    fn a_driven_laboratory_can_hold_the_found_weapon_live_and_frozen() {
+        let generator = TerrainGenerator::golden();
+        let ground = TerrainGround::new(&generator);
+        let frozen = match EncounterScene::new(
+            EncounterMode::WeaponChoice {
+                driver: super::InitiativeDriver::Read,
+                freeze_at: Some(90),
+                take_found: true,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(frozen.is_frozen());
+        assert_eq!(frozen.encounter().tick_index(), 90);
+        assert_eq!(
+            frozen.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Found
+        );
+        let legality = crate::traversal::TerrainWalkability::new(&generator);
+        let mut live = match EncounterScene::new(
+            EncounterMode::WeaponChoice {
+                driver: super::InitiativeDriver::Spam,
+                freeze_at: None,
+                take_found: true,
+            },
+            &generator,
+            Some(&ground),
+        ) {
+            Ok(scene) => scene,
+            Err(error) => panic!("{error}"),
+        };
+        let Some(site) = live.exchange_site() else {
+            panic!("the laboratory offers no exchange");
+        };
+        let world = WorldContact::terrain_with_weapon_exchange(&ground, &legality, site);
+        let camera = Camera::at(glam::Vec3::ZERO, 0.0, 0.0);
+        let mut input = InputState::default();
+        input.set_combat_action(CombatAction::Attack, true);
+        let tick = Duration::from_nanos(1_000_000_000 / u64::from(veldwake_combat::COMBAT_TICK_HZ));
+        let _ = live.update(tick * 4, &mut input, &camera, world);
+        assert!(live.encounter().is_armed());
+        assert_eq!(
+            live.encounter().armament().player(),
+            veldwake_combat::WeaponVariant::Found
+        );
     }
 
     #[test]
