@@ -41,6 +41,20 @@ pub enum SpecError {
     NoHealth,
     /// The adversary's ranges contradict each other.
     RangesCross { min: f32, strike: f32, aggro: f32 },
+    /// A pressure attack's selection band is empty, starts inside the primary
+    /// attack's strike range, or reaches past the aggro radius.
+    PressureBand {
+        min: f32,
+        max: f32,
+        strike: f32,
+        aggro: f32,
+    },
+    /// A pressure lunge's travel is longer than the windup and active window it
+    /// has to end with.
+    LungeTooLong { lunge: Ticks, available: Ticks },
+    /// A lunge that connected would recover more slowly than one that missed,
+    /// which inverts the opening the attack exists to create.
+    ConnectOutlastsWhiff { connect: Ticks, whiff: Ticks },
 }
 
 impl std::fmt::Display for SpecError {
@@ -64,6 +78,23 @@ impl std::fmt::Display for SpecError {
             Self::RangesCross { min, strike, aggro } => write!(
                 formatter,
                 "adversary ranges must satisfy min {min} < strike {strike} <= aggro {aggro}"
+            ),
+            Self::PressureBand {
+                min,
+                max,
+                strike,
+                aggro,
+            } => write!(
+                formatter,
+                "pressure band must satisfy strike {strike} < min {min} < max {max} <= aggro {aggro}"
+            ),
+            Self::LungeTooLong { lunge, available } => write!(
+                formatter,
+                "a lunge of {lunge} ticks does not fit the {available} ticks of windup and active"
+            ),
+            Self::ConnectOutlastsWhiff { connect, whiff } => write!(
+                formatter,
+                "a connected lunge recovers in {connect} ticks, longer than a whiffed one's {whiff}"
             ),
         }
     }
@@ -135,30 +166,44 @@ impl AuthoredAttack {
         if self.damage == 0 {
             return Err(SpecError::NoDamage);
         }
+        let recovery = duration("recovery", self.recovery_seconds)?;
         Ok(AttackSpec {
             windup: duration("windup", self.windup_seconds)?,
             active: duration("active", self.active_seconds)?,
-            recovery: duration("recovery", self.recovery_seconds)?,
+            recovery,
+            // A swing's recovery does not depend on what it met. Only a
+            // pressure lunge authors a different one; see `AuthoredPressure`.
+            connect_recovery: recovery,
             stagger: duration("stagger", self.stagger_seconds)?,
             hitstop: optional_duration("hitstop", self.hitstop_seconds)?,
             damage: self.damage,
             step_in_bits: non_negative("step_in", self.step_in)?.to_bits(),
             knockback_bits: non_negative("knockback", self.knockback)?.to_bits(),
+            lunge_bits: 0.0_f32.to_bits(),
+            lunge_ticks: 0,
         })
     }
 }
 
 /// One attack, in ticks.
+///
+/// `recovery` is the recovery after a swing that met nothing. Every historical
+/// attack recovers the same way whatever it met, so for them
+/// `connect_recovery == recovery` and `lunge` is zero, and nothing about them
+/// differs from before either field existed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttackSpec {
     windup: Ticks,
     active: Ticks,
     recovery: Ticks,
+    connect_recovery: Ticks,
     stagger: Ticks,
     hitstop: Ticks,
     damage: u16,
     step_in_bits: u32,
     knockback_bits: u32,
+    lunge_bits: u32,
+    lunge_ticks: Ticks,
 }
 
 // `step_in` and `knockback` are stored as bit patterns so the whole spec can
@@ -204,10 +249,64 @@ impl AttackSpec {
         f32::from_bits(self.knockback_bits)
     }
 
+    /// Recovery after a swing that connected.
+    ///
+    /// Equal to [`Self::recovery`] for every attack except a pressure lunge.
+    #[must_use]
+    pub const fn connect_recovery(&self) -> Ticks {
+        self.connect_recovery
+    }
+
+    /// The recovery a swing actually runs, given whether it connected.
+    #[must_use]
+    pub const fn recovery_for(&self, connected: bool) -> Ticks {
+        if connected {
+            self.connect_recovery
+        } else {
+            self.recovery
+        }
+    }
+
+    /// World units the body travels along its committed line, ending with the
+    /// active window. Zero for every attack but a pressure lunge.
+    #[must_use]
+    pub fn lunge(&self) -> f32 {
+        f32::from_bits(self.lunge_bits)
+    }
+
+    /// How many ticks the lunge's travel lasts.
+    #[must_use]
+    pub const fn lunge_ticks(&self) -> Ticks {
+        self.lunge_ticks
+    }
+
+    /// Whether the body is travelling on its lunge at this elapsed tick.
+    ///
+    /// Half open like every other window: the travel is the last
+    /// `lunge_ticks` before `active_end`, so it can start inside the windup —
+    /// the committed body leaving — and always finishes when the blade stops
+    /// being able to connect.
+    #[must_use]
+    pub const fn is_lunging(&self, elapsed: Ticks) -> bool {
+        self.lunge_ticks > 0
+            && elapsed < self.active_end()
+            && elapsed + self.lunge_ticks >= self.active_end()
+    }
+
     /// Ticks from the start of the swing to the end of recovery.
+    ///
+    /// The recovery counted is the whiffed one, which is the longest a swing
+    /// can last; see [`Self::total_for`].
     #[must_use]
     pub const fn total(&self) -> Ticks {
         self.windup + self.active + self.recovery
+    }
+
+    /// Ticks from the start of the swing to the end of the recovery it
+    /// actually runs.
+    #[must_use]
+    pub const fn total_for(&self, connected: bool) -> Ticks {
+        self.windup + self.active + self.recovery_for(connected)
     }
 
     /// First tick of the active window.
@@ -452,6 +551,115 @@ impl AdversarySpec {
     }
 }
 
+/// The adversary's second attack, as a person tunes it: the pressure lunge.
+///
+/// A committed thrust along a line that is fixed when the windup starts, taken
+/// from middle distance. It exists so the adversary can act before a player
+/// has closed to where the historical primary attack is interrupted every time
+/// (`docs/planning/COMBAT_INITIATIVE.md`). Three things set it apart from the
+/// primary, and each is a field here rather than a special case elsewhere:
+///
+/// - **travel**: the body covers `lunge_distance` over the last
+///   `lunge_seconds` of the windup and active window, so the threat arrives with
+///   the blade rather than walking into the opponent's reach ahead of it;
+/// - **outcome-dependent recovery**: `attack.recovery_seconds` is the recovery
+///   after a lunge that met nothing and `connect_recovery_seconds` the one after
+///   a lunge that connected, so a miss leaves the body exposed and a hit does
+///   not;
+/// - **selection**: the brain may choose it only when the other body is between
+///   `select_min` and `select_max`, centre to centre;
+/// - **spacing**: the dodge the adversary takes after its own stagger or its
+///   own connected lunge. It is an ordinary dodge — the same action, the same
+///   movement rules, no invulnerability — authored for the adversary because
+///   the distance it has to open is the distance back into the band, which the
+///   player's dodge was never tuned for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuthoredPressure {
+    pub attack: AuthoredAttack,
+    pub connect_recovery_seconds: f64,
+    pub lunge_distance: f32,
+    pub lunge_seconds: f64,
+    pub select_min: f32,
+    pub select_max: f32,
+    pub spacing: AuthoredDodge,
+}
+
+impl AuthoredPressure {
+    /// Validates and compiles to ticks.
+    ///
+    /// The band is checked against the primary attack's ranges by
+    /// [`AuthoredTuning::compile`], which is the only place that sees both.
+    pub fn compile(&self) -> Result<PressureSpec, SpecError> {
+        let mut attack = self.attack.compile()?;
+        let connect = duration("connect_recovery", self.connect_recovery_seconds)?;
+        if connect > attack.recovery {
+            return Err(SpecError::ConnectOutlastsWhiff {
+                connect,
+                whiff: attack.recovery,
+            });
+        }
+        let lunge_ticks = duration("lunge", self.lunge_seconds)?;
+        if lunge_ticks > attack.active_end() {
+            return Err(SpecError::LungeTooLong {
+                lunge: lunge_ticks,
+                available: attack.active_end(),
+            });
+        }
+        attack.connect_recovery = connect;
+        attack.lunge_bits = positive("lunge_distance", self.lunge_distance)?.to_bits();
+        attack.lunge_ticks = lunge_ticks;
+        let min = positive("select_min", self.select_min)?;
+        let max = positive("select_max", self.select_max)?;
+        Ok(PressureSpec {
+            attack,
+            select_min: min,
+            select_max: max,
+            spacing: self.spacing.compile()?,
+        })
+    }
+}
+
+/// The pressure lunge, in ticks, and the distances it is chosen from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PressureSpec {
+    attack: AttackSpec,
+    select_min: f32,
+    select_max: f32,
+    spacing: DodgeSpec,
+}
+
+impl PressureSpec {
+    #[must_use]
+    pub const fn attack(&self) -> &AttackSpec {
+        &self.attack
+    }
+
+    #[must_use]
+    pub const fn select_min(&self) -> f32 {
+        self.select_min
+    }
+
+    /// The dodge the adversary spaces with.
+    #[must_use]
+    pub const fn spacing(&self) -> &DodgeSpec {
+        &self.spacing
+    }
+
+    #[must_use]
+    pub const fn select_max(&self) -> f32 {
+        self.select_max
+    }
+
+    /// Whether a centre-to-centre distance is one the lunge may be chosen from.
+    ///
+    /// Closed at both ends, so the band the fixtures author is exactly the band
+    /// the no-bluff evidence walks.
+    #[must_use]
+    pub fn selects(&self, distance: f32) -> bool {
+        distance.is_finite() && distance >= self.select_min && distance <= self.select_max
+    }
+}
+
 /// Where the fight happens.
 ///
 /// A fixture, not a game rule: the encounter is a bounded circle so a slice can
@@ -523,6 +731,14 @@ pub struct AuthoredTuning {
     pub dodge: AuthoredDodge,
     pub movement: AuthoredMovement,
     pub adversary: AuthoredAdversary,
+    /// The adversary's second attack and the spacing that goes with it.
+    ///
+    /// `None` in every historical fixture, which is why none of their
+    /// signatures moved when it was added. Present only in the combat
+    /// initiative setups, where it is the whole capability: the lunge, the
+    /// outcome-dependent recovery, and the spacing dodge the brain takes after
+    /// its own stagger or its own connected lunge.
+    pub adversary_pressure: Option<AuthoredPressure>,
     pub player_health: u16,
     pub adversary_health: u16,
     pub defeat_hold_seconds: f64,
@@ -534,12 +750,35 @@ impl AuthoredTuning {
         if self.player_health == 0 || self.adversary_health == 0 {
             return Err(SpecError::NoHealth);
         }
+        let adversary = self.adversary.compile()?;
+        let adversary_pressure = match self.adversary_pressure {
+            Some(authored) => {
+                let pressure = authored.compile()?;
+                // Two attacks, two distances, and they may not overlap: inside
+                // strike range is the primary's, and the band has to end
+                // before the adversary stops noticing the player at all.
+                if !(adversary.strike_range() < pressure.select_min()
+                    && pressure.select_min() < pressure.select_max()
+                    && pressure.select_max() <= adversary.aggro_radius())
+                {
+                    return Err(SpecError::PressureBand {
+                        min: pressure.select_min(),
+                        max: pressure.select_max(),
+                        strike: adversary.strike_range(),
+                        aggro: adversary.aggro_radius(),
+                    });
+                }
+                Some(pressure)
+            }
+            None => None,
+        };
         Ok(EncounterTuning {
             player_attack: self.player_attack.compile()?,
             adversary_attack: self.adversary_attack.compile()?,
             dodge: self.dodge.compile()?,
             movement: self.movement.compile()?,
-            adversary: self.adversary.compile()?,
+            adversary,
+            adversary_pressure,
             player_health: self.player_health,
             adversary_health: self.adversary_health,
             defeat_hold: duration("defeat_hold", self.defeat_hold_seconds)?,
@@ -556,6 +795,7 @@ pub struct EncounterTuning {
     dodge: DodgeSpec,
     movement: MovementSpec,
     adversary: AdversarySpec,
+    adversary_pressure: Option<PressureSpec>,
     player_health: u16,
     adversary_health: u16,
     defeat_hold: Ticks,
@@ -588,6 +828,12 @@ impl EncounterTuning {
         &self.adversary
     }
 
+    /// The adversary's pressure lunge, when this encounter has one.
+    #[must_use]
+    pub const fn adversary_pressure(&self) -> Option<&PressureSpec> {
+        self.adversary_pressure.as_ref()
+    }
+
     #[must_use]
     pub const fn player_health(&self) -> u16 {
         self.player_health
@@ -612,8 +858,8 @@ impl EncounterTuning {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArenaSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement, CombatSeed,
-        SpecError,
+        ArenaSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement,
+        AuthoredPressure, CombatSeed, SpecError,
     };
     use crate::tick::{COMBAT_TICK_HZ, DurationError};
     use glam::Vec2;
@@ -946,5 +1192,86 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
         assert_ne!(first, different);
+    }
+
+    #[test]
+    fn every_historical_attack_recovers_the_same_whatever_it_meets() {
+        for authored in [
+            crate::fixture::player_attack(),
+            crate::fixture::adversary_attack(),
+        ] {
+            let spec = match authored.compile() {
+                Ok(spec) => spec,
+                Err(error) => panic!("{error}"),
+            };
+            assert_eq!(spec.connect_recovery(), spec.recovery());
+            assert_eq!(spec.total_for(true), spec.total());
+            assert_eq!(spec.total_for(false), spec.total());
+            assert_eq!(spec.lunge_ticks(), 0);
+            assert!(spec.lunge().abs() < f32::EPSILON);
+            assert!((0..=spec.total()).all(|tick| !spec.is_lunging(tick)));
+        }
+    }
+
+    #[test]
+    fn a_pressure_lunge_compiles_and_refuses_what_would_invert_it() {
+        let authored = crate::fixture::pressure();
+        let pressure = match authored.compile() {
+            Ok(pressure) => pressure,
+            Err(error) => panic!("{error}"),
+        };
+        let attack = pressure.attack();
+        assert!(attack.connect_recovery() < attack.recovery());
+        assert!(attack.total_for(true) < attack.total_for(false));
+        // The travel is the last ticks of the windup and the whole active
+        // window, and nothing before.
+        let lunging: Vec<_> = (0..=attack.total())
+            .filter(|tick| attack.is_lunging(*tick))
+            .collect();
+        assert_eq!(lunging.len() as u32, attack.lunge_ticks());
+        assert_eq!(lunging.last().copied(), Some(attack.active_end() - 1));
+        assert!(pressure.selects(pressure.select_min()));
+        assert!(pressure.selects(pressure.select_max()));
+        assert!(!pressure.selects(pressure.select_min() - 0.01));
+        assert!(!pressure.selects(pressure.select_max() + 0.01));
+        assert!(!pressure.selects(f32::NAN));
+
+        let inverted = AuthoredPressure {
+            connect_recovery_seconds: 2.0,
+            ..authored
+        };
+        assert!(matches!(
+            inverted.compile(),
+            Err(SpecError::ConnectOutlastsWhiff { .. })
+        ));
+        let too_long = AuthoredPressure {
+            lunge_seconds: 5.0,
+            ..authored
+        };
+        assert!(matches!(
+            too_long.compile(),
+            Err(SpecError::LungeTooLong { .. })
+        ));
+
+        // The band belongs between the primary's strike range and the aggro
+        // radius, and only the tuning sees both.
+        let mut tuning = crate::fixture::initiative_tuning();
+        assert!(tuning.compile().is_ok());
+        tuning.adversary_pressure = Some(AuthoredPressure {
+            select_min: 1.0,
+            ..authored
+        });
+        assert!(matches!(
+            tuning.compile(),
+            Err(SpecError::PressureBand { .. })
+        ));
+        tuning.adversary_pressure = Some(AuthoredPressure {
+            select_max: 99.0,
+            ..authored
+        });
+        assert!(matches!(
+            tuning.compile(),
+            Err(SpecError::PressureBand { .. })
+        ));
     }
 }

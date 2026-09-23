@@ -32,7 +32,7 @@ use crate::script::{
 };
 use crate::spec::{
     ArenaSpec, AttackSpec, AuthoredAdversary, AuthoredAttack, AuthoredDodge, AuthoredMovement,
-    AuthoredTuning, CombatSeed,
+    AuthoredPressure, AuthoredTuning, CombatSeed,
 };
 use crate::tick::Ticks;
 use crate::weapon::{CompiledWeapon, WeaponDescriptor};
@@ -176,6 +176,65 @@ pub fn adversary() -> AuthoredAdversary {
     }
 }
 
+/// The adversary's pressure lunge: combat initiative's second attack.
+///
+/// Every number was measured, not carried over; `docs/planning/COMBAT_INITIATIVE.md`
+/// derives each one and records the values it replaced. The three that were
+/// moved by evidence:
+///
+/// - **windup `0.55` s, not the primary's `0.45`.** At `54` ticks a player
+///   walking straight at the lunge had to leave its line within `28` ticks
+///   (`233` ms) to escape by walking, and the real client reproduced the
+///   failure at about `280` ms. At `66` ticks walking escapes up to `40` ticks
+///   and dodging up to `48`, from either side, anywhere in the band;
+/// - **whiff recovery `1.00` s.** A reader reacting at `400` ms to a missed
+///   lunge landed its answer one tick before `0.90` s ran out, which is not an
+///   opening; at `1.00` s it lands with thirteen ticks to spare;
+/// - **the band `4.35`–`4.65`.** Its near edge is where a player running
+///   straight in and swinging, under every misjudgement the oracles use, stops
+///   getting its blade there first; its far edge is inside the distance at
+///   which the lunge still reaches a body that does nothing (`4.70`).
+#[must_use]
+pub fn pressure() -> AuthoredPressure {
+    AuthoredPressure {
+        attack: AuthoredAttack {
+            windup_seconds: 0.55,
+            active_seconds: 0.12,
+            // A lunge that met nothing is spent.
+            recovery_seconds: 1.00,
+            stagger_seconds: 0.30,
+            hitstop_seconds: 0.07,
+            damage: 18,
+            // No walk-in during the windup: the whole approach is the lunge.
+            step_in: 0.0,
+            knockback: 0.30,
+        },
+        // A lunge that connected is stopped by the body it met.
+        connect_recovery_seconds: 0.10,
+        lunge_distance: 2.0,
+        lunge_seconds: 32.0 / 120.0,
+        select_min: 4.35,
+        select_max: 4.65,
+        // The player's dodge speed, carried further: three world units in
+        // `0.40` s is `7.5` u/s against the player's `7.33`.
+        spacing: AuthoredDodge {
+            duration_seconds: 0.40,
+            cooldown_seconds: 0.25,
+            distance: 3.0,
+        },
+    }
+}
+
+/// The historical tuning with the pressure lunge added, and nothing else
+/// changed.
+#[must_use]
+pub fn initiative_tuning() -> AuthoredTuning {
+    AuthoredTuning {
+        adversary_pressure: Some(pressure()),
+        ..tuning()
+    }
+}
+
 /// How far apart the two start, in world units.
 pub const START_SEPARATION: f32 = 6.0;
 
@@ -208,6 +267,8 @@ pub fn tuning() -> AuthoredTuning {
         dodge: dodge(),
         movement: movement(),
         adversary: adversary(),
+        // No second attack: the historical encounter is exactly M6's.
+        adversary_pressure: None,
         // Five of the adversary's hits, four of the player's: the player has room
         // to learn and the adversary is not a sponge.
         player_health: 96,
@@ -432,6 +493,7 @@ pub fn swing_envelope(
     for elapsed in 0..=spec.total() {
         let action = Action::Attack {
             swing: SwingId::first(),
+            kind: crate::combatant::AttackKind::Primary,
             elapsed,
             hits: [false; SIDES.len()],
         };
@@ -660,17 +722,21 @@ pub const GOLDEN_ENCOUNTER_SIGNATURE: u64 = 0x6415_7522_d253_5658;
 
 /// Every locked fixture value, for the probe to print in one place.
 #[must_use]
-pub fn locked_values() -> [(&'static str, u64); 3] {
+pub fn locked_values() -> [(&'static str, u64); 4] {
     [
         ("golden weapon geometry", GOLDEN_WEAPON_GEOMETRY_FINGERPRINT),
         ("golden weapon identity", GOLDEN_WEAPON_IDENTITY_FINGERPRINT),
         ("golden encounter", GOLDEN_ENCOUNTER_SIGNATURE),
+        (
+            "combat initiative",
+            crate::oracle::COMBAT_INITIATIVE_SIGNATURE,
+        ),
     ]
 }
 
 /// Computes every signature from scratch; the probe prints these next to the
 /// locked ones so a mismatch is one line to read.
-pub fn measured_values() -> Result<[(&'static str, u64); 3], EncounterError> {
+pub fn measured_values() -> Result<[(&'static str, u64); 4], EncounterError> {
     let weapon = crate::weapon::WeaponCompiler::new().compile_descriptor(&weapon_descriptor())?;
     let ground = golden_ground();
     let outcome = run_script(
@@ -683,6 +749,7 @@ pub fn measured_values() -> Result<[(&'static str, u64); 3], EncounterError> {
         ("golden weapon geometry", weapon.geometry_fingerprint()),
         ("golden weapon identity", weapon.fingerprint()),
         ("golden encounter", outcome.signature),
+        ("combat initiative", crate::oracle::initiative_signature()?),
     ])
 }
 
